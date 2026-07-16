@@ -52,9 +52,9 @@ echo "Output:  ${OUTPUT_DIR}"
 echo "Events:  ${N_EVENTS}"
 echo "========================================"
 
-# Copy our digi_and_reco.py into the output dir so we can mount it
-# (the container's built-in script may differ from what we need)
+# Copy our script + utils into the output dir
 cp "${SCRIPT_DIR}/digi_and_reco.py" "${OUTPUT_DIR}/digi_and_reco.py"
+cp -r "${SCRIPT_DIR}/utils" "${OUTPUT_DIR}/utils"
 cp "${CONFIG_FILE}" "${OUTPUT_DIR}/config.yaml"
 
 shifter --image="${CCKF_IMAGE}" -- \
@@ -63,6 +63,7 @@ shifter --image="${CCKF_IMAGE}" -- \
         --input-file "${INPUT_FILE}" \
         --output "${OUTPUT_DIR}" \
         --output-subdir results \
+        --events "${N_EVENTS}" \
         --digi --reco
 
 echo ""

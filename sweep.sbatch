@@ -51,6 +51,7 @@ OUTPUT_DIR="${CCKF_SCRATCH}/sweep/${CONFIG_NAME}"
 
 mkdir -p "${OUTPUT_DIR}"
 cp "${SCRIPT_DIR}/digi_and_reco.py" "${OUTPUT_DIR}/digi_and_reco.py"
+cp -r "${SCRIPT_DIR}/utils" "${OUTPUT_DIR}/utils"
 cp "${CONFIG_FILE}" "${OUTPUT_DIR}/config.yaml"
 
 echo "========================================"
