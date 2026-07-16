@@ -1,0 +1,15 @@
+events: 128
+threads: 1
+digi: true
+reco: true
+num_seeds_per_spm: 40
+seed_minPt: 0.5
+seed_impactMax: 3.0
+ckf_chi2CutOffMeasurement: 5.0
+ckf_chi2CutOffOutlier: 25.0
+ckf_numMeasurementsCutOff: 1
+ckf_nMeasurementsMin: 6
+ckf_maxHolesAndOutliers: 3
+ckf_ptMin: 0.7
+ckf_finding_performance: true
+ambi_finding_performance: true
