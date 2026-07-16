@@ -12,17 +12,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/setup_env.sh"
 
-RUN_ID="${1:-0}"
-CONFIG_NAME="${2:-baseline}"
-N_EVENTS="${3:-10}"
+RUN_ID=0
+CONFIG_NAME="baseline"
+N_EVENTS=10
 
-# Parse named args
 while [[ $# -gt 0 ]]; do
     case $1 in
         --run-id) RUN_ID="$2"; shift 2;;
         --config) CONFIG_NAME="$2"; shift 2;;
         --events) N_EVENTS="$2"; shift 2;;
-        *) shift;;
+        *) echo "Unknown option: $1"; exit 1;;
     esac
 done
 
