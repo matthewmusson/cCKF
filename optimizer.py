@@ -168,6 +168,7 @@ def _run_trial(params: Dict[str, float]) -> Dict[str, float]:
         config_path = make_trial_config(params, workdir)
 
         # Build shifter command using spack Python 3.13 + symlinked acts module
+        # Mirrors the setup in cckf_shifter_run() from setup_env.sh
         acts_dir = os.environ.get(
             "CCKF_ACTS_DIR",
             "/spack/opt/spack/linux-x86_64/acts-main-udwtnx3aoh5lh6s76slc2fzc5szhwe7y",
@@ -176,12 +177,16 @@ def _run_trial(params: Dict[str, float]) -> Dict[str, float]:
             "CCKF_PYTHON",
             "/spack/opt/spack/linux-x86_64/python-3.13.11-awxtqzerpdzhatylv3uagd35ebciqs3o/bin/python3",
         )
+        odd_path = os.environ.get("ODD_PATH", "")
         setup_cmds = (
-            f"rm -rf /tmp/acts_pypath && mkdir -p /tmp/acts_pypath && "
+            "rm -rf /tmp/acts_pypath && mkdir -p /tmp/acts_pypath && "
             f"ln -sf {acts_dir}/python /tmp/acts_pypath/acts && "
-            f"export PYTHONPATH=/tmp/acts_pypath:$PYTHONPATH && "
+            'SPACK_PYPATH=$(find /spack/opt -path "*/python3.13/site-packages" -type d 2>/dev/null | tr "\\n" ":") && '
+            "export PYTHONPATH=/tmp/acts_pypath:${SPACK_PYPATH}${PYTHONPATH:+:$PYTHONPATH} && "
             f"export LD_LIBRARY_PATH={acts_dir}/lib:$LD_LIBRARY_PATH"
         )
+        if odd_path:
+            setup_cmds += f" && export ODD_PATH={odd_path}"
         run_cmd = (
             f"{spack_python} {workdir / 'digi_and_reco.py'} "
             f"--config {config_path} "

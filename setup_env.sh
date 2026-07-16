@@ -14,6 +14,9 @@ export CCKF_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CCKF_PYTHON="/spack/opt/spack/linux-x86_64/python-3.13.11-awxtqzerpdzhatylv3uagd35ebciqs3o/bin/python3"
 export CCKF_ACTS_DIR="/spack/opt/spack/linux-x86_64/acts-main-udwtnx3aoh5lh6s76slc2fzc5szhwe7y"
 
+# ODD geometry path — set this once we locate it (container or CFS)
+# export ODD_PATH="/path/to/OpenDataDetector"
+
 mkdir -p "${CCKF_SCRATCH}"
 
 # Helper: run a Python script inside the shifter container with correct ACTS paths.
@@ -27,6 +30,7 @@ cckf_shifter_run() {
         SPACK_PYPATH=$(find /spack/opt -path "*/python3.13/site-packages" -type d 2>/dev/null | tr "\n" ":")
         export PYTHONPATH="/tmp/acts_pypath:${SPACK_PYPATH}${PYTHONPATH:+:$PYTHONPATH}"
         export LD_LIBRARY_PATH="'"${CCKF_ACTS_DIR}"'/lib:${LD_LIBRARY_PATH}"
+        if [[ -n "'"${ODD_PATH:-}"'" ]]; then export ODD_PATH="'"${ODD_PATH}"'"; fi
         '"${CCKF_PYTHON}"' "$@"
     ' -- "$@"
 }
