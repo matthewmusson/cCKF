@@ -63,13 +63,12 @@ echo "========================================"
 
 START_TIME=$(date +%s)
 
-shifter --image="${CCKF_IMAGE}" -- \
-    python3 "${OUTPUT_DIR}/digi_and_reco.py" \
-        --config "${OUTPUT_DIR}/config.yaml" \
-        --input-file "${INPUT_FILE}" \
-        --output "${OUTPUT_DIR}" \
-        --output-subdir results \
-        --digi --reco
+cckf_shifter_run "${OUTPUT_DIR}/digi_and_reco.py" \
+    --config "${OUTPUT_DIR}/config.yaml" \
+    --input-file "${INPUT_FILE}" \
+    --output "${OUTPUT_DIR}" \
+    --output-subdir results \
+    --digi --reco
 
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))

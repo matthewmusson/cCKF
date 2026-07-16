@@ -57,14 +57,13 @@ cp "${SCRIPT_DIR}/digi_and_reco.py" "${OUTPUT_DIR}/digi_and_reco.py"
 cp -r "${SCRIPT_DIR}/utils" "${OUTPUT_DIR}/utils"
 cp "${CONFIG_FILE}" "${OUTPUT_DIR}/config.yaml"
 
-shifter --image="${CCKF_IMAGE}" -- \
-    python3 "${OUTPUT_DIR}/digi_and_reco.py" \
-        --config "${OUTPUT_DIR}/config.yaml" \
-        --input-file "${INPUT_FILE}" \
-        --output "${OUTPUT_DIR}" \
-        --output-subdir results \
-        --events "${N_EVENTS}" \
-        --digi --reco
+cckf_shifter_run "${OUTPUT_DIR}/digi_and_reco.py" \
+    --config "${OUTPUT_DIR}/config.yaml" \
+    --input-file "${INPUT_FILE}" \
+    --output "${OUTPUT_DIR}" \
+    --output-subdir results \
+    --events "${N_EVENTS}" \
+    --digi --reco
 
 echo ""
 echo "========================================"

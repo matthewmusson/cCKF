@@ -10,14 +10,29 @@ export CCKF_DATA="/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatte
 export CCKF_SCRATCH="${SCRATCH}/cckf"
 export CCKF_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# The digi_and_reco.py script location inside the container
-export CCKF_DIGI_RECO="/workspace/scripts/simulation/digi_and_reco.py"
+# Inside the container: spack-installed Python 3.13 (matches ACTS bindings)
+export CCKF_PYTHON="/spack/opt/spack/linux-x86_64/python-3.13.11-awxtqzerpdzhatylv3uagd35ebciqs3o/bin/python3"
+export CCKF_ACTS_DIR="/spack/opt/spack/linux-x86_64/acts-main-udwtnx3aoh5lh6s76slc2fzc5szhwe7y"
 
 mkdir -p "${CCKF_SCRATCH}"
 
+# Helper: run a Python script inside the shifter container with correct ACTS paths.
+# The spack build puts acts module files in $CCKF_ACTS_DIR/python/ without an
+# acts/ subdirectory, so we symlink it at runtime.
+cckf_shifter_run() {
+    shifter --image="${CCKF_IMAGE}" -- bash -c "
+        rm -rf /tmp/acts_pypath && mkdir -p /tmp/acts_pypath && \
+        ln -sf ${CCKF_ACTS_DIR}/python /tmp/acts_pypath/acts && \
+        export PYTHONPATH=/tmp/acts_pypath:\${PYTHONPATH} && \
+        export LD_LIBRARY_PATH=${CCKF_ACTS_DIR}/lib:\${LD_LIBRARY_PATH} && \
+        ${CCKF_PYTHON} \"\$@\"
+    " -- "$@"
+}
+export -f cckf_shifter_run
+
 if [[ "$1" == "--test" ]]; then
     echo "Testing ACTS import inside shifter container..."
-    shifter --image="${CCKF_IMAGE}" -- python3 -c "
+    cckf_shifter_run -c "
 import acts
 print('ACTS version:', acts.__version__)
 from acts.examples.reconstruction import addCKFTracks, CkfConfig
