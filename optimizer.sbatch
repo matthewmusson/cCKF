@@ -69,7 +69,7 @@ echo "========================================"
 
 # The optimizer runs on the compute node with xopt/botorch from the venv.
 # Each trial spawns a shifter subprocess for the ACTS reconstruction.
-source /global/cfs/cdirs/m4958/usr/mussonm/venvs/cckf-opt/bin/activate
+source /global/cfs/cdirs/atlas/mussonm/venvs/cckf-opt/bin/activate
 python3 "${SCRIPT_DIR}/optimizer.py" "${ARGS[@]}"
 
 echo ""
