@@ -25,12 +25,13 @@ mkdir -p "${CCKF_SCRATCH}"
 # Python 3.13 site-packages to PYTHONPATH (pyyaml, numpy, dd4hep, podio, etc.).
 cckf_shifter_run() {
     shifter --image="${CCKF_IMAGE}" -- bash -c '
+        source '"${CCKF_ACTS_DIR}"'/bin/this_acts_withdeps.sh 2>/dev/null
         rm -rf /tmp/acts_pypath && mkdir -p /tmp/acts_pypath
         ln -sf '"${CCKF_ACTS_DIR}"'/python /tmp/acts_pypath/acts
         SPACK_PYPATH=$(find /spack/opt -path "*/python3.13/site-packages" -type d 2>/dev/null | tr "\n" ":")
         export PYTHONPATH="/tmp/acts_pypath:${SPACK_PYPATH}${PYTHONPATH:+:$PYTHONPATH}"
-        export LD_LIBRARY_PATH="/global/cfs/cdirs/atlas/mussonm/ODD_v4/install/lib:'"${CCKF_ACTS_DIR}"'/lib:${LD_LIBRARY_PATH}"
-        if [[ -n "'"${ODD_PATH:-}"'" ]]; then export ODD_PATH="'"${ODD_PATH}"'"; fi
+        export LD_LIBRARY_PATH="/global/cfs/cdirs/atlas/mussonm/ODD_v4/install/lib:${LD_LIBRARY_PATH}"
+        export ODD_PATH="'"${ODD_PATH}"'"
         '"${CCKF_PYTHON}"' "$@"
     ' -- "$@"
 }

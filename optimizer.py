@@ -179,11 +179,12 @@ def _run_trial(params: Dict[str, float]) -> Dict[str, float]:
         )
         odd_path = os.environ.get("ODD_PATH", "")
         setup_cmds = (
+            f"source {acts_dir}/bin/this_acts_withdeps.sh 2>/dev/null && "
             "rm -rf /tmp/acts_pypath && mkdir -p /tmp/acts_pypath && "
             f"ln -sf {acts_dir}/python /tmp/acts_pypath/acts && "
             'SPACK_PYPATH=$(find /spack/opt -path "*/python3.13/site-packages" -type d 2>/dev/null | tr "\\n" ":") && '
             "export PYTHONPATH=/tmp/acts_pypath:${SPACK_PYPATH}${PYTHONPATH:+:$PYTHONPATH} && "
-            f"export LD_LIBRARY_PATH=/global/cfs/cdirs/atlas/mussonm/ODD_v4/install/lib:{acts_dir}/lib:$LD_LIBRARY_PATH"
+            f"export LD_LIBRARY_PATH=/global/cfs/cdirs/atlas/mussonm/ODD_v4/install/lib:$LD_LIBRARY_PATH"
         )
         if odd_path:
             setup_cmds += f" && export ODD_PATH={odd_path}"
