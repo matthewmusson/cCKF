@@ -115,13 +115,16 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     logger = logger or setup_logging("ACTSReco")
 
     # Create sequencer — outputDir enables ACTS's built-in timing.tsv
-    s = Sequencer(
+    timing_enabled = getattr(config, "timing", True)
+    seq_kwargs = dict(
         numThreads=config.threads if config.threads is not None else 1,
         events=config.events,
         logLevel=LOG_LEVEL,
         trackFpes=False,
-        outputDir=str(output_dir),
     )
+    if timing_enabled:
+        seq_kwargs["outputDir"] = str(output_dir)
+    s = Sequencer(**seq_kwargs)
     
     # Get detector and field
     geoDir = getOpenDataDetectorDirectory()
