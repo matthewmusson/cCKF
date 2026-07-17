@@ -113,13 +113,14 @@ def parse_args():
 def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     """Configure ACTS reconstruction chain"""
     logger = logger or setup_logging("ACTSReco")
-    
-    # Create sequencer
+
+    # Create sequencer — outputDir enables ACTS's built-in timing.tsv
     s = Sequencer(
         numThreads=config.threads if config.threads is not None else 1,
         events=config.events,
         logLevel=LOG_LEVEL,
         trackFpes=False,
+        outputDir=str(output_dir),
     )
     
     # Get detector and field
@@ -541,23 +542,31 @@ def main():
         if args.output_subdir:
             output_dir = output_dir / args.output_subdir
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Set default input path if not specified
         input_path = args.input_file or output_dir / "edm4hep.root"
-        
+
         # Initialize timing recorder
         timer = TimingRecorder(output_dir)
-        
-        # Setup and run reconstruction
-        with timer.record("ACTS Reconstruction"):
+
+        # Setup (geometry, config, algorithm registration)
+        with timer.record("Setup"):
             s = setup_acts_reconstruction(input_path, output_dir, config, rnd, logger)
+
+        # Sequencer execution (ACTS also writes per-algorithm timing.tsv)
+        with timer.record("Sequencer"):
             s.run()
-        
+
+        # Parse ACTS timing.tsv and merge into our report
+        acts_timing = output_dir / "timing.tsv"
+        if acts_timing.exists():
+            timer.parse_acts_timing(acts_timing)
+
         # Write timing report
         timer.write_report()
-        
+
         logger.info("ACTS reconstruction completed successfully")
-        
+
     except Exception as e:
         logger.error(f"Fatal error in main: {str(e)}")
         logger.error(traceback.format_exc())
