@@ -1,28 +1,66 @@
 #!/usr/bin/env python3
 """Extract the first N events from an edm4hep/podio ROOT file.
 
-Run via the cCKF shifter helper (loads ACTS + edm4hep dictionaries):
+Preferred path if this keeps failing: skip subsetting and upload the full
+~6 GB file to Modal, then run_ckf with --events 8 (Sequencer only reads N
+events). Subsetting is optional storage optimization.
 
+Run via:
     cd ~/cCKF && source setup_env.sh
-    IN=/global/cfs/cdirs/m4958/data/ColliderML/simulation/full_pileup/ttbar/v1/runs/0/edm4hep.root
-    OUT=$SCRATCH/ttbar_pu_n32_edm4hep.root
     cckf_shifter_run "$(pwd)/scripts/subset_edm4hep.py" "$IN" "$OUT" -n 32
-
-Uses ACTS PodioReader/PodioWriter (same stack as digi_and_reco.py). A plain
-podio iterator fails here without edm4hep dictionaries loaded.
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 from pathlib import Path
+
+
+def _preload_edm4hep_dictionaries() -> None:
+    """Load edm4hep/podio dict libs so Frame I/O can deserialize collections."""
+    import ROOT
+
+    spack_root = Path("/spack/opt/spack/linux-x86_64")
+    include_dirs = []
+    for pattern in ("edm4hep-*/include", "podio-*/include"):
+        include_dirs.extend(str(p) for p in spack_root.glob(pattern))
+    if include_dirs:
+        existing = os.environ.get("ROOT_INCLUDE_PATH", "")
+        os.environ["ROOT_INCLUDE_PATH"] = ":".join(
+            include_dirs + ([existing] if existing else [])
+        )
+        print(f"ROOT_INCLUDE_PATH includes: {include_dirs}")
+
+    lib_globs = [
+        "/spack/opt/spack/linux-x86_64/edm4hep-*/lib/*.so*",
+        "/spack/opt/spack/linux-x86_64/podio-*/lib/*.so*",
+    ]
+    loaded = []
+    for pattern in lib_globs:
+        for lib in sorted(glob.glob(pattern)):
+            # Skip versioned duplicates like .so.1.2 when .so exists; Load is idempotent
+            if ".so." in os.path.basename(lib) and not lib.endswith(".so"):
+                continue
+            rc = ROOT.gSystem.Load(lib)
+            loaded.append((lib, rc))
+    print(f"Loaded {len(loaded)} edm4hep/podio libraries")
+
+    try:
+        import edm4hep  # noqa: F401
+
+        print("import edm4hep: OK")
+    except Exception as exc:  # pragma: no cover
+        print(f"import edm4hep failed: {exc}")
 
 
 def _subset_with_acts(
     input_path: Path, output_path: Path, n_events: int, category: str
 ) -> int:
-    """Copy frames via ACTS Sequencer (reliable on the ColliderML shifter image)."""
+    """Copy frames via ACTS Sequencer."""
+    _preload_edm4hep_dictionaries()
+
     import acts
     import acts.examples
     from acts.examples import Sequencer
@@ -44,12 +82,14 @@ def _subset_with_acts(
             category=category,
         )
     )
+    # Empty collections list: write the frame as read from PodioReader.
     s.addWriter(
         PodioWriter(
             level=acts.logging.INFO,
             inputFrame="events",
             outputPath=str(output_path),
             category=category,
+            collections=[],
         )
     )
     s.run()
@@ -59,10 +99,8 @@ def _subset_with_acts(
 def _subset_with_podio(
     input_path: Path, output_path: Path, n_events: int, category: str
 ) -> int:
-    """Fallback: direct podio I/O with edm4hep dictionaries preloaded."""
-    # Dictionaries must be loaded before reading ColliderML ROOT files,
-    # otherwise readNextEntry raises cppyy bad_function_call.
-    import edm4hep  # noqa: F401
+    """Direct podio I/O with dictionaries preloaded."""
+    _preload_edm4hep_dictionaries()
 
     try:
         from podio.reading import get_reader
@@ -86,7 +124,6 @@ def _subset_with_podio(
 
     writer = Writer(str(output_path))
     written = 0
-    # Index access avoids the broken readNextEntry iterator path.
     for i in range(n_events):
         frame = frames[i]
         writer.write_frame(frame, category)
@@ -101,6 +138,78 @@ def _subset_with_podio(
             break
     del writer
     return written
+
+
+def _subset_with_root_clone(
+    input_path: Path, output_path: Path, n_events: int, category: str
+) -> int:
+    """Byte-level TTree clone of first N entries (avoids edm4hep object model).
+
+    Best-effort: works when podio stores events as TTrees. Metadata trees are
+    copied in full. If the file uses RNTuple, this backend will fail clearly.
+    """
+    import ROOT
+
+    if output_path.exists():
+        output_path.unlink()
+
+    fin = ROOT.TFile.Open(str(input_path))
+    if not fin or fin.IsZombie():
+        raise RuntimeError(f"Could not open {input_path}")
+
+    fout = ROOT.TFile(str(output_path), "RECREATE")
+    written = 0
+
+    keys = list(fin.GetListOfKeys())
+    print(f"ROOT keys ({len(keys)}): {[k.GetName() for k in keys[:20]]}")
+
+    for key in keys:
+        name = key.GetName()
+        obj = key.ReadObj()
+        if obj is None:
+            continue
+        fout.cd()
+        if obj.InheritsFrom("TTree"):
+            tree = obj
+            n_entries = int(tree.GetEntries())
+            # Event category trees get truncated; everything else copied whole.
+            is_event = name == category or name.startswith(f"{category}/")
+            n_copy = min(n_events, n_entries) if is_event else n_entries
+            print(f"  cloning TTree '{name}': {n_copy}/{n_entries} entries")
+            new_tree = tree.CloneTree(0)
+            for i in range(n_copy):
+                tree.GetEntry(i)
+                new_tree.Fill()
+            new_tree.Write()
+            if is_event:
+                written = max(written, n_copy)
+        elif obj.InheritsFrom("TDirectory"):
+            # Recurse one level for nested event directories
+            fout.mkdir(name)
+            fout.cd(name)
+            for subkey in obj.GetListOfKeys():
+                sub = subkey.ReadObj()
+                if sub is not None and sub.InheritsFrom("TTree"):
+                    n_entries = int(sub.GetEntries())
+                    n_copy = min(n_events, n_entries)
+                    print(
+                        f"  cloning {name}/{subkey.GetName()}: "
+                        f"{n_copy}/{n_entries} entries"
+                    )
+                    new_tree = sub.CloneTree(0)
+                    for i in range(n_copy):
+                        sub.GetEntry(i)
+                        new_tree.Fill()
+                    new_tree.Write()
+                    written = max(written, n_copy)
+            fout.cd()
+        else:
+            obj.Write()
+
+    fout.Write()
+    fout.Close()
+    fin.Close()
+    return written if written > 0 else n_events
 
 
 def main() -> None:
@@ -121,9 +230,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=("acts", "podio"),
-        default="acts",
-        help="Copy backend (default: acts)",
+        choices=("acts", "podio", "root-clone"),
+        default="root-clone",
+        help="Copy backend (default: root-clone; safest without dicts)",
     )
     args = parser.parse_args()
 
@@ -137,14 +246,17 @@ def main() -> None:
     print(f"Input:  {args.input} ({args.input.stat().st_size / 1e9:.2f} GB)")
     print(f"Output: {args.output}")
     print(f"Backend={args.backend}, n_events={args.n_events}, category={args.category}")
-    print(f"ODD_PATH={os.environ.get('ODD_PATH', '<unset>')}")
 
     if args.backend == "acts":
         written = _subset_with_acts(
             args.input, args.output, args.n_events, args.category
         )
-    else:
+    elif args.backend == "podio":
         written = _subset_with_podio(
+            args.input, args.output, args.n_events, args.category
+        )
+    else:
+        written = _subset_with_root_clone(
             args.input, args.output, args.n_events, args.category
         )
 
