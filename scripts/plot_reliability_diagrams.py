@@ -2,7 +2,7 @@
 
 Reads the existing slim schema (expand_trackstates_to_chi2_rows output).
 Produces reliability diagrams (Λ_χ² vs observed true-hit fraction) stratified
-by occupancy (geometric_density) and η.
+by occupancy (n_in_ellipse: candidates within the χ² acceptance gate) and η.
 
 Usage:
     python plot_reliability_diagrams.py /path/to/run_dir/ --output-dir output/plots/
@@ -58,6 +58,11 @@ def load_data(run_dir: Path, max_events: int = 32) -> pd.DataFrame:
     df = df[df["majority_undefined"].astype(int) == 0].copy()
     # Filter: finite chi2
     df = df[np.isfinite(df["chi2_inc"]) & (df["chi2_inc"] >= 0)].copy()
+
+    # Derive n_in_ellipse: candidates passing the actual χ² gate per track state
+    df["n_in_ellipse"] = df.groupby(["event_id", "seed_id", "step_k"])[
+        "chi2_inc"
+    ].transform(lambda x: (x <= CHI2_MAX).sum())
 
     return df
 
@@ -169,8 +174,8 @@ def plot_overall(df: pd.DataFrame, lam: np.ndarray, output_dir: Path) -> dict:
 def plot_occupancy_stratified(
     df: pd.DataFrame, lam: np.ndarray, output_dir: Path
 ) -> dict:
-    """Plot 2: Occupancy-stratified reliability diagram (4 quartiles of geometric_density)."""
-    occ = df["geometric_density"].to_numpy(dtype=np.float64)
+    """Plot 2: Occupancy-stratified reliability diagram (4 quartiles of n_in_ellipse)."""
+    occ = df["n_in_ellipse"].to_numpy(dtype=np.float64)
     quartiles = np.quantile(occ, [0.25, 0.5, 0.75])
     edges = [occ.min(), quartiles[0], quartiles[1], quartiles[2], occ.max() + 1]
 
@@ -200,7 +205,7 @@ def plot_occupancy_stratified(
 
     ax.set_xlabel(r"Predicted probability ($\Lambda_{\chi^2}$)")
     ax.set_ylabel("Observed fraction (true hits)")
-    ax.set_title("Reliability by Occupancy Quartile (geometric density)")
+    ax.set_title(r"Reliability by Occupancy Quartile ($n_{\mathrm{in\,ellipse}}$)")
     ax.legend(loc="lower right", fontsize=9)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -266,7 +271,7 @@ def plot_eta_stratified(df: pd.DataFrame, lam: np.ndarray, output_dir: Path) -> 
 
 def plot_combined_panel(df: pd.DataFrame, lam: np.ndarray, output_dir: Path) -> dict:
     """Plot 4: 4×3 grid (occupancy × η)."""
-    occ = df["geometric_density"].to_numpy(dtype=np.float64)
+    occ = df["n_in_ellipse"].to_numpy(dtype=np.float64)
     eta = df["eta"].to_numpy()
     labels = df["label"].to_numpy().astype(bool)
 
@@ -328,7 +333,7 @@ def plot_combined_panel(df: pd.DataFrame, lam: np.ndarray, output_dir: Path) -> 
             ax.grid(True, alpha=0.2)
 
     fig.supxlabel(r"Predicted probability ($\Lambda_{\chi^2}$)", fontsize=12)
-    fig.suptitle("Reliability: Occupancy × η", fontsize=14, y=0.995)
+    fig.suptitle(r"Reliability: $n_{\mathrm{in\,ellipse}}$ × η", fontsize=14, y=0.995)
     plt.tight_layout()
 
     for ext in ("pdf", "png"):
@@ -360,8 +365,8 @@ def plot_lambda_histogram(df: pd.DataFrame, lam: np.ndarray, output_dir: Path) -
 
 
 def plot_occupancy_histogram(df: pd.DataFrame, output_dir: Path) -> dict:
-    """Plot 6: Diagnostic — geometric_density distribution with quartile boundaries."""
-    occ = df["geometric_density"].to_numpy(dtype=np.float64)
+    """Plot 6: Diagnostic — n_in_ellipse distribution with quartile boundaries."""
+    occ = df["n_in_ellipse"].to_numpy(dtype=np.float64)
     quartiles = np.quantile(occ, [0.25, 0.5, 0.75])
 
     fig, ax = plt.subplots(figsize=(7, 5))
@@ -385,9 +390,9 @@ def plot_occupancy_histogram(df: pd.DataFrame, output_dir: Path) -> dict:
             fontsize=9,
             color="red",
         )
-    ax.set_xlabel("geometric_density (hits within 5mm)")
+    ax.set_xlabel(r"$n_{\mathrm{in\,ellipse}}$ (candidates within $\chi^2$ gate)")
     ax.set_ylabel("Count (log scale)")
-    ax.set_title("Occupancy Proxy Distribution")
+    ax.set_title(r"Occupancy Distribution ($n_{\mathrm{in\,ellipse}}$)")
     ax.grid(True, alpha=0.3)
 
     for ext in ("pdf", "png"):
@@ -450,9 +455,9 @@ def main():
         "worst_stratum_ece": worst_ece,
         "true_hit_fraction": float(df["label"].mean()),
         "lambda_range": [float(lam.min()), float(lam.max())],
-        "geometric_density_range": [
-            int(df["geometric_density"].min()),
-            int(df["geometric_density"].max()),
+        "n_in_ellipse_range": [
+            int(df["n_in_ellipse"].min()),
+            int(df["n_in_ellipse"].max()),
         ],
         "occupancy_quartile_edges": occupancy["occupancy_quartile_edges"],
         "occupancy_strata_ece": {k: v["ece"] for k, v in occupancy["strata"].items()},
