@@ -42,6 +42,99 @@ u = acts.UnitConstants
 # LOG_LEVEL = acts.logging.ERROR
 LOG_LEVEL = acts.logging.FATAL
 
+
+def _is_disabled(value) -> bool:
+    """True for null / 'disabled' YAML terminal-cut sentinels (spec §6.4)."""
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"disabled", "null", "none"}:
+        return True
+    return False
+
+
+def _resolve_digi_config(digi_config: str | Path, geo_dir: Path) -> Path:
+    """Resolve digi JSON: absolute path, /app/configs, or ODD config/."""
+    dc = Path(digi_config)
+    candidates = [
+        dc,
+        Path("/app/configs") / dc.name,
+        Path(__file__).resolve().parent / "configs" / dc.name,
+        geo_dir / "config" / dc.name,
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    raise FileNotFoundError(
+        f"Digitization config not found: {digi_config} (tried {candidates})"
+    )
+
+
+def _add_track_writers(
+    s,
+    *,
+    name: str,
+    tracks: str,
+    output_dir: Path,
+    write_summary: bool,
+    write_finder_performance: bool,
+    write_fitter_performance: bool,
+    write_matching_details: bool,
+    write_cov_mat: bool,
+    write_states: bool = False,
+) -> None:
+    """Call addTrackWriters; enable matchingdetails on older Modal ACTS too.
+
+    Modal's spack ACTS Python helpers may lack ``writeMatchingDetails`` on
+    ``addTrackWriters``. In that case we skip the helper's finder-perf writer
+    and register ``RootTrackFinderPerformanceWriter`` ourselves.
+    """
+    import inspect
+
+    from acts.examples.root import RootTrackFinderPerformanceWriter
+
+    kwargs = dict(
+        name=name,
+        tracks=tracks,
+        outputDirCsv=None,
+        outputDirRoot=output_dir,
+        writeSummary=write_summary,
+        writeStates=write_states,
+        writeFitterPerformance=write_fitter_performance,
+        writeFinderPerformance=write_finder_performance,
+        logLevel=LOG_LEVEL,
+        writeCovMat=write_cov_mat,
+    )
+    sig = inspect.signature(addTrackWriters)
+    if "writeMatchingDetails" in sig.parameters:
+        kwargs["writeMatchingDetails"] = write_matching_details
+        addTrackWriters(s, **kwargs)
+        return
+
+    # Older helper: do not double-write performance_finding_*.root
+    need_manual_finder = write_finder_performance and write_matching_details
+    kwargs["writeFinderPerformance"] = write_finder_performance and not need_manual_finder
+    addTrackWriters(s, **kwargs)
+    if not need_manual_finder:
+        return
+
+    writer_kwargs = dict(
+        level=LOG_LEVEL,
+        inputTracks=tracks,
+        inputParticles="particles_selected",
+        inputTrackParticleMatching="track_particle_matching",
+        inputParticleTrackMatching="particle_track_matching",
+        inputParticleMeasurementsMap="particle_measurements_map",
+        filePath=str(output_dir / f"performance_finding_{name}.root"),
+        writeMatchingDetails=True,
+    )
+    try:
+        s.addWriter(RootTrackFinderPerformanceWriter(**writer_kwargs))
+    except TypeError:
+        # C++ binding also predates writeMatchingDetails — scalars only.
+        writer_kwargs.pop("writeMatchingDetails")
+        s.addWriter(RootTrackFinderPerformanceWriter(**writer_kwargs))
+
+
 def parse_args():
     """Parse command line arguments"""
     parser = create_base_parser("Digitization and reconstruction for ACTS")
@@ -115,10 +208,12 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     logger = logger or setup_logging("ACTSReco")
 
     # Create sequencer — outputDir enables ACTS's built-in timing.tsv
+    # `skip` advances past the first N events (for train/eval splits).
     timing_enabled = getattr(config, "timing", True)
     seq_kwargs = dict(
         numThreads=config.threads if config.threads is not None else 1,
         events=config.events,
+        skip=int(getattr(config, "skip", 0) or 0),
         logLevel=LOG_LEVEL,
         trackFpes=False,
     )
@@ -134,6 +229,15 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     output_simhits_root = getattr(config, "output_simhits_root", False)
     output_measurements_root = getattr(config, "output_measurements_root", False)
     output_seeds_root = getattr(config, "output_seeds_root", False)
+    output_seeds_csv = getattr(config, "output_seeds_csv", False)
+    output_digi_csv = getattr(config, "output_digi_csv", False)
+    output_simhits_csv = getattr(config, "output_simhits_csv", False)
+    write_track_states = getattr(config, "write_track_states", False)
+    # Dump P00,P01,P11 per predicted state (needed for full innovation S).
+    # Defaults on whenever trackstates are written.
+    write_predicted_cov = getattr(
+        config, "write_predicted_cov", write_track_states
+    )
     output_spacepoints_root = getattr(config, "output_spacepoints_root", False)
 
     ckf_root_output = getattr(config, "ckf_root_output", False)
@@ -143,7 +247,15 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     ckf_fitting_performance = getattr(config, "ckf_fitting_performance", False)
     ambi_finding_performance = getattr(config, "ambi_finding_performance", False)
     ambi_fitting_performance = getattr(config, "ambi_fitting_performance", False)
-    
+
+    # §4.1 / Phase 0: loc0 ±4 mm must stay off for envelope collection.
+    if getattr(config, "forbid_loc0_cut", False):
+        if getattr(config, "ckf_loc0_max", None) is not None:
+            raise ValueError(
+                "forbid_loc0_cut=True but ckf_loc0_max is set — refusing to "
+                "apply the loc0 ±4 mm track-selector cut (spec §4.1)."
+            )
+
     # Load material map
     material_config = getattr(config, 'material_config', None)
     oddMaterialMap = (
@@ -154,10 +266,10 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
 
     digi_config = getattr(config, 'digi_config', None)
     if digi_config:
-        dc_path = Path(digi_config)
-        oddDigiConfig = dc_path if dc_path.is_file() else (geoDir / f"config/{digi_config}")
+        oddDigiConfig = _resolve_digi_config(digi_config, geoDir)
     else:
         oddDigiConfig = geoDir / "config/odd-digi-smearing-config.json"
+    logger.info(f"Digitization config: {oddDigiConfig}")
 
     oddSeedingSel = geoDir / "config/odd-seeding-config.json"
     oddMaterialDeco = acts.IMaterialDecorator.fromFile(oddMaterialMap)
@@ -231,16 +343,29 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
         # ROOT output for digitized measurements (purely controlled by config flag)
         measurements_root_dir = output_dir if output_measurements_root else None
 
+        digi_csv_dir = output_dir if output_digi_csv else None
         addDigitization(
             s,
             trackingGeometry,
             field,
             digiConfigFile=oddDigiConfig,
             outputDirRoot=measurements_root_dir,
-            outputDirCsv=None,
+            outputDirCsv=digi_csv_dir,
             rnd=rnd,
             logLevel=LOG_LEVEL,
         )
+
+        if output_simhits_csv:
+            from acts.examples import CsvSimHitWriter
+
+            s.addWriter(
+                CsvSimHitWriter(
+                    level=LOG_LEVEL,
+                    inputSimHits="simhits",
+                    outputDir=str(output_dir),
+                    outputStem="simhits",
+                )
+            )
 
         def make_geoid(vol=None, lay=None):
             geoid = acts.GeometryIdentifier()
@@ -262,14 +387,17 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
             2**31 - 1,
         )
         
-        # Add digi particle selection (filters particles with sufficient measurements)
+        # Digi particle selection defines T for DM matching / performance.
+        # Default ~1 GeV matches Stage 5 Motpe. For post-hoc pT scans set
+        # truth_pt_min lower (e.g. 0.15) and enable write_matching_details.
+        truth_pt_min = float(getattr(config, "truth_pt_min", 0.999)) * u.GeV
         addDigiParticleSelection(
             s,
             ParticleSelectorConfig(
                 rho=(0.0, 24 * u.mm),
                 absZ=(0.0, 1.0 * u.m),
                 eta=(-3.0, 3.0),
-                pt=(0.999 * u.GeV, None),
+                pt=(truth_pt_min, None),
                 measurements=(6, None),
                 removeNeutral=True,
                 removeSecondaries=False,
@@ -324,10 +452,12 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
         # Add seeding
         # ROOT output for seeding performance (purely controlled by config flag)
         seeds_root_dir = output_dir if output_seeds_root else None
+        seeds_csv_dir = output_dir if output_seeds_csv else None
 
         seed_minPt = getattr(config, 'seed_minPt', 0.5) * u.GeV
         seed_impactMax = getattr(config, 'seed_impactMax', 3.0) * u.mm
         seed_maxSeedsPerSpM = getattr(config, 'num_seeds_per_spm', 5)
+        seed_sigmaScattering = getattr(config, 'seed_sigmaScattering', 5)
 
         addSeeding(
             s,
@@ -341,7 +471,7 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
                 collisionRegion=(-250 * u.mm, 250 * u.mm),
                 z=(-2000 * u.mm, 2000 * u.mm),
                 maxSeedsPerSpM=seed_maxSeedsPerSpM,
-                sigmaScattering=5,
+                sigmaScattering=seed_sigmaScattering,
                 radLengthPerSeed=0.1,
                 minPt=seed_minPt,
                 impactMax=seed_impactMax,
@@ -360,32 +490,93 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
             initialVarInflation = [1e0, 1e0, 1e0, 1e0, 1e0, 1e0],
             geoSelectionConfigFile=oddSeedingSel,
             outputDirRoot=seeds_root_dir,
+            outputDirCsv=seeds_csv_dir,
         )
+
+        # Seeding-only pilot path: skip CKF when ckf: false
+        ckf_enabled = getattr(config, "ckf", True)
+        if not ckf_enabled:
+            logger.info("CKF disabled (ckf: false) — seeding outputs only")
+            if output_particles_root or output_simhits_root:
+                add_root_writers(s, output_dir, field, config)
+            return s
 
         ckf_chi2Measurement = getattr(config, 'ckf_chi2CutOffMeasurement', 15.0)
         ckf_chi2Outlier = getattr(config, 'ckf_chi2CutOffOutlier', 25.0)
         ckf_numMeasCutOff = getattr(config, 'ckf_numMeasurementsCutOff', 1)
-        ckf_nMeasMin = getattr(config, 'ckf_nMeasurementsMin', 6)
-        ckf_maxHolesAndOutliers = getattr(config, 'ckf_maxHolesAndOutliers', 3)
-        ckf_ptMin = getattr(config, 'ckf_ptMin', 0.7) * u.GeV
+        ckf_absEtaMax = getattr(config, 'ckf_absEtaMax', 3.5)
+
+        # Terminal cuts: null/'disabled' omits the cut (spec §6.4).
+        track_sel_kwargs = dict(
+            absEta=(None, ckf_absEtaMax),
+        )
+        raw_pt = getattr(config, "ckf_ptMin", 0.7)
+        if not _is_disabled(raw_pt):
+            track_sel_kwargs["pt"] = (float(raw_pt) * u.GeV, None)
+        else:
+            logger.info("CKF ptMin DISABLED")
+
+        raw_nmeas = getattr(config, "ckf_nMeasurementsMin", 6)
+        if not _is_disabled(raw_nmeas):
+            track_sel_kwargs["nMeasurementsMin"] = int(raw_nmeas)
+        else:
+            logger.info("CKF nMeasurementsMin DISABLED")
+
+        # Hole/outlier limits: prefer explicit maxHoles/maxOutliers when set
+        # (matches full_chain_odd.py). Fall back to combined maxHolesAndOutliers.
+        raw_holes = getattr(config, "ckf_maxHoles", None)
+        raw_outliers = getattr(config, "ckf_maxOutliers", None)
+        raw_holes_out = getattr(config, "ckf_maxHolesAndOutliers", 3)
+        if not _is_disabled(raw_holes):
+            track_sel_kwargs["maxHoles"] = int(raw_holes)
+        if not _is_disabled(raw_outliers):
+            track_sel_kwargs["maxOutliers"] = int(raw_outliers)
+        if hasattr(config, "ckf_loc0_max") and config.ckf_loc0_max is not None:
+            loc0_max = float(config.ckf_loc0_max) * u.mm
+            track_sel_kwargs["loc0"] = (-loc0_max, loc0_max)
+        if (
+            "maxHoles" not in track_sel_kwargs
+            and "maxOutliers" not in track_sel_kwargs
+            and not _is_disabled(raw_holes_out)
+        ):
+            track_sel_kwargs["maxHolesAndOutliers"] = int(raw_holes_out)
+        elif (
+            "maxHoles" not in track_sel_kwargs
+            and "maxOutliers" not in track_sel_kwargs
+            and _is_disabled(raw_holes_out)
+        ):
+            logger.info("CKF maxHolesAndOutliers DISABLED")
+
+        ckf_kwargs = dict(
+            chi2CutOffMeasurement=ckf_chi2Measurement,
+            chi2CutOffOutlier=ckf_chi2Outlier,
+            numMeasurementsCutOff=ckf_numMeasCutOff,
+            seedDeduplication=True,
+            stayOnSeed=True,
+        )
+        if hasattr(config, "ckf_maxPixelHoles") and config.ckf_maxPixelHoles is not None:
+            ckf_kwargs["maxPixelHoles"] = int(config.ckf_maxPixelHoles)
+            ckf_kwargs["pixelVolumes"] = [16, 17, 18]
+        if hasattr(config, "ckf_maxStripHoles") and config.ckf_maxStripHoles is not None:
+            ckf_kwargs["maxStripHoles"] = int(config.ckf_maxStripHoles)
+            ckf_kwargs["stripVolumes"] = [23, 24, 25]
+        if getattr(config, "ckf_constrain_to_volumes", False):
+            ckf_kwargs["constrainToVolumes"] = [
+                2, 32, 4, 16, 17, 18, 20, 23, 24, 25, 26, 8, 28, 29, 30,
+            ]
+
+        if getattr(config, "log_prune_reasons", False):
+            logger.info(
+                "log_prune_reasons=True — branch-cap prunes must be recorded via "
+                "DecisionLogWriter (utils.decision_log); ACTS CKF has no native hook yet"
+            )
 
         addCKFTracks(
             s,
             trackingGeometry,
             field,
-            trackSelectorConfig=TrackSelectorConfig(
-                pt=(ckf_ptMin, None),
-                absEta=(None, 3.5),
-                nMeasurementsMin=ckf_nMeasMin,
-                maxHolesAndOutliers=ckf_maxHolesAndOutliers,
-            ),
-            ckfConfig=CkfConfig(
-                chi2CutOffMeasurement=ckf_chi2Measurement,
-                chi2CutOffOutlier=ckf_chi2Outlier,
-                numMeasurementsCutOff=ckf_numMeasCutOff,
-                seedDeduplication=True,
-                stayOnSeed=True,
-            ),
+            trackSelectorConfig=TrackSelectorConfig(**track_sel_kwargs),
+            ckfConfig=CkfConfig(**ckf_kwargs),
             twoWay=True,
             # Disable internal ROOT/CSV writers; we add them explicitly below
             outputDirRoot=None,
@@ -396,26 +587,59 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
         )
 
         # Optional ROOT output & performance writers for CKF stage
-        if ckf_root_output or ckf_finding_performance or ckf_fitting_performance:
-            addTrackWriters(
+        write_matching_details = getattr(config, "write_matching_details", False)
+        write_track_summary = bool(
+            ckf_root_output or getattr(config, "write_track_summary", False)
+        )
+        if (
+            ckf_root_output
+            or ckf_finding_performance
+            or ckf_fitting_performance
+            or write_track_states
+        ):
+            _add_track_writers(
                 s,
                 name="ckf",
                 tracks="tracks",  # CKF alias
-                outputDirCsv=None,
-                outputDirRoot=output_dir,
-                writeSummary=ckf_root_output,
-                writeStates=False,
-                writeFitterPerformance=ckf_fitting_performance,
-                writeFinderPerformance=ckf_finding_performance,
-                logLevel=LOG_LEVEL,
-                writeCovMat=getattr(config, "performance_metrics", False),
+                output_dir=output_dir,
+                write_summary=write_track_summary and ckf_finding_performance,
+                write_finder_performance=ckf_finding_performance,
+                write_fitter_performance=ckf_fitting_performance,
+                write_matching_details=write_matching_details,
+                write_cov_mat=getattr(config, "performance_metrics", False),
+                write_states=write_track_states,
             )
+
+        if write_predicted_cov:
+            if hasattr(acts.examples, "ReadDataHandle"):
+                from utils.predicted_cov_writer import PredictedCovWriter
+
+                s.addAlgorithm(
+                    PredictedCovWriter(
+                        output_dir=output_dir,
+                        tracks="tracks",
+                        level=LOG_LEVEL,
+                    )
+                )
+                logger.info(
+                    "PredictedCovWriter enabled — writing P00,P01,P11 per CKF state"
+                )
+            else:
+                logger.warning(
+                    "write_predicted_cov=True but this ACTS build has no "
+                    "ReadDataHandle — skipping PredictedCovWriter. Use "
+                    "diagnose_chi2_from_trackstates.py on RootTrackStatesWriter "
+                    "dumps for the diagonal-approx confound check, or upgrade ACTS."
+                )
         
-        # Add ambiguity resolution
+        # Add ambiguity resolution (skip when ambi: false — e.g. chi²-calib dumps)
+        ambi_enabled = getattr(config, "ambi", True)
         ambi_solver = getattr(config, "ambi_solver", "greedy")  # Default greedy
         ambi_config = getattr(config, "ambi_config", None)
-        
-        if ambi_solver == "ML":
+
+        if not ambi_enabled:
+            logger.info("Ambiguity resolution disabled (ambi: false)")
+        elif ambi_solver == "ML":
             addAmbiguityResolutionML(
                 s,
                 config=AmbiguityResolutionMLConfig(
@@ -450,12 +674,19 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
             )
             ambi_name = "ambi_scorebased"
         else:
+            # Ambiguity still needs a floor; fall back to 7 if CKF terminal cut disabled.
+            _nmeas_fallback = getattr(config, "ckf_nMeasurementsMin", 7)
+            if _is_disabled(_nmeas_fallback):
+                _nmeas_fallback = 7
+            ambi_nMeasMin = int(
+                getattr(config, "ambi_nMeasurementsMin", _nmeas_fallback)
+            )
             addAmbiguityResolution(
                 s,
                 config=AmbiguityResolutionConfig(
                     maximumSharedHits=3,
                     maximumIterations=1000000,
-                    nMeasurementsMin=6,
+                    nMeasurementsMin=ambi_nMeasMin,
                 ),
                 # Disable internal ROOT writers; handled explicitly below
                 outputDirRoot=None,
@@ -467,19 +698,34 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
             ambi_name = "ambi"
 
         # Optional ROOT output & performance writers for ambiguity-resolved tracks
-        if ambi_root_output or ambi_finding_performance or ambi_fitting_performance:
-            addTrackWriters(
+        if ambi_enabled and (
+            ambi_root_output or ambi_finding_performance or ambi_fitting_performance
+        ):
+            _add_track_writers(
                 s,
                 name=ambi_name,
                 tracks="tracks",  # ambiguity-resolved alias
-                outputDirCsv=None,
-                outputDirRoot=output_dir,
-                writeSummary=ambi_root_output,
-                writeStates=False,
-                writeFitterPerformance=ambi_fitting_performance,
-                writeFinderPerformance=ambi_finding_performance,
-                logLevel=LOG_LEVEL,
-                writeCovMat=getattr(config, "performance_metrics", False),
+                output_dir=output_dir,
+                write_summary=bool(
+                    ambi_root_output or getattr(config, "write_track_summary", False)
+                ),
+                write_finder_performance=ambi_finding_performance,
+                write_fitter_performance=ambi_fitting_performance,
+                write_matching_details=getattr(config, "write_matching_details", False),
+                write_cov_mat=getattr(config, "performance_metrics", False),
+            )
+
+        # Persist particles_selected (true pT + barcode) for post-hoc ε(pT_cut)
+        if getattr(config, "write_particles_selected", False):
+            from acts.examples.root import RootParticleWriter
+
+            s.addWriter(
+                RootParticleWriter(
+                    level=LOG_LEVEL,
+                    inputParticles="particles_selected",
+                    filePath=str(output_dir / "particles_selected.root"),
+                    treeName="particles",
+                )
             )
         
         # Add vertex fitting

@@ -1,0 +1,56 @@
+# Envelope collection config — cCKF Specification §6.2
+#
+# Elementwise-loosest across Tight / Medium / Fast operating points so that
+# any tighter config's rows are recoverable by offline filtering.
+#
+# Terminal cuts (nMeasurementMin, maxHolesAndOutliers, CKF ptMin) are DISABLED
+# (§6.4). Branch cap retained at 5; every prune must be logged with reason.
+#
+# loc0 ±4 mm cut: ABSENT (forbid_loc0_cut). Do not add ckf_loc0_max.
+#
+# window_n = 10 is a PILOT collection value (§6.3 OPEN). Freeze into
+# env_config_hash only after the window-failure curve is read. Not an ACTS
+# chi2 cut — it defines the label-generating MDP action space.
+
+events: 2
+skip: 0
+threads: 8
+digi: true
+reco: true
+ckf: true
+
+# Geometric digitization — required for cluster size/charge/moments (§6.6.1).
+# Smearing digi (odd-digi-smearing-config.json) does NOT populate these.
+digi_config: odd-digi-geometric-config.json
+output_digi_csv: true
+output_seeds_csv: true
+
+# Seeding — elementwise loosest across op points
+num_seeds_per_spm: 46          # max (Medium)
+seed_minPt: 0.587              # min (Medium), GeV
+seed_impactMax: 2.86           # max (Medium), mm
+seed_sigmaScattering: 2.95     # max (Medium)
+
+# CKF measurement selector — loosest following knobs
+ckf_chi2CutOffMeasurement: 16.26   # max (Tight)
+ckf_chi2CutOffOutlier: 35.75       # max (Medium)
+ckf_numMeasurementsCutOff: 5       # max (Fast) — branch cap retained
+
+# Terminal cuts DISABLED (§6.4) — null means omit from TrackSelector
+ckf_nMeasurementsMin: null
+ckf_maxHolesAndOutliers: null
+ckf_maxHoles: null
+ckf_maxOutliers: null
+ckf_ptMin: null
+
+# Safety: never apply the full_chain_odd.py loc0 ±4 mm cut (§4.1)
+forbid_loc0_cut: true
+
+# Ambiguity / performance writers (pilot: keep ambi light)
+ambi_solver: greedy
+ckf_finding_performance: false
+ambi_finding_performance: false
+
+# Label-generating environment constants (hashed into env_config_hash)
+window_n: 10
+log_prune_reasons: true

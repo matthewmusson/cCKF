@@ -1,0 +1,9 @@
+{
+  "description": "Frozen event split for cCKF gate training. Do not modify.",
+  "source_file": "ColliderML full_pileup ttbar edm4hep (64-event Modal subset)",
+  "train_val_cal_events": [0, 32],
+  "held_out_test_events": [32, 64],
+  "train_val_cal_split_note": "~24 / 4 / 4 within [0, 32); freeze by event ID before any gate training run",
+  "held_out_opened_once": false,
+  "spec_section": "6.1"
+}

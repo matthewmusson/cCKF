@@ -1,0 +1,34 @@
+# ACTS ODD defaults with impactMax clipped into the Stage 5 Optuna box.
+# Identical to acts_odd_defaults.yaml except seed_impactMax: 20 → 5 mm
+# (upper edge of our [0.5, 5.0] search range). Fairer comparison vs Optuna.
+
+events: 32
+skip: 32
+threads: 8
+digi: true
+reco: true
+
+num_seeds_per_spm: 5
+seed_minPt: 0.4
+seed_impactMax: 5.0
+seed_sigmaScattering: 5.0
+
+ckf_chi2CutOffMeasurement: 15.0
+ckf_chi2CutOffOutlier: 25.0
+ckf_numMeasurementsCutOff: 2
+
+ckf_nMeasurementsMin: 7
+ckf_maxHoles: 2
+ckf_maxOutliers: 2
+ckf_ptMin: 1.0
+ckf_absEtaMax: 3.0
+
+ckf_maxPixelHoles: 1
+ckf_maxStripHoles: 2
+ckf_constrain_to_volumes: true
+
+ambi_nMeasurementsMin: 7
+ambi_solver: greedy
+
+ckf_finding_performance: true
+ambi_finding_performance: true

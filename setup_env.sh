@@ -14,8 +14,9 @@ export CCKF_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CCKF_PYTHON="/spack/opt/spack/linux-x86_64/python-3.13.11-awxtqzerpdzhatylv3uagd35ebciqs3o/bin/python3"
 export CCKF_ACTS_DIR="/spack/opt/spack/linux-x86_64/acts-main-udwtnx3aoh5lh6s76slc2fzc5szhwe7y"
 
-# ODD geometry: built from OpenDataDetector/OpenDataDetector v4.0.4
-export ODD_PATH="/global/cfs/cdirs/atlas/mussonm/ODD_v4/install/share/OpenDataDetector"
+# ODD geometry: built from OpenDataDetector/OpenDataDetector v5.0.0
+# (matches the version used to generate ColliderML datasets)
+export ODD_PATH="/global/cfs/cdirs/atlas/mussonm/ODD_v5/install/share/OpenDataDetector"
 
 mkdir -p "${CCKF_SCRATCH}"
 
@@ -30,7 +31,7 @@ cckf_shifter_run() {
         ln -sf '"${CCKF_ACTS_DIR}"'/python /tmp/acts_pypath/acts
         SPACK_PYPATH=$(find /spack/opt -path "*/python3.13/site-packages" -type d 2>/dev/null | tr "\n" ":")
         export PYTHONPATH="/tmp/acts_pypath:${SPACK_PYPATH}${PYTHONPATH:+:$PYTHONPATH}"
-        export LD_LIBRARY_PATH="/global/cfs/cdirs/atlas/mussonm/ODD_v4/install/lib:${LD_LIBRARY_PATH}"
+        export LD_LIBRARY_PATH="/global/cfs/cdirs/atlas/mussonm/ODD_v5/install/lib:${LD_LIBRARY_PATH}"
         export ODD_PATH="'"${ODD_PATH}"'"
         '"${CCKF_PYTHON}"' "$@"
     ' -- "$@"

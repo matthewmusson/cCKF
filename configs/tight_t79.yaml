@@ -1,0 +1,34 @@
+# Tight operating point — joint MOTPE trial 79 (cCKF Specification §4.2).
+# Used for pilot check 2: seed recovery under offline filtering of envelope.
+
+events: 2
+skip: 0
+threads: 8
+digi: true
+reco: true
+ckf: true
+
+digi_config: odd-digi-geometric-config.json
+output_digi_csv: true
+output_seeds_csv: true
+
+num_seeds_per_spm: 16
+seed_minPt: 0.6876416997703818
+seed_impactMax: 2.5032955914538624
+seed_sigmaScattering: 2.3396240725684057
+
+ckf_chi2CutOffMeasurement: 16.255929655134203
+ckf_chi2CutOffOutlier: 20.657664491030744
+ckf_numMeasurementsCutOff: 3
+ckf_nMeasurementsMin: 9
+ckf_maxHolesAndOutliers: 1
+ckf_ptMin: 0.4597609399152028
+
+forbid_loc0_cut: true
+
+ambi_solver: greedy
+ckf_finding_performance: false
+ambi_finding_performance: false
+
+window_n: 10
+log_prune_reasons: true

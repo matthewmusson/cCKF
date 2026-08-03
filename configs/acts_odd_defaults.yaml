@@ -1,0 +1,47 @@
+# ACTS ODD full_chain_odd.py --ttbar defaults.
+# Source: acts/Examples/Scripts/Python/full_chain_odd.py +
+#         GridTripletSeedingAlgorithm.hpp C++ seeding defaults.
+#
+# Event split (64-event ColliderML ttbar μ=200 file currently on Modal):
+#   NOTE: Modal volume has 64 events (not 128). Split is therefore 32/32.
+#   optimize/test: events [0, 32)  — skip=0,  events=32
+#   evaluation:    events [32, 64) — skip=32, events=32
+
+events: 32
+skip: 32
+threads: 8
+digi: true
+reco: true
+
+# Seeding (C++ GridTripletSeedingAlgorithm defaults)
+num_seeds_per_spm: 5
+seed_minPt: 0.4
+seed_impactMax: 20.0
+seed_sigmaScattering: 5.0
+
+# CKF measurement selector (full_chain_odd.py)
+ckf_chi2CutOffMeasurement: 15.0
+ckf_chi2CutOffOutlier: 25.0
+ckf_numMeasurementsCutOff: 2
+
+# Track selector (full_chain_odd.py --ttbar)
+ckf_nMeasurementsMin: 7
+ckf_maxHoles: 2
+ckf_maxOutliers: 2
+ckf_ptMin: 1.0
+ckf_absEtaMax: 3.0
+# loc0 cut intentionally omitted — full_chain_odd.py sets ±4 mm, but we
+# want the defaults baseline without that track-selector gate.
+
+# Per-volume hole caps (full_chain_odd.py CkfConfig)
+ckf_maxPixelHoles: 1
+ckf_maxStripHoles: 2
+ckf_constrain_to_volumes: true
+
+# Ambiguity resolution
+ambi_nMeasurementsMin: 7
+ambi_solver: greedy
+
+# Performance writers
+ckf_finding_performance: true
+ambi_finding_performance: true

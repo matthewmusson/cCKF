@@ -1,0 +1,84 @@
+# Multi-stage: copy spack from the ACTS container to a clean Ubuntu base.
+# The ghcr.io container has issues with Modal's gVisor runtime, so we
+# extract just the spack tree into a standard Ubuntu image.
+
+FROM ghcr.io/opendatadetector/sw:0.2.2_linux-ubuntu24.04_gcc-13.3.0 AS acts-source
+
+# Build ODD v5.0.0 in the source container (has all build deps)
+ENV ACTS_DIR=/spack/opt/spack/linux-x86_64/acts-main-udwtnx3aoh5lh6s76slc2fzc5szhwe7y
+RUN bash -c '\
+    source ${ACTS_DIR}/bin/this_acts_withdeps.sh 2>/dev/null && \
+    cd /opt && \
+    GIT_LFS_SKIP_SMUDGE=1 git clone --branch v5.0.0 --depth 1 \
+        https://github.com/OpenDataDetector/OpenDataDetector.git ODD_v5 && \
+    cd ODD_v5 && mkdir build && cd build && \
+    CMAKE_PREFIX_PATH=$(ls -d /spack/opt/spack/linux-x86_64/*/ | tr "\n" ";") && \
+    cmake .. \
+        -DCMAKE_INSTALL_PREFIX=/opt/ODD_v5/install \
+        -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}" \
+        -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && \
+    make install && \
+    cp -r /opt/ODD_v5/config /opt/ODD_v5/install/share/OpenDataDetector/config && \
+    rm -rf /opt/ODD_v5/build /opt/ODD_v5/.git'
+
+# Capture env vars needed at runtime
+RUN bash -c '\
+    source ${ACTS_DIR}/bin/this_acts_withdeps.sh 2>/dev/null && \
+    echo "#!/bin/bash" > /etc/acts_env.sh && \
+    for var in LD_LIBRARY_PATH ROOT_INCLUDE_PATH PYTHONPATH \
+               ROOTSYS ROOT_DIR \
+               DD4hepINSTALL DD4hep_DIR DD4hep_ROOT \
+               ROOT_DIR PODIO_DIR podio_DIR EDM4HEP_DIR edm4hep_DIR \
+               Geant4_DIR G4ENSDFSTATEDATA G4LEVELGAMMADATA G4LEDATA \
+               G4PARTICLEXSDATA G4SAIDXSDATA G4NEUTRONHPDATA G4PIIDATA \
+               G4RADIOACTIVEDATA G4ABLADATA G4INCLDATA G4REALSURFACEDATA; do \
+        val="${!var}"; \
+        if [ -n "$val" ]; then \
+            echo "export ${var}=\"${val}\"" >> /etc/acts_env.sh; \
+        fi; \
+    done && \
+    # Ensure PyROOT is importable under Modal'\''s separate Python \
+    ROOT_LIB=$(ls -d /spack/opt/spack/linux-x86_64/root-*/lib 2>/dev/null | head -1) && \
+    if [ -n "$ROOT_LIB" ]; then \
+        echo "export PYTHONPATH=\"${ROOT_LIB}:\${PYTHONPATH}\"" >> /etc/acts_env.sh; \
+        echo "export ROOTSYS=\"$(dirname $ROOT_LIB)\"" >> /etc/acts_env.sh; \
+    fi'
+
+# Create acts symlink and spack paths index
+RUN mkdir -p /opt/acts_pypath && \
+    ln -sf ${ACTS_DIR}/python /opt/acts_pypath/acts && \
+    find /spack/opt -path "*/python3.13/site-packages" -type d 2>/dev/null \
+        > /etc/spack_site_packages
+
+
+# --- Runtime image: clean Ubuntu 24.04 ---
+FROM ubuntu:24.04
+
+# System libs needed by spack binaries (libstdc++, X11 for ROOT, etc.).
+# g++ provides libstdc++ headers so ROOT's cling can resolve STL includes.
+RUN apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        g++ \
+        libstdc++6 libgcc-s1 libc6 libexpat1 libz3-4 zlib1g \
+        libxpm4 libxext6 libx11-6 libxft2 libfontconfig1 libfreetype6 \
+        libssl3t64 libffi8 libsqlite3-0 libreadline8t64 libbz2-1.0 \
+        liblzma5 libncurses6 libgfortran5 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Copy spack tree (ACTS, DD4hep, Geant4, ROOT, Python, etc.)
+COPY --from=acts-source /spack /spack
+
+# Copy ODD build
+COPY --from=acts-source /opt/ODD_v5/install /opt/ODD_v5/install
+
+# Copy env files and acts symlink
+COPY --from=acts-source /etc/acts_env.sh /etc/acts_env.sh
+COPY --from=acts-source /etc/spack_site_packages /etc/spack_site_packages
+COPY --from=acts-source /opt/acts_pypath /opt/acts_pypath
+
+ENV ODD_PATH=/opt/ODD_v5/install/share/OpenDataDetector
+ENV LD_LIBRARY_PATH=/opt/ODD_v5/install/lib
+
+RUN mkdir -p /app
+WORKDIR /app
