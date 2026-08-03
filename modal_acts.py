@@ -3777,6 +3777,176 @@ def chi2_gate_calib(
     return report
 
 
+@app.function(
+    image=image,
+    volumes={DATA_PATH: data_vol},
+    cpu=8,
+    memory=65536,
+    timeout=7200,
+)
+def collect_calib_medium_event(event_id: int, run_id: str):
+    """Medium op-point CKF + expand to all-candidates slim Parquet.
+
+    Same pipeline as collect_chi2_calib_event but uses medium_t70 config
+    (spec §3.2: chi2_meas=12.04, nMeasMin=7, maxHolesAndOutliers=1).
+    Events must be in [0, 32).
+    """
+    import os
+    from pathlib import Path
+
+    if not (0 <= event_id < 32):
+        raise ValueError(
+            f"event_id={event_id} outside train/cal range [0,32)"
+        )
+
+    out_dir = f"{DATA_PATH}/results/{run_id}/event_{event_id:03d}"
+    parquet_path = Path(out_dir) / "chi2_calib_rows.parquet"
+    if parquet_path.exists() and parquet_path.stat().st_size > 1000:
+        import pyarrow.parquet as pq
+
+        n_rows = pq.read_metadata(parquet_path).num_rows
+        size_mb = parquet_path.stat().st_size / 1e6
+        print(
+            f"event {event_id}: reusing existing parquet "
+            f"({n_rows} rows, {size_mb:.1f} MB)"
+        )
+        return {
+            "event_id": event_id,
+            "n_rows": int(n_rows),
+            "size_mb": size_mb,
+            "path": str(parquet_path),
+        }
+
+    trackstates = Path(out_dir) / "trackstates_ckf.root"
+    if _trackstates_usable(trackstates):
+        print(f"event {event_id}: reusing existing {trackstates}")
+    else:
+        if trackstates.exists():
+            try:
+                os.remove(trackstates)
+            except OSError:
+                pass
+        overrides = {
+            "write_track_states": True,
+            "write_predicted_cov": True,
+            "output_digi_csv": True,
+            "output_simhits_csv": True,
+            "ckf": True,
+            "ambi": False,
+            "ckf_finding_performance": False,
+            "ambi_finding_performance": False,
+            "forbid_loc0_cut": True,
+            "events": 1,
+            "skip": event_id,
+            "threads": 8,
+        }
+        _run_pipeline_to_dir(
+            config_name="medium_t70",
+            output_dir=out_dir,
+            events=1,
+            skip=event_id,
+            input_file=None,
+            overrides=overrides,
+        )
+
+    # Expand: find all candidates in window, recompute chi2, assign labels
+    result = _expand_chi2_event_dir(event_id, out_dir)
+    data_vol.commit()
+    return result
+
+
+@app.function(
+    image=image,
+    volumes={DATA_PATH: data_vol},
+    cpu=1,
+    memory=2048,
+    timeout=86400,
+)
+def run_calib_medium_orchestrator(
+    n_events: int = 32,
+    max_parallel: int = 4,
+    resume_run_id: str = "",
+):
+    """Orchestrate Medium CKF + expansion on [0, n_events) for reliability diagrams."""
+    import time
+
+    if n_events > 32:
+        raise ValueError("n_events > 32 would enter the sealed held-out range")
+    run_id = resume_run_id or f"calib_medium_{int(time.time())}"
+    print(f"run_id={run_id} events=[0,{n_events}) max_parallel={max_parallel}")
+    print("config=medium_t70 (chi2_meas=12.04, nMeasMin=7, maxHO=1)")
+
+    results = []
+    failures = []
+    for wave_start in range(0, n_events, max_parallel):
+        wave = list(range(wave_start, min(wave_start + max_parallel, n_events)))
+        print(f"Spawning events {wave} ...")
+        handles = [
+            (i, collect_calib_medium_event.spawn(event_id=i, run_id=run_id))
+            for i in wave
+        ]
+        for i, h in handles:
+            try:
+                r = h.get()
+                print(
+                    f"  event {r['event_id']}: {r['n_rows']} rows "
+                    f"({r['size_mb']:.1f} MB)"
+                )
+                results.append(r)
+            except Exception as exc:
+                print(f"  EVENT {i} FAILED: {exc}")
+                failures.append({"event_id": i, "error": str(exc)})
+
+    if failures:
+        print(f"Retrying {len(failures)} failed events once ...")
+        for item in list(failures):
+            i = item["event_id"]
+            try:
+                r = collect_calib_medium_event.remote(event_id=i, run_id=run_id)
+                results.append(r)
+                failures.remove(item)
+            except Exception as exc:
+                item["error"] = str(exc)
+
+    if failures:
+        raise RuntimeError(f"{len(failures)} events still failed: {failures}")
+
+    total_rows = sum(r["n_rows"] for r in results)
+    total_mb = sum(r["size_mb"] for r in results)
+    print(
+        f"Collection done: {total_rows} rows, {total_mb:.1f} MB across "
+        f"{len(results)} events"
+    )
+    return {
+        "run_id": run_id,
+        "n_events": len(results),
+        "total_rows": total_rows,
+        "total_mb": total_mb,
+    }
+
+
+@app.local_entrypoint()
+def calib_medium(
+    n_events: int = 32,
+    max_parallel: int = 4,
+    smoke: bool = False,
+    resume_run_id: str = "",
+):
+    """Collect Medium CKF all-candidates data for reliability diagrams.
+
+    Usage: modal run --detach modal_acts.py::calib_medium --n-events 32
+    """
+    if smoke:
+        n_events = 2
+    report = run_calib_medium_orchestrator.remote(
+        n_events=n_events,
+        max_parallel=max_parallel,
+        resume_run_id=resume_run_id,
+    )
+    print(report)
+    return report
+
+
 @app.local_entrypoint()
 def expand_and_analyze_chi2_calib(
     run_id: str,

@@ -1,0 +1,47 @@
+# Medium operating point — Optuna trial 70 (highest ε_DM = 96.23%)
+# Used for Phase 1 reliability diagram calibration (spec §3.2)
+#
+# Unlike envelope.yaml, this applies the Medium's own terminal cuts
+# (nMeasurementsMin=7, maxHolesAndOutliers=1, ptMin=0.594) so that
+# the reliability diagram reflects the actual Medium CKF behavior.
+
+events: 1
+skip: 0
+threads: 8
+digi: true
+reco: true
+ckf: true
+
+# Geometric digi — required for digi CSV (measurements + simhit map)
+digi_config: odd-digi-geometric-config.json
+output_digi_csv: true
+output_simhits_csv: true
+output_seeds_csv: false
+
+# Seeding (Medium trial 70 values)
+num_seeds_per_spm: 46
+seed_minPt: 0.587
+seed_impactMax: 2.86
+seed_sigmaScattering: 2.95
+
+# CKF measurement selector
+ckf_chi2CutOffMeasurement: 12.04
+ckf_chi2CutOffOutlier: 35.75
+ckf_numMeasurementsCutOff: 2
+
+# Track selection / terminal cuts (Medium-specific)
+ckf_nMeasurementsMin: 7
+ckf_maxHolesAndOutliers: 1
+ckf_ptMin: 0.594
+
+# Enable trackstates + predicted covariance for expansion
+write_track_states: true
+write_predicted_cov: true
+
+# No loc0 cut (same convention as envelope)
+forbid_loc0_cut: true
+
+# No ambiguity resolution (want raw CKF branches)
+ambi: false
+ckf_finding_performance: false
+ambi_finding_performance: false
