@@ -50,6 +50,8 @@ EXPECTED: list[BranchSpec] = [
     BranchSpec("S00_prt", "A", finite_where="any"),
     BranchSpec("S01_prt", "A", finite_where="any"),
     BranchSpec("S11_prt", "A", finite_where="any"),
+    # Patch B: the CKF stamps every state, so this must be finite everywhere.
+    BranchSpec("pathInX0_interval", "B", finite_where="all"),
 ]
 
 # Branch known to be state-aligned in stock ACTS; used as the reference length.
