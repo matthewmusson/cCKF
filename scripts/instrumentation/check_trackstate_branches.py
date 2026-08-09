@@ -52,6 +52,16 @@ EXPECTED: list[BranchSpec] = [
     BranchSpec("S11_prt", "A", finite_where="any"),
     # Patch B: the CKF stamps every state, so this must be finite everywhere.
     BranchSpec("pathInX0_interval", "B", finite_where="all"),
+    # Patch C: NaN on hole states (no cluster), so only "any".
+    BranchSpec("clus_size_u", "C", finite_where="any"),
+    BranchSpec("clus_size_v", "C", finite_where="any"),
+    BranchSpec("clus_qtot", "C", finite_where="any"),
+    BranchSpec("clus_sigma_uu", "C", finite_where="any"),
+    BranchSpec("clus_sigma_uv", "C", finite_where="any"),
+    BranchSpec("clus_sigma_vv", "C", finite_where="any"),
+    # Patch C: angles need only a predicted state, which holes have too.
+    BranchSpec("alpha_u", "C", finite_where="all"),
+    BranchSpec("alpha_v", "C", finite_where="all"),
 ]
 
 # Branch known to be state-aligned in stock ACTS; used as the reference length.
