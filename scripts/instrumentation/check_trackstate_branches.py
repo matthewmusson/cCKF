@@ -140,6 +140,64 @@ def check_file(
     return failures
 
 
+def compare_baseline(
+    patched: str,
+    baseline: str,
+    tree: str = "trackstates",
+) -> list[str]:
+    """Assert the patches did not change track finding.
+
+    Compares track count, per-track state count, and the chi2 distribution
+    between a patched and an unpatched run of the same event.
+
+    Parameters
+    ----------
+    patched
+        Path to the trackstates file from the patched build.
+    baseline
+        Path to the trackstates file from the unpatched build.
+    tree
+        TTree name.
+
+    Returns
+    -------
+    list of str
+        Failure messages; empty means the patches are a numerical no-op.
+    """
+    failures: list[str] = []
+
+    with uproot.open(f"{patched}:{tree}") as tp, uproot.open(
+        f"{baseline}:{tree}"
+    ) as tb:
+        cols = ["volume_id", "chi2"]
+        ap = tp.arrays(cols)
+        ab = tb.arrays(cols)
+
+        if len(ap["chi2"]) != len(ab["chi2"]):
+            failures.append(
+                f"track count changed: {len(ab['chi2'])} -> {len(ap['chi2'])}"
+            )
+            return failures
+
+        np_states = np.asarray(ak.num(ap["volume_id"], axis=1))
+        nb_states = np.asarray(ak.num(ab["volume_id"], axis=1))
+        if not np.array_equal(np_states, nb_states):
+            failures.append(
+                f"per-track state counts changed on "
+                f"{int((np_states != nb_states).sum())} tracks"
+            )
+
+        cp = np.asarray(ak.flatten(ap["chi2"]))
+        cb = np.asarray(ak.flatten(ab["chi2"]))
+        if cp.shape != cb.shape:
+            failures.append(f"chi2 length changed: {cb.shape} -> {cp.shape}")
+        elif not np.allclose(cp, cb, rtol=0, atol=0, equal_nan=True):
+            n = int((cp != cb).sum())
+            failures.append(f"chi2 changed on {n} of {cp.size} states")
+
+    return failures
+
+
 def main() -> int:
     """CLI entry point. Returns a process exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -152,9 +210,17 @@ def main() -> int:
         choices=["A", "B", "C"],
         help="which patches' branches to require",
     )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        help="unpatched trackstates file; if given, assert the patches "
+        "did not change track finding",
+    )
     args = parser.parse_args()
 
     failures = check_file(args.path, args.tree, tuple(args.patches))
+    if args.baseline:
+        failures += compare_baseline(args.path, args.baseline, args.tree)
     if failures:
         print(f"FAIL ({len(failures)} problem(s)) in {args.path}")
         for f in failures:
