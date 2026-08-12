@@ -37,10 +37,6 @@ Known gaps (see task-2-report.md for the full list)
   available from CSV/ROOT alone. Left as NaN, matching the precedent set in
   ``scripts/expand_pilot.py``.
 - ``dead_module_flag`` has no data source yet; always 0.
-- ``is_barrel`` in sensor_props is not derivable from the digitization config
-  (which is keyed only by volume, not by barrel/endcap region) without the
-  full ACTS tracking geometry. Left as NaN unless the caller supplies an
-  explicit volume -> is_barrel map.
 - ``majority_true_hit_on_surface`` is computed from simhit presence, which
   conflates "genuine hole" and "window failure" (spec Sec 7.4). Splitting
   them requires per-measurement geometry_id inside compute_truth_labels,
@@ -99,6 +95,7 @@ _SENSITIVE_BITS = 0xFFFFF
 # scripts/expand_pilot.py). NOT independently re-verified against the ACTS
 # tracking geometry for this task -- treat as a documented assumption.
 PIXEL_VOLUMES_DEFAULT = frozenset({16, 17, 18})
+BARREL_VOLUMES_DEFAULT = frozenset({16, 23, 28})
 
 # ROOT trackstate branches this module reads. Missing branches are dropped
 # with a warning rather than raising, so the pipeline degrades gracefully on
@@ -154,6 +151,7 @@ SCHEMA_COLUMNS = [
     "step_k",
     "layer_id",
     "surface_id",
+    "volume_id",
     "state_l0",
     "state_l1",
     "state_phi",
@@ -166,6 +164,9 @@ SCHEMA_COLUMNS = [
     "cand_hit_id",
     "residual_l0",
     "residual_l1",
+    "S00",
+    "S01",
+    "S11",
     "chi2_inc",
     "clus_s_u",
     "clus_s_v",
@@ -1049,16 +1050,18 @@ def compute_sensor_props(
     pitch_v = np.full(n, np.nan)
     thickness = np.full(n, np.nan)
     if pitch_table:
-        for i, v in enumerate(vol):
-            props = pitch_table.get(int(v))
-            if props is not None:
-                pitch_u[i] = props.get("pitch_u", np.nan)
-                pitch_v[i] = props.get("pitch_v", np.nan)
-                thickness[i] = props.get("thickness", np.nan)
+        for v_int, props in pitch_table.items():
+            mask = vol == v_int
+            pitch_u[mask] = props.get("pitch_u", np.nan)
+            pitch_v[mask] = props.get("pitch_v", np.nan)
+            thickness[mask] = props.get("thickness", np.nan)
 
     is_pixel = np.isin(vol, list(pixel_volumes)).astype(np.int8)
     if barrel_volumes is not None:
-        is_barrel = np.isin(vol, list(barrel_volumes)).astype(np.float64)
+        known = vol > 0
+        is_barrel = np.full(n, np.nan)
+        is_barrel[known] = 0.0
+        is_barrel[np.isin(vol, list(barrel_volumes))] = 1.0
     else:
         is_barrel = np.full(n, np.nan)
 
@@ -1353,7 +1356,7 @@ def write_expanded_parquet(
         "action_taken", "prune_reason", "branch_majority_pid",
         "majority_true_hit_on_surface", "is_pixel", "n_window",
         "geometric_density", "n_hits", "n_holes", "n_seq_holes",
-        "dead_module_flag", "layer_embed_idx",
+        "dead_module_flag", "layer_embed_idx", "volume_id",
     }
     bool_defaults = {"majority_undefined"}
 
@@ -1465,7 +1468,11 @@ def run_expansion(
             expanded = expanded.drop(columns=[sel_col])
 
     pitch_table = load_sensor_pitch_table(digi_config_path) if digi_config_path else None
-    sensor_df = compute_sensor_props(expanded["volume_id"].to_numpy(), pitch_table=pitch_table)
+    sensor_df = compute_sensor_props(
+        expanded["volume_id"].to_numpy(),
+        pitch_table=pitch_table,
+        barrel_volumes=BARREL_VOLUMES_DEFAULT,
+    )
     expanded = pd.concat([expanded.reset_index(drop=True), sensor_df.reset_index(drop=True)], axis=1)
 
     expanded["chi2_inc"] = chi2_increment_batch(

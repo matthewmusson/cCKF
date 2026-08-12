@@ -2305,7 +2305,10 @@ def expand_single_event(
     from expansion import run_expansion
 
     t0 = time.time()
-    df = run_expansion(root_path, csv_dir, event_id, out_path)
+    df = run_expansion(
+        root_path, csv_dir, event_id, out_path,
+        digi_config_path="/app/configs/odd-digi-geometric-config.json",
+    )
     wall = time.time() - t0
 
     n_branches = df[["event_id", "track_nr"]].drop_duplicates().shape[0]
