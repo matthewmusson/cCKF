@@ -2233,10 +2233,12 @@ def list_pilot_files(pilot_dir: str):
     if not os.path.isdir(pilot_dir):
         return {"pilot_dir": pilot_dir, "exists": False, "files": []}
     files = []
-    for f in sorted(os.listdir(pilot_dir)):
-        fp = os.path.join(pilot_dir, f)
-        sz = os.path.getsize(fp)
-        files.append({"name": f, "size_mb": round(sz / 1024 / 1024, 2)})
+    for root, dirs, filenames in os.walk(pilot_dir):
+        for fn in sorted(filenames):
+            fp = os.path.join(root, fn)
+            rel = os.path.relpath(fp, pilot_dir)
+            sz = os.path.getsize(fp)
+            files.append({"name": rel, "size_mb": round(sz / 1024 / 1024, 2)})
     return {"pilot_dir": pilot_dir, "exists": True, "files": files}
 
 
@@ -2325,10 +2327,6 @@ def expand_single_event(
 @app.function(
     image=image,
     volumes={BUILD_PATH: build_vol, DATA_PATH: data_vol},
-    mounts=[
-        modal.Mount.from_local_file("patch_parquet.py"),
-        modal.Mount.from_local_dir("configs", remote_path="/root/configs"),
-    ],
     cpu=4,
     memory=131072,
     timeout=3600,
@@ -2340,7 +2338,12 @@ def patch_single_event(
 ):
     """Patch one expanded parquet file with S00/S01/S11, volume_id, and sensor props."""
     import time
-    from patch_parquet import patch_single_event as _patch, load_digi_config
+    import numpy as np
+    import pandas as pd
+    import pyarrow.parquet as pq
+    import pyarrow as pa
+    import uproot
+    import awkward as ak
 
     for vol in [build_vol, data_vol]:
         try:
@@ -2348,20 +2351,148 @@ def patch_single_event(
         except RuntimeError:
             pass
 
-    digi_table = load_digi_config("/root/configs/odd-digi-geometric-config.json")
+    # Load digi config
+    digi_config_path = "/app/configs/odd-digi-geometric-config.json"
+    with open(digi_config_path) as f:
+        cfg = json.load(f)
+    digi_table = {}
+    for entry in cfg.get("entries", []):
+        volume = entry.get("volume")
+        if volume is None:
+            continue
+        geo = entry.get("value", {}).get("geometric")
+        if geo is None:
+            continue
+        bins = geo.get("segmentation", {}).get("binningdata", [])
+        pitch_u = pitch_v = np.nan
+        if len(bins) > 0:
+            b0 = bins[0]
+            if b0.get("bins", 0) > 0:
+                pitch_u = (b0["max"] - b0["min"]) / b0["bins"]
+        if len(bins) > 1:
+            b1 = bins[1]
+            if b1.get("bins", 0) > 0:
+                pitch_v = (b1["max"] - b1["min"]) / b1["bins"]
+        digi_table[int(volume)] = {
+            "pitch_u": pitch_u, "pitch_v": pitch_v,
+            "thickness": float(geo.get("thickness", np.nan)),
+        }
+
+    BARREL_VOLUMES = {16, 23, 28}
+
+    # Load S00/S01/S11 and volume_id from ROOT
+    with uproot.open(root_path) as f:
+        tree_names = [k for k in f.keys() if "trackstate" in k.lower()]
+        if not tree_names:
+            tree_names = list(f.keys())
+        tree = f[tree_names[0]]
+        available = set(tree.keys())
+        read_fields = [b for b in ["volume_id", "S00_prt", "S01_prt", "S11_prt"] if b in available]
+        if "event_nr" in available:
+            read_fields.append("event_nr")
+        arrays = tree.arrays(read_fields, library="ak")
+        if "event_nr" in available:
+            mask = ak.to_numpy(arrays["event_nr"]) == int(event_id)
+            arrays = arrays[mask]
+
+    n_tracks = len(arrays)
+    n_states = ak.to_numpy(ak.num(arrays["volume_id"], axis=1))
+    track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
+    state_idx = ak.to_numpy(ak.flatten(ak.local_index(arrays["volume_id"], axis=1))).astype(np.int64)
+    root_df = pd.DataFrame({
+        "track_nr": track_nr,
+        "state_idx": state_idx,
+        "volume_id": ak.to_numpy(ak.flatten(arrays["volume_id"])).astype(np.int64),
+        "S00": ak.to_numpy(ak.flatten(arrays["S00_prt"])).astype(np.float64) if "S00_prt" in available else np.full(len(track_nr), np.nan),
+        "S01": ak.to_numpy(ak.flatten(arrays["S01_prt"])).astype(np.float64) if "S01_prt" in available else np.full(len(track_nr), np.nan),
+        "S11": ak.to_numpy(ak.flatten(arrays["S11_prt"])).astype(np.float64) if "S11_prt" in available else np.full(len(track_nr), np.nan),
+    })
 
     t0 = time.time()
-    result = _patch(parquet_path, root_path, event_id, digi_table)
+
+    # Read parquet and merge
+    df = pd.read_parquet(parquet_path)
+    n_rows = len(df)
+    original_cols = list(df.columns)
+
+    df = df.merge(root_df, left_on=["seed_id", "step_k"], right_on=["track_nr", "state_idx"],
+                  how="left", suffixes=("", "_root"))
+    df.drop(columns=["track_nr", "state_idx"], inplace=True, errors="ignore")
+    for col in ("S00", "S01", "S11", "volume_id"):
+        root_col = f"{col}_root"
+        if root_col in df.columns:
+            df[col] = df[root_col]
+            df.drop(columns=[root_col], inplace=True)
+
+    # Fill sensor properties
+    vol = df["volume_id"].to_numpy().astype(np.int64) if "volume_id" in df.columns else np.full(n_rows, -1, dtype=np.int64)
+    pitch_u = np.full(n_rows, np.nan)
+    pitch_v = np.full(n_rows, np.nan)
+    thickness = np.full(n_rows, np.nan)
+    is_barrel = np.full(n_rows, np.nan)
+    for v_int, props in digi_table.items():
+        mask = vol == v_int
+        pitch_u[mask] = props["pitch_u"]
+        pitch_v[mask] = props["pitch_v"]
+        thickness[mask] = props["thickness"]
+    known_vol_mask = vol > 0
+    barrel_mask = np.isin(vol, list(BARREL_VOLUMES))
+    is_barrel[known_vol_mask] = 0.0
+    is_barrel[barrel_mask] = 1.0
+    df["pitch_u"] = pitch_u
+    df["pitch_v"] = pitch_v
+    df["thickness"] = thickness
+    df["is_barrel"] = is_barrel
+
+    # Reorder columns
+    insert_after_chi2 = ["S00", "S01", "S11"]
+    final_cols = []
+    for c in original_cols:
+        final_cols.append(c)
+        if c == "chi2_inc":
+            final_cols.extend(insert_after_chi2)
+        elif c == "surface_id":
+            final_cols.append("volume_id")
+    for c in df.columns:
+        if c not in final_cols:
+            final_cols.append(c)
+    final_cols = [c for c in final_cols if c in df.columns]
+    df = df[final_cols]
+
+    # Write back
+    table = pa.Table.from_pandas(df, preserve_index=False)
+    for col_name, pa_type in [("contrib_pids", pa.list_(pa.int64())), ("contrib_charge_frac", pa.list_(pa.float32()))]:
+        if col_name in table.column_names:
+            idx = table.column_names.index(col_name)
+            try:
+                col = table.column(col_name).cast(pa_type)
+                table = table.set_column(idx, col_name, col)
+            except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+                pass
+    pq.write_table(table, parquet_path, compression="zstd")
+
     wall = time.time() - t0
+    s00_fill = float((~np.isnan(df["S00"].to_numpy())).mean()) if "S00" in df.columns else 0
+    pitch_fill = float((~np.isnan(df["pitch_u"].to_numpy())).mean()) if "pitch_u" in df.columns else 0
+    vol_fill = float((df["volume_id"] > 0).mean()) if "volume_id" in df.columns else 0
 
     data_vol.commit()
-    result["wall_time"] = round(wall, 1)
-    return result
+    return {
+        "event_id": event_id,
+        "rows": n_rows,
+        "S00_fill_pct": round(100 * s00_fill, 1),
+        "pitch_fill_pct": round(100 * pitch_fill, 1),
+        "volume_id_fill_pct": round(100 * vol_fill, 1),
+        "wall_time": round(wall, 1),
+    }
 
 
 @app.local_entrypoint()
 def patch_all_events():
-    """Patch all 32 expanded parquet files with S00/S01/S11 and sensor props."""
+    """Patch all 32 expanded parquet files with S00/S01/S11 and sensor props.
+
+    Runs sequentially to avoid concurrent volume commits corrupting files.
+    """
     pilot_dirs = [
         ("/data/results/pilot_1786524194", 0),
         ("/data/results/pilot_1786524971", 2),
@@ -2390,14 +2521,177 @@ def patch_all_events():
             parquet_path = f"{expanded_dir}/expanded_event{global_eid:09d}.parquet"
             patch_args.append((parquet_path, root_path, global_eid))
 
-    print(f"=== Patching {len(patch_args)} expanded parquet files ===")
-    for result in patch_single_event.starmap(patch_args, order_outputs=False):
-        print(f"  Event {result['event_id']:2d}: {result['rows']:>12,} rows  "
-              f"S00={result['S00_fill_pct']:5.1f}%  "
-              f"pitch={result['pitch_fill_pct']:5.1f}%  "
-              f"vol_id={result['volume_id_fill_pct']:5.1f}%  "
-              f"{result['wall_time']:.0f}s")
+    print(f"=== Patching {len(patch_args)} expanded parquet files (sequential) ===")
+    for args in patch_args:
+        parquet_path, root_path, eid = args
+        print(f"  Starting event {eid}...", flush=True)
+        try:
+            result = patch_single_event.remote(parquet_path, root_path, eid)
+            print(f"  Event {result['event_id']:2d}: {result['rows']:>12,} rows  "
+                  f"S00={result['S00_fill_pct']:5.1f}%  "
+                  f"pitch={result['pitch_fill_pct']:5.1f}%  "
+                  f"vol_id={result['volume_id_fill_pct']:5.1f}%  "
+                  f"{result['wall_time']:.0f}s")
+        except Exception as e:
+            print(f"  Event {eid}: FAILED — {e}")
     print("\n=== Done ===")
+
+
+@app.local_entrypoint()
+def repair_and_patch():
+    """Re-expand corrupt events, then patch all remaining (corrupt + unpatched).
+
+    Runs everything sequentially to avoid concurrent volume corruption.
+    """
+    pilot_dirs = [
+        ("/data/results/pilot_1786524194", 0),
+        ("/data/results/pilot_1786524971", 2),
+        ("/data/results/pilot_1786525888", 4),
+        ("/data/results/pilot_1786527639", 6),
+        ("/data/results/pilot_1786529841", 8),
+        ("/data/results/pilot_1786531084", 10),
+        ("/data/results/pilot_1786532999", 12),
+        ("/data/results/pilot_1786534329", 14),
+        ("/data/results/pilot_1786536577", 16),
+        ("/data/results/pilot_1786538022", 18),
+        ("/data/results/pilot_1786539360", 20),
+        ("/data/results/pilot_1786540365", 22),
+        ("/data/results/pilot_1786541815", 24),
+        ("/data/results/pilot_1786542563", 26),
+        ("/data/results/pilot_1786543789", 28),
+        ("/data/results/pilot_1786547065", 30),
+    ]
+    expanded_dir = f"{DATA_PATH}/results/train32/expanded"
+
+    corrupt_events = {5, 6, 10, 14, 15, 17, 18, 22, 28, 29, 30}
+    unpatched_events = set()
+    needs_work = corrupt_events | unpatched_events
+
+    # Build event_id → pilot_dir mapping
+    eid_to_pilot = {}
+    for pilot_dir, global_start in pilot_dirs:
+        for offset in range(2):
+            eid_to_pilot[global_start + offset] = pilot_dir
+
+    # Phase 1: Re-expand corrupt events
+    print(f"=== Phase 1: Re-expanding {len(corrupt_events)} corrupt events ===")
+    for eid in sorted(corrupt_events):
+        pilot_dir = eid_to_pilot[eid]
+        root_path = f"{pilot_dir}/trackstates_ckf.root"
+        csv_dir = pilot_dir
+        out_path = f"{expanded_dir}/expanded_event{eid:09d}.parquet"
+        print(f"  Re-expanding event {eid}...", flush=True)
+        try:
+            result = expand_single_event.remote(root_path, csv_dir, eid, out_path)
+            print(f"  Event {eid:2d}: {result['rows']:>12,} rows, {result['cols']} cols, {result['wall_time']:.0f}s")
+        except Exception as e:
+            print(f"  Event {eid}: EXPAND FAILED — {e}")
+
+    # Phase 2: Patch all that need it (re-expanded + unpatched)
+    print(f"\n=== Phase 2: Patching {len(needs_work)} events ===")
+    for eid in sorted(needs_work):
+        pilot_dir = eid_to_pilot[eid]
+        root_path = f"{pilot_dir}/trackstates_ckf.root"
+        parquet_path = f"{expanded_dir}/expanded_event{eid:09d}.parquet"
+        print(f"  Patching event {eid}...", flush=True)
+        try:
+            result = patch_single_event.remote(parquet_path, root_path, eid)
+            print(f"  Event {result['event_id']:2d}: {result['rows']:>12,} rows  "
+                  f"S00={result['S00_fill_pct']:5.1f}%  "
+                  f"pitch={result['pitch_fill_pct']:5.1f}%  "
+                  f"vol_id={result['volume_id_fill_pct']:5.1f}%  "
+                  f"{result['wall_time']:.0f}s")
+        except Exception as e:
+            print(f"  Event {eid}: PATCH FAILED — {e}")
+    print("\n=== Done ===")
+
+
+@app.function(
+    image=image,
+    volumes={DATA_PATH: data_vol},
+    cpu=1,
+    memory=4096,
+    timeout=120,
+)
+def check_parquet_health(parquet_path: str, event_id: int):
+    """Check if a parquet file is readable and whether it's already patched."""
+    import pyarrow.parquet as pq
+
+    data_vol.reload()
+    try:
+        meta = pq.read_metadata(parquet_path)
+        schema = pq.read_schema(parquet_path)
+        cols = schema.names
+        has_s00 = "S00" in cols
+        has_pitch = "pitch_u" in cols
+        has_vol = "volume_id" in cols
+        return {
+            "event_id": event_id,
+            "status": "ok",
+            "rows": meta.num_rows,
+            "cols": len(cols),
+            "has_S00": has_s00,
+            "has_pitch": has_pitch,
+            "has_volume_id": has_vol,
+            "patched": has_s00 and has_pitch and has_vol,
+        }
+    except Exception as e:
+        return {"event_id": event_id, "status": "CORRUPT", "error": str(e)[:200]}
+
+
+@app.local_entrypoint()
+def check_pilot_csvs():
+    """Check which pilot directories have csv/ subdirs with measurements CSVs."""
+    pilot_dirs = [
+        ("/data/results/pilot_1786525888", 4),    # events 4-5
+        ("/data/results/pilot_1786527639", 6),    # events 6-7
+        ("/data/results/pilot_1786531084", 10),   # events 10-11
+        ("/data/results/pilot_1786534329", 14),   # events 14-15
+        ("/data/results/pilot_1786536577", 16),   # events 16-17
+        ("/data/results/pilot_1786538022", 18),   # events 18-19
+        ("/data/results/pilot_1786540365", 22),   # events 22-23
+        ("/data/results/pilot_1786543789", 28),   # events 28-29
+        ("/data/results/pilot_1786547065", 30),   # events 30-31
+    ]
+    for result in list_pilot_files.map([d for d, _ in pilot_dirs]):
+        print(f"\n{result['pilot_dir']}:")
+        if not result['exists']:
+            print("  DOES NOT EXIST")
+            continue
+        for f in result['files']:
+            print(f"  {f['name']:60s} {f['size_mb']:8.2f} MB")
+
+
+@app.local_entrypoint()
+def check_all_parquets():
+    """Check health of all 32 expanded parquet files."""
+    expanded_dir = f"{DATA_PATH}/results/train32/expanded"
+    args = []
+    for eid in range(32):
+        path = f"{expanded_dir}/expanded_event{eid:09d}.parquet"
+        args.append((path, eid))
+
+    print("=== Parquet Health Check ===")
+    corrupt = []
+    patched = []
+    unpatched = []
+    for result in check_parquet_health.starmap(args, order_outputs=False):
+        eid = result["event_id"]
+        if result["status"] == "CORRUPT":
+            print(f"  Event {eid:2d}: CORRUPT — {result['error'][:80]}")
+            corrupt.append(eid)
+        elif result.get("patched"):
+            print(f"  Event {eid:2d}: OK (patched) — {result['rows']:>12,} rows, {result['cols']} cols")
+            patched.append(eid)
+        else:
+            print(f"  Event {eid:2d}: OK (unpatched) — {result['rows']:>12,} rows, {result['cols']} cols  "
+                  f"S00={result['has_S00']} pitch={result['has_pitch']} vol={result['has_volume_id']}")
+            unpatched.append(eid)
+    print(f"\nSummary: {len(patched)} patched, {len(unpatched)} unpatched, {len(corrupt)} corrupt")
+    if corrupt:
+        print(f"  Corrupt events: {sorted(corrupt)}")
+    if unpatched:
+        print(f"  Unpatched events: {sorted(unpatched)}")
 
 
 @app.local_entrypoint()

@@ -126,3 +126,40 @@ bit-identical vs. the unpatched build on 1 event). No data collection run.
 No offline join needed — clusters join in-memory by measurement index.
 
 See `docs/instrumentation/trackstate_branch_reference.md`.
+
+## 2026-08-10 — Train-set expansion and patching (32 events, Modal)
+
+### Pipeline
+
+1. **Stage 1 (CKF runs):** 32 events in 16 batches of 2 on Modal (envelope config from §6.2). Each batch produces a ROOT trackstates file + per-event CSVs. Completed across 16 pilot dirs on `surp-acts-data` volume.
+
+2. **Stage 2 (Expansion):** Offline join of ROOT trackstates + CSV measurements/seeds/simhits into per-event parquet files (72 columns, one row per branch-step-candidate). Stored at `results/train32/expanded/expanded_event{000..031}.parquet`. Row counts range from ~34M to ~200M per event.
+
+3. **Stage 3 (Patching):** Fill NaN columns not populated during expansion:
+   - **S00/S01/S11** (innovation covariance): joined from ROOT `S00_prt/S01_prt/S11_prt` on `(seed_id, step_k) = (track_nr, state_idx)`
+   - **volume_id**: from ROOT, needed for sensor property lookup
+   - **pitch_u/pitch_v/thickness/is_barrel**: from `configs/odd-digi-geometric-config.json` keyed by volume_id
+
+### Status (2026-08-12)
+
+**21/32 events fully patched** (76 columns, 100% fill on S00/pitch/volume_id):
+- Events: 0, 1, 2, 3, 4, 7, 8, 9, 11, 12, 13, 16, 19, 20, 21, 23, 24, 25, 26, 27, 31
+
+**11/32 events being re-expanded** (corrupted by concurrent Modal volume commits during first patch run):
+- Events: 5, 6, 10, 14, 15, 17, 18, 22, 28, 29, 30
+- Re-expansion running sequentially to avoid repeat corruption
+- Event 5 re-expanded (132M rows, 38 min); remaining in progress
+
+### Incident: concurrent volume commit corruption
+
+First patch attempt used `starmap` (all 32 events in parallel). Each container called `data_vol.commit()` after writing. Concurrent commits corrupted 11 parquet files ("Parquet magic bytes not found in footer"). Fix: switched to sequential execution. The 21 successfully patched events are verified correct.
+
+### Train/val/cal split (tentative, not yet frozen in code)
+
+Per spec §6.1, events [0,32) split ~24/4/4 for train/val/calibration:
+- **Train (~17-24):** from the 21 available patched events
+- **Val (4):** TBD
+- **Cal (4):** TBD (can draw from the 11 events once re-expansion completes)
+- **Test [32,64):** sealed, never touched
+
+21 patched events is sufficient to begin gate training.
