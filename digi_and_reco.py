@@ -232,6 +232,7 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     output_seeds_csv = getattr(config, "output_seeds_csv", False)
     output_digi_csv = getattr(config, "output_digi_csv", False)
     output_simhits_csv = getattr(config, "output_simhits_csv", False)
+    output_detectors_csv = getattr(config, "output_detectors_csv", False)
     write_track_states = getattr(config, "write_track_states", False)
     # Dump P00,P01,P11 per predicted state (needed for full innovation S).
     # Defaults on whenever trackstates are written.
@@ -367,6 +368,18 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
                 )
             )
 
+        if output_detectors_csv:
+            from acts.examples import CsvTrackingGeometryWriter
+
+            s.addWriter(
+                CsvTrackingGeometryWriter(
+                    level=LOG_LEVEL,
+                    trackingGeometry=trackingGeometry,
+                    outputDir=str(output_dir),
+                    writePerEvent=False,
+                )
+            )
+
         def make_geoid(vol=None, lay=None):
             geoid = acts.GeometryIdentifier()
             if vol is not None:
@@ -463,7 +476,7 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
             s,
             trackingGeometry,
             field,
-            seedingAlgorithm=SeedingAlgorithm.Default,
+            seedingAlgorithm=getattr(SeedingAlgorithm, "Default", SeedingAlgorithm.OrthogonalTriplet),
             particleHypothesis=acts.ParticleHypothesis.pion,
             seedFinderConfigArg=SeedFinderConfigArg(
                 r=(33 * u.mm, 200 * u.mm),
