@@ -101,10 +101,20 @@ def _state_features(df: pd.DataFrame) -> pd.DataFrame:
     per_state["sum_gate_logodds"] = filled.groupby(
         [per_state["seed_id"], per_state["branch_id"]]
     ).cumsum().to_numpy()
+    grouped_min = per_state["step_logodds"].groupby(
+        [per_state["seed_id"], per_state["branch_id"]]
+    ).cummin()
+    # Forward-fill WITHIN each branch so a hole step reports the running worst
+    # accepted score rather than resetting it. cummin leaves the NaN row's own
+    # output NaN; filling before the ffill (as `.fillna(0.0)` alone does) would
+    # overwrite it with 0.0 log-odds = p 0.500, i.e. "the worst hit so far was a
+    # coin flip" -- optimistically wrong at exactly the hole states V_phi must
+    # judge. The trailing fillna(0.0) then covers only leading holes, before any
+    # hit has been accepted and a minimum is genuinely undefined.
     per_state["min_gate_logodds"] = (
-        per_state["step_logodds"].groupby(
+        grouped_min.groupby(
             [per_state["seed_id"], per_state["branch_id"]]
-        ).cummin().fillna(0.0).to_numpy()
+        ).ffill().fillna(0.0).to_numpy()
     )
     per_state["x0_accumulated"] = grp["pathInX0_interval"].cumsum().to_numpy()
     per_state["eta"] = feat.eta_from_theta(per_state["state_theta"].to_numpy(dtype=np.float64))
