@@ -65,8 +65,15 @@ def main() -> None:
         unknown = set(keep_groups) - set(features.GATE_GROUPS)
         if unknown:
             raise SystemExit(f"unknown feature groups: {sorted(unknown)}")
-        keep_names = [f for g in keep_groups for f in features.GATE_GROUPS[g]]
-        col_idx = np.array([features.GATE_FEATURES.index(n) for n in keep_names])
+        # Canonicalise to GATE_FEATURES order. Iterating groups in
+        # command-line order would make the column layout depend on how the
+        # user typed the flag, so the same ablation arm could train two
+        # different, non-comparable models from the same seed.
+        selected = {f for g in keep_groups for f in features.GATE_GROUPS[g]}
+        col_idx = np.array(
+            [i for i, n in enumerate(features.GATE_FEATURES) if n in selected]
+        )
+        keep_names = [features.GATE_FEATURES[i] for i in col_idx]
     else:
         keep_names = list(features.GATE_FEATURES)
         col_idx = np.arange(len(features.GATE_FEATURES))
