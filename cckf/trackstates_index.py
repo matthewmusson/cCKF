@@ -5,12 +5,14 @@ without depending on the ``modal`` package (not installed in the local dev
 environment) or on live ROOT files. The I/O -- scanning ``/data/results`` and
 opening each candidate with ``uproot`` -- stays in
 ``modal_train._build_trackstates_index``, which constructs a
-``TrackstatesIndex`` from what it finds and hands it to
-:func:`find_trackstates`.
+``TrackstatesIndex`` from what it finds, validates it once against the full
+set of requested events with :func:`check_no_event_nr_fallback_is_safe`, and
+then hands per-event lookups to :func:`find_trackstates`.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Iterable
 
 
 @dataclass
@@ -30,6 +32,50 @@ class TrackstatesIndex:
     matched: dict[int, str] = field(default_factory=dict)
     no_event_nr: list[str] = field(default_factory=list)
     unreadable: list[tuple[str, str]] = field(default_factory=list)
+
+
+def check_no_event_nr_fallback_is_safe(
+    index: TrackstatesIndex, requested_events: Iterable[int]
+) -> None:
+    """Refuse a run that would silently reuse one no-``event_nr`` file for
+    more than one event.
+
+    ``find_trackstates`` permits the no-``event_nr`` fallback only when it is
+    the sole candidate file on the volume -- but ``TrackstatesIndex`` is
+    built once and shared across every event in a run, and a single-event
+    file legitimately supplies exactly **one** event's worth of data. If that
+    is the only usable source and the run is resolving more than one event,
+    the guard in ``find_trackstates`` is powerless to stop the second, third,
+    ... call from reusing the same file: every one of those calls sees the
+    same unambiguous-by-file-count configuration and returns the same path.
+    ``expansion.load_trackstates`` would then treat the identical file
+    contents as event 5, then as event 6, then as event 999 -- distinct
+    outputs, each falsely claiming to be a different event, built from data
+    that was never that event's.
+
+    Call this once, right after building the index and before resolving any
+    individual event, so a run with this configuration is refused before
+    anything is written to the volume -- not after the first event has
+    already been committed and the second event's call is the one that
+    would (silently, under the old logic) misattribute the file.
+    """
+    if len(index.no_event_nr) == 1 and index.n_candidates == 1:
+        requested = set(requested_events)
+        if len(requested) > 1:
+            raise FileNotFoundError(
+                f"refusing to run: {len(requested)} events were requested, "
+                f"but the only trackstates file found -- "
+                f"{index.no_event_nr[0]} -- has no 'event_nr' branch. "
+                "expansion.load_trackstates's fallback treats a file with no "
+                "event_nr branch as belonging entirely to whichever single "
+                "event asked for it; it cannot supply data for more than one "
+                "event, so reusing it for every requested event would "
+                "silently produce distinct outputs that each falsely claim "
+                "to be a different event from identical data. Either re-run "
+                "Stage 1 so this file carries an 'event_nr' branch, or "
+                "process these events one at a time (one event per run) so "
+                "each run's single-event assumption actually holds."
+            )
 
 
 def find_trackstates(event_id: int, index: TrackstatesIndex) -> str:
@@ -60,6 +106,12 @@ def find_trackstates(event_id: int, index: TrackstatesIndex) -> str:
     file to one event -- silently mislabelling ``is_ckf_selected`` with no
     visible signal that anything went wrong. That corrupts a training target
     quietly, which is worse than the loud failure this raises instead.
+
+    This function's own per-file-count guard cannot see how many events a
+    run is resolving, so it cannot by itself prevent a single no-``event_nr``
+    file from being handed out, unchanged, to every event in a multi-event
+    run -- call :func:`check_no_event_nr_fallback_is_safe` once against the
+    full requested-event set before looping over individual events.
     """
     if event_id in index.matched:
         path = index.matched[event_id]

@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from cckf.trackstates_index import TrackstatesIndex, find_trackstates
+from cckf.trackstates_index import (
+    TrackstatesIndex,
+    check_no_event_nr_fallback_is_safe,
+    find_trackstates,
+)
 
 
 def test_exact_match_returns_the_mapped_path():
@@ -89,3 +93,44 @@ def test_unreadable_candidates_are_named_in_the_error():
     assert "/data/results/broken/trackstates_ckf.root" in message
     assert "1 unreadable" in message
     assert "11" in message
+
+
+# --- check_no_event_nr_fallback_is_safe: build-time multi-event guard -----
+#
+# find_trackstates's per-lookup guard (n_candidates == 1) cannot see how many
+# events the whole run intends to resolve, so by itself it would let a
+# single no-event_nr file be silently reused for every event in a
+# multi-event run -- each call individually looks like the sanctioned
+# single-file case. check_no_event_nr_fallback_is_safe closes that gap by
+# validating the full requested-event set once, before any lookups happen.
+
+
+def test_single_requested_event_with_sole_no_event_nr_candidate_is_permitted():
+    """One event, one no-event_nr file: the genuine single-event-file case --
+    must not raise, and find_trackstates must still resolve it afterwards."""
+    index = TrackstatesIndex(n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"])
+    check_no_event_nr_fallback_is_safe(index, [7])  # must not raise
+    assert find_trackstates(7, index) == "/data/results/legacy/trackstates_ckf.root"
+
+
+def test_multiple_requested_events_with_sole_no_event_nr_candidate_raises():
+    """Two or more requested events against a single no-event_nr file: the
+    file can supply only one event's data, so honoring every request would
+    silently attribute the same contents to multiple distinct events. This
+    must be caught here, at index-build time, before any event is resolved
+    (find_trackstates alone -- see the module docstring's reproduction --
+    would let every one of these calls through with no exception)."""
+    index = TrackstatesIndex(n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"])
+    with pytest.raises(FileNotFoundError) as excinfo:
+        check_no_event_nr_fallback_is_safe(index, [5, 6])
+    message = str(excinfo.value)
+    assert "/data/results/legacy/trackstates_ckf.root" in message
+    assert "2" in message
+
+
+def test_check_is_a_noop_when_fallback_would_not_be_used():
+    """The guard only concerns the sole-no-event_nr-file configuration; any
+    index with an exact match available, or with no no-event_nr file at all,
+    must never raise here regardless of how many events are requested."""
+    index = TrackstatesIndex(n_candidates=1, matched={0: "/data/results/x/trackstates_ckf.root"})
+    check_no_event_nr_fallback_is_safe(index, [0, 1, 2, 3])  # must not raise

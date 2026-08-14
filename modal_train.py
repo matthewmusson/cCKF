@@ -81,7 +81,7 @@ def patch_selected_all() -> list[dict]:
     events = [*splits.TRAIN_EVENTS, *splits.VAL_EVENTS, *splits.CAL_EVENTS]
     splits.assert_not_test(events)
 
-    index = _build_trackstates_index()  # one scan, not one per event
+    index = _build_trackstates_index(events)  # one scan, not one per event
 
     for event_id in sorted(events):
         src = f"{EXPANDED_DIR}/expanded_event{event_id:09d}.parquet"
@@ -111,9 +111,10 @@ def patch_selected_all() -> list[dict]:
     return reports
 
 
-def _build_trackstates_index():
+def _build_trackstates_index(requested_events):
     """Scan ``/data/results`` once and record which event(s) each trackstates
-    file covers.
+    file covers, then validate the result against every event this run will
+    resolve.
 
     Returns a ``cckf.trackstates_index.TrackstatesIndex``. That module holds
     the dataclass and the pure-logic lookup (:func:`cckf.trackstates_index.
@@ -141,7 +142,14 @@ def _build_trackstates_index():
     from an older pipeline stage, and the whole file is treated as belonging
     to whichever event is requested. Such files go in ``no_event_nr``;
     :func:`cckf.trackstates_index.find_trackstates` decides whether that
-    fallback is safe to use for a given lookup.
+    fallback is safe to use for a given lookup -- but that per-lookup guard
+    can't see how many events the whole run is resolving, so it cannot alone
+    stop a single-event file from being silently handed to every event in a
+    multi-event run. ``requested_events`` lets
+    :func:`cckf.trackstates_index.check_no_event_nr_fallback_is_safe` catch
+    that configuration here, once, before the caller resolves (and commits)
+    even the first event -- not partway through the run when the second
+    event's lookup would otherwise reuse the same file.
     """
     import sys
     from pathlib import Path
@@ -149,7 +157,10 @@ def _build_trackstates_index():
     import uproot
 
     sys.path.insert(0, "/root")
-    from cckf.trackstates_index import TrackstatesIndex
+    from cckf.trackstates_index import (
+        TrackstatesIndex,
+        check_no_event_nr_fallback_is_safe,
+    )
 
     candidates = sorted(Path(f"{DATA_PATH}/results").rglob("trackstates_ckf.root"))
     if not candidates:
@@ -183,6 +194,8 @@ def _build_trackstates_index():
                 )
                 continue
             index.matched[event_id] = str(path)
+
+    check_no_event_nr_fallback_is_safe(index, requested_events)
     return index
 
 
