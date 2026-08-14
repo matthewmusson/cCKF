@@ -16,13 +16,17 @@ epoch with the lowest validation loss, not from the final epoch. With patience
 the val loss would measure performance on a distribution the model will never
 see at inference, and early stopping would optimise the wrong thing.
 
-*Reproducibility reinitialises the model.* ``model`` is constructed by the
-caller before ``train_model`` ever sees it, so its initial weights reflect
-whatever the global torch RNG happened to be at construction time -- not
-``config.seed``. To make "same seed -> same history" hold regardless of
-construction order, ``train_model`` reseeds torch and then reruns
-``reset_parameters()`` on every submodule that has one, so the weights actually
-trained from are a deterministic function of ``config.seed`` alone.
+*Reproducibility reinitialises the model, by default.* ``model`` is
+constructed by the caller before ``train_model`` ever sees it, so its initial
+weights reflect whatever the global torch RNG happened to be at construction
+time -- not ``config.seed``. To make "same seed -> same history" hold
+regardless of construction order, ``train_model`` reseeds torch (CPU and, if
+available, CUDA) and then reruns ``reset_parameters()`` on every submodule
+that has one, so the weights actually trained from are a deterministic
+function of ``config.seed`` alone. Set ``config.reinit = False`` to warm-start
+from the weights the caller already put on ``model`` (e.g. a loaded
+checkpoint) instead -- see ``train_model``'s docstring for the reproducibility
+trade-off that implies.
 """
 from __future__ import annotations
 
@@ -51,6 +55,7 @@ class TrainConfig:
     sampler: str = "B"
     seed: int = 0
     device: str = "cpu"
+    reinit: bool = True
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -103,6 +108,19 @@ def train_model(
     X_val, y_val : numpy.ndarray
         Validation set on the natural class distribution.
     config : TrainConfig
+        ``config.reinit`` (default ``True``) reruns ``reset_parameters()`` on
+        every submodule of ``model`` that has one, immediately after seeding
+        torch with ``config.seed``, before any training happens. This makes
+        the weights actually trained from a deterministic function of
+        ``config.seed`` alone, regardless of how or when the caller built
+        ``model`` -- so two calls with the same config and freshly
+        constructed models are guaranteed byte-identical, not just "usually
+        similar". Set ``config.reinit = False`` to warm-start from the
+        model's existing weights instead (e.g. resuming from a checkpoint in
+        an iterative retraining loop). Doing so gives up the
+        same-seed-same-history guarantee: results then also depend on
+        whatever weights ``model`` carried in, which ``train_model`` cannot
+        see from ``config.seed``.
     wandb_run : optional
         If given, ``.log()`` is called once per epoch.
 
@@ -114,21 +132,26 @@ def train_model(
         ``val_loss`` and ``lr``.
     """
     torch.manual_seed(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config.seed)
     rng = np.random.default_rng(config.seed)
     device = config.device
 
-    # Reinitialise every submodule that knows how (Linear, GRU, LayerNorm, ...)
-    # from the just-set seed. ``model`` arrives already constructed, so its
-    # weights otherwise reflect whatever the global torch RNG happened to be
-    # at construction time -- not ``config.seed``. Two calls with the same
-    # config but freshly constructed models would then start from different
-    # weights and diverge, breaking the reproducibility guarantee.
-    def _reset(module: torch.nn.Module) -> None:
-        reset_fn = getattr(module, "reset_parameters", None)
-        if callable(reset_fn):
-            reset_fn()
+    if config.reinit:
+        # Reinitialise every submodule that knows how (Linear, GRU,
+        # LayerNorm, ...) from the just-set seed. ``model`` arrives already
+        # constructed, so its weights otherwise reflect whatever the global
+        # torch RNG happened to be at construction time -- not
+        # ``config.seed``. Two calls with the same config but freshly
+        # constructed models would then start from different weights and
+        # diverge, breaking the reproducibility guarantee. Skipped entirely
+        # when ``config.reinit`` is False, so callers can warm-start.
+        def _reset(module: torch.nn.Module) -> None:
+            reset_fn = getattr(module, "reset_parameters", None)
+            if callable(reset_fn):
+                reset_fn()
 
-    model.apply(_reset)
+        model.apply(_reset)
     model = model.to(device)
 
     optimizer = torch.optim.AdamW(
