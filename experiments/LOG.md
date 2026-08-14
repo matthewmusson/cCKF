@@ -140,15 +140,26 @@ See `docs/instrumentation/trackstate_branch_reference.md`.
    - **volume_id**: from ROOT, needed for sensor property lookup
    - **pitch_u/pitch_v/thickness/is_barrel**: from `configs/odd-digi-geometric-config.json` keyed by volume_id
 
-### Status (2026-08-12)
+### Status (2026-08-12, updated 2026-08-13)
 
-**21/32 events fully patched** (76 columns, 100% fill on S00/pitch/volume_id):
-- Events: 0, 1, 2, 3, 4, 7, 8, 9, 11, 12, 13, 16, 19, 20, 21, 23, 24, 25, 26, 27, 31
+**32/32 events fully patched** (76 columns, 100% fill on S00/pitch/volume_id).
 
-**11/32 events being re-expanded** (corrupted by concurrent Modal volume commits during first patch run):
-- Events: 5, 6, 10, 14, 15, 17, 18, 22, 28, 29, 30
-- Re-expansion running sequentially to avoid repeat corruption
-- Event 5 re-expanded (132M rows, 38 min); remaining in progress
+The 11 previously corrupted events (5, 6, 10, 14, 15, 17, 18, 22, 28, 29, 30) have been re-expanded successfully. Verified 2026-08-13: all 32 files readable, 76 columns each, S00 present in all.
+
+Row counts for the re-expanded events:
+- Event 5: 132,084,368
+- Event 6: 105,613,047
+- Event 10: 94,272,826
+- Event 14: 120,403,769
+- Event 15: 113,533,892
+- Event 17: 128,070,540
+- Event 18: 117,759,145
+- Event 22: 85,659,822
+- Event 28: 86,887,680
+- Event 29: 82,558,893
+- Event 30: 66,556,584
+
+All 32 events are now available for train/val/cal splits.
 
 ### Incident: concurrent volume commit corruption
 
@@ -157,9 +168,9 @@ First patch attempt used `starmap` (all 32 events in parallel). Each container c
 ### Train/val/cal split (tentative, not yet frozen in code)
 
 Per spec §6.1, events [0,32) split ~24/4/4 for train/val/calibration:
-- **Train (~17-24):** from the 21 available patched events
+- **Train (24):** all 32 events minus val and cal picks
 - **Val (4):** TBD
-- **Cal (4):** TBD (can draw from the 11 events once re-expansion completes)
+- **Cal (4):** TBD
 - **Test [32,64):** sealed, never touched
 
-21 patched events is sufficient to begin gate training.
+All 32 events available. Split should be frozen in code before any training run.
