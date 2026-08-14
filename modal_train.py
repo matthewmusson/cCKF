@@ -16,6 +16,7 @@ Usage
     modal run --detach modal_train.py::train_gate_all
     modal run modal_train.py::audit --model-dir /data/models/gate_A
 """
+
 from __future__ import annotations
 
 import modal
@@ -27,9 +28,15 @@ DATA_PATH = "/data"
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
-        "torch>=2.4", "numpy>=2.0", "pandas>=2.2", "pyarrow>=17.0",
-        "scikit-learn>=1.5", "scipy>=1.14", "matplotlib>=3.9",
-        "wandb>=0.17", "uproot>=5.3",
+        "torch>=2.4",
+        "numpy>=2.0",
+        "pandas>=2.2",
+        "pyarrow>=17.0",
+        "scikit-learn>=1.5",
+        "scipy>=1.14",
+        "matplotlib>=3.9",
+        "wandb>=0.17",
+        "uproot>=5.3",
     )
     .add_local_dir("cckf", "/root/cckf")
     .add_local_dir("scripts", "/root/scripts")
@@ -64,9 +71,19 @@ def _run_script(cmd: list[str]) -> None:
     )
 
 
-@app.function(image=image, volumes={DATA_PATH: data_vol}, cpu=8, memory=131072, timeout=86400)
-def patch_selected_all() -> list[dict]:
-    """Add ``is_ckf_selected`` to every assigned event, sequentially."""
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, cpu=8, memory=131072, timeout=86400
+)
+def patch_selected_all(only_events: str = "") -> list[dict]:
+    """Add ``is_ckf_selected`` to every assigned event, sequentially.
+
+    ``only_events``, when non-empty, restricts processing to a comma-
+    separated subset of event ids (e.g. ``"0,1"``) instead of every assigned
+    event. The subset is still validated against the sealed test guard and
+    the assigned train/val/cal set -- see
+    :func:`cckf.event_selection.resolve_requested_events`. Empty (the
+    default) processes every assigned event, exactly as before.
+    """
     import sys
     from pathlib import Path
 
@@ -74,12 +91,14 @@ def patch_selected_all() -> list[dict]:
 
     sys.path.insert(0, "/root")
     from cckf import splits
+    from cckf.event_selection import resolve_requested_events
     from cckf.trackstates_index import find_trackstates
     from scripts.patch_is_selected import patch_event
 
     reports = []
-    events = [*splits.TRAIN_EVENTS, *splits.VAL_EVENTS, *splits.CAL_EVENTS]
-    splits.assert_not_test(events)
+    assigned = (*splits.TRAIN_EVENTS, *splits.VAL_EVENTS, *splits.CAL_EVENTS)
+    events = resolve_requested_events(only_events, assigned)
+    splits.assert_not_test(events)  # guard applies to the resolved set too
 
     index = _build_trackstates_index(events)  # one scan, not one per event
 
@@ -199,7 +218,9 @@ def _build_trackstates_index(requested_events):
     return index
 
 
-@app.function(image=image, volumes={DATA_PATH: data_vol}, cpu=16, memory=262144, timeout=86400)
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, cpu=16, memory=262144, timeout=86400
+)
 def build_all_caches(csv_dir: str = "") -> dict:
     """Build gate and value caches for train/val/cal, sequentially."""
     import sys
@@ -207,10 +228,14 @@ def build_all_caches(csv_dir: str = "") -> dict:
     results = {}
     for split in ("train", "val", "cal"):
         cmd = [
-            sys.executable, "/root/scripts/build_gate_cache.py",
-            "--split", split,
-            "--parquet-dir", SELECTED_DIR,
-            "--out-dir", f"{CACHE_DIR}/gate/{split}",
+            sys.executable,
+            "/root/scripts/build_gate_cache.py",
+            "--split",
+            split,
+            "--parquet-dir",
+            SELECTED_DIR,
+            "--out-dir",
+            f"{CACHE_DIR}/gate/{split}",
         ]
         _run_script(cmd)
         data_vol.commit()
@@ -219,11 +244,16 @@ def build_all_caches(csv_dir: str = "") -> dict:
     if csv_dir:
         for split in ("train", "val", "cal"):
             cmd = [
-                sys.executable, "/root/scripts/build_value_cache.py",
-                "--split", split,
-                "--parquet-dir", SELECTED_DIR,
-                "--csv-dir", csv_dir,
-                "--out-dir", f"{CACHE_DIR}/value/{split}",
+                sys.executable,
+                "/root/scripts/build_value_cache.py",
+                "--split",
+                split,
+                "--parquet-dir",
+                SELECTED_DIR,
+                "--csv-dir",
+                csv_dir,
+                "--out-dir",
+                f"{CACHE_DIR}/value/{split}",
             ]
             _run_script(cmd)
             data_vol.commit()
@@ -232,8 +262,12 @@ def build_all_caches(csv_dir: str = "") -> dict:
 
 
 @app.function(
-    image=image, volumes={DATA_PATH: data_vol}, gpu="A10G",
-    memory=131072, timeout=43200, secrets=[modal.Secret.from_name("wandb")],
+    image=image,
+    volumes={DATA_PATH: data_vol},
+    gpu="A10G",
+    memory=131072,
+    timeout=43200,
+    secrets=[modal.Secret.from_name("wandb")],
 )
 def train_gate_sampler(sampler: str, wandb_project: str = "cckf-gate") -> dict:
     """Train the gate with one §2.5 sampling strategy (S1 ablation arm)."""
@@ -242,13 +276,20 @@ def train_gate_sampler(sampler: str, wandb_project: str = "cckf-gate") -> dict:
 
     out_dir = f"{MODEL_DIR}/gate_{sampler}"
     cmd = [
-        sys.executable, "/root/scripts/train_gate.py",
-        "--train-cache", f"{CACHE_DIR}/gate/train",
-        "--val-cache", f"{CACHE_DIR}/gate/val",
-        "--out-dir", out_dir,
-        "--sampler", sampler,
-        "--device", "cuda",
-        "--wandb-project", wandb_project,
+        sys.executable,
+        "/root/scripts/train_gate.py",
+        "--train-cache",
+        f"{CACHE_DIR}/gate/train",
+        "--val-cache",
+        f"{CACHE_DIR}/gate/val",
+        "--out-dir",
+        out_dir,
+        "--sampler",
+        sampler,
+        "--device",
+        "cuda",
+        "--wandb-project",
+        wandb_project,
     ]
     _run_script(cmd)
     data_vol.commit()
@@ -256,7 +297,9 @@ def train_gate_sampler(sampler: str, wandb_project: str = "cckf-gate") -> dict:
         return json.load(fh)
 
 
-@app.function(image=image, volumes={DATA_PATH: data_vol}, cpu=8, memory=65536, timeout=7200)
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, cpu=8, memory=65536, timeout=7200
+)
 def run_audit(model_dir: str, value_predictions: str = "") -> dict:
     """Fit Platt on the calibration split and produce the §4.2 audit.
 
@@ -269,10 +312,14 @@ def run_audit(model_dir: str, value_predictions: str = "") -> dict:
 
     out_dir = f"{model_dir}/audit"
     cmd = [
-        sys.executable, "/root/scripts/calibrate_and_audit.py",
-        "--model", f"{model_dir}/gate_model.pt",
-        "--cal-cache", f"{CACHE_DIR}/gate/cal",
-        "--out-dir", out_dir,
+        sys.executable,
+        "/root/scripts/calibrate_and_audit.py",
+        "--model",
+        f"{model_dir}/gate_model.pt",
+        "--cal-cache",
+        f"{CACHE_DIR}/gate/cal",
+        "--out-dir",
+        out_dir,
     ]
     if value_predictions:
         cmd += ["--value-predictions", value_predictions]
@@ -283,8 +330,8 @@ def run_audit(model_dir: str, value_predictions: str = "") -> dict:
 
 
 @app.local_entrypoint()
-def patch_selected() -> None:
-    print(patch_selected_all.remote())
+def patch_selected(only_events: str = "") -> None:
+    print(patch_selected_all.remote(only_events=only_events))
 
 
 @app.local_entrypoint()
