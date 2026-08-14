@@ -165,12 +165,17 @@ All 32 events are now available for train/val/cal splits.
 
 First patch attempt used `starmap` (all 32 events in parallel). Each container called `data_vol.commit()` after writing. Concurrent commits corrupted 11 parquet files ("Parquet magic bytes not found in footer"). Fix: switched to sequential execution. The 21 successfully patched events are verified correct.
 
-### Train/val/cal split (tentative, not yet frozen in code)
+### Train/val/cal split (FROZEN 2026-08-13 in cckf/splits.py)
 
-Per spec §6.1, events [0,32) split ~24/4/4 for train/val/calibration:
-- **Train (24):** all 32 events minus val and cal picks
-- **Val (4):** TBD
-- **Cal (4):** TBD
+Per spec §6.1, events [0,32) split 24/4/4. All 32 events verified patched.
+
+- **Train (24):** 0,1,2,3,5,6,8,9,10,11,13,14,16,17,18,19,21,22,24,25,26,27,29,30
+- **Val (4):** 4,12,20,28
+- **Cal (4):** 7,15,23,31
 - **Test [32,64):** sealed, never touched
 
-All 32 events available. Split should be frozen in code before any training run.
+Val and cal picks are spread one-per-quarter across [0,32) and across distinct
+Stage-1 generation batches (16 batches of 2), so no val event shares a batch
+with a cal event. Frozen in `cckf/splits.py`; VAL and CAL must never change —
+early-stopping and calibration numbers are only comparable across experiments
+if the splits are identical. Enforced by `tests/test_splits.py`.

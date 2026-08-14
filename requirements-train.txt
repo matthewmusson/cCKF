@@ -1,0 +1,11 @@
+torch>=2.4
+numpy>=2.0
+pandas>=2.2
+pyarrow>=17.0
+scikit-learn>=1.5
+scipy>=1.14
+matplotlib>=3.9
+wandb>=0.17
+uproot>=5.3
+awkward>=2.6
+pytest>=8.0
