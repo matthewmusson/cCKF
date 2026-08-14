@@ -119,6 +119,73 @@ def test_hard_negative_subsample_all_infinite_chi2_falls_back_to_uniform(imbalan
     assert (y == 0).sum() == 50
 
 
+def test_hard_negative_subsample_fewer_hard_negatives_than_requested_does_not_crash(
+    imbalanced_labels,
+):
+    """Regression test (fix round 1): when the number of finite-chi2 (nonzero
+    weight) negatives is smaller than n_take but strictly positive, the naive
+    weighted rng.choice(..., p=...) call raises
+    ``ValueError: Fewer non-zero entries in p than size`` because it cannot
+    draw more items than there are nonzero-probability entries. Production
+    hits this: the cache writer maps NaN chi2 to +inf (Task 6), so a window
+    with many degenerate fits and few finite negatives is expected at scale.
+
+    990 negatives: 950 at chi2=+inf (easy, zero weight), 40 finite (hard,
+    nonzero weight). neg_per_pos=5 with 10 positives requests n_take=50,
+    i.e. 10 more than the 40 available hard negatives.
+
+    Required degrade-gracefully behavior: return exactly n_take negatives,
+    include *all* 40 hard (finite-chi2) negatives, and fill the remaining 10
+    slots uniformly from the 950 easy (+inf) negatives.
+    """
+    chi2 = np.full(1000, np.inf)
+    chi2[10:50] = 1.0  # exactly 40 finite ("hard") negatives among the 990
+
+    idx = samplers.hard_negative_subsample(
+        imbalanced_labels, chi2, neg_per_pos=5, rng=np.random.default_rng(0)
+    )
+
+    y = imbalanced_labels[idx]
+    assert y.sum() == 10
+    assert (y == 0).sum() == 50  # exactly n_take, no crash, no shortfall
+
+    chosen_neg = idx[imbalanced_labels[idx] == 0]
+    hard_pool = np.arange(10, 50)
+    easy_pool = np.setdiff1d(np.flatnonzero(imbalanced_labels == 0), hard_pool)
+
+    # All 40 hard negatives must be present -- they're strictly preferred.
+    assert np.array_equal(np.intersect1d(chosen_neg, hard_pool), hard_pool)
+    # The remaining 10 slots come from the easy (+inf) pool.
+    filled = np.setdiff1d(chosen_neg, hard_pool)
+    assert len(filled) == 10
+    assert np.all(np.isin(filled, easy_pool))
+
+
+def test_hard_negative_subsample_exact_boundary_uses_weighted_path(imbalanced_labels):
+    """Boundary case: the number of nonzero-weight (finite-chi2) negatives
+    exactly equals n_take -- no shortfall and no surplus. This must still
+    succeed via the ordinary weighted rng.choice(..., p=...) branch (it must
+    NOT trip the new shortfall/fill path, since there is nothing to fill).
+    """
+    chi2 = np.full(1000, np.inf)
+    chi2[10:60] = 1.0  # exactly 50 finite negatives == n_take (neg_per_pos=5 * 10 pos)
+
+    idx = samplers.hard_negative_subsample(
+        imbalanced_labels, chi2, neg_per_pos=5, rng=np.random.default_rng(0)
+    )
+
+    y = imbalanced_labels[idx]
+    assert y.sum() == 10
+    assert (y == 0).sum() == 50
+
+    chosen_neg = idx[imbalanced_labels[idx] == 0]
+    # With exactly 50 nonzero-weight negatives and 50 slots, every one of
+    # them must be chosen -- none of the +inf ("easy") negatives should
+    # appear.
+    expected = np.arange(10, 60)
+    assert np.array_equal(np.sort(chosen_neg), expected)
+
+
 def test_prior_logit_shift_matches_definition():
     # Original 1:99, resampled to 1:5.
     shift = samplers.prior_logit_shift(10, 990, 10, 50)

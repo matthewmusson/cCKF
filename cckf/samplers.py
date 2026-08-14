@@ -119,8 +119,23 @@ def hard_negative_subsample(
     c = np.where(np.isfinite(c), np.maximum(c, _CHI2_FLOOR), np.inf)
     weights = 1.0 / c
     total = weights.sum()
+    n_nonzero = int(np.count_nonzero(weights))
+
     if not np.isfinite(total) or total <= 0.0:
+        # Every negative is non-finite chi2 (weight 0 everywhere): no signal
+        # to weight by, so fall back to a uniform draw.
         picked = rng.choice(neg, size=n_take, replace=False)
+    elif n_nonzero < n_take:
+        # Fewer hard (finite-chi2, nonzero-weight) negatives exist than we
+        # need. rng.choice(..., p=weights) cannot draw more items than there
+        # are nonzero-probability entries, so take all of the hard negatives
+        # outright and fill the remainder uniformly from the easy
+        # (non-finite-chi2, zero-weight) pool.
+        hard_mask = weights > 0.0
+        hard = neg[hard_mask]
+        easy = neg[~hard_mask]
+        fill = rng.choice(easy, size=n_take - len(hard), replace=False)
+        picked = np.concatenate([hard, fill])
     else:
         picked = rng.choice(neg, size=n_take, replace=False, p=weights / total)
     return np.sort(np.concatenate([pos, picked]))
