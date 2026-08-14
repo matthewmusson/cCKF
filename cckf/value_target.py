@@ -86,6 +86,42 @@ Tier 3 — window-restricted. **Not computed here. Requires a CKF rollout.**
     ``truth_residual_l0/l1`` being NaN — even fully populated, they would
     describe the logged trajectory's residuals, not π†'s.
 
+Known limitation: surface revisits can invert the tiers
+---------------------------------------------------------
+``maj_hit_on_surface`` is evaluated per **state** (one row per branch step), not
+per distinct surface. If a branch revisits the same surface — a low-momentum or
+looping trajectory re-crossing a layer — and the majority particle has a hit
+there, that one real simhit is counted once per visit instead of once per
+surface. ``n_findable_t1``'s ``n_total - cum_maj`` and ``n_findable_t2``'s
+forward sum both inherit this over-count, which inflates both completeness and
+purity — the target is biased **optimistically**, and for exactly the marginal,
+looping branches whose value is most consequential to get right.
+
+The over-count is asymmetric between tiers, because Tier 1 clamps the running
+total at 0 (``np.maximum(n_total - cum_maj, 0.0)``) while Tier 2's forward count
+does not renormalize against ``n_total`` at all. On a branch that revisits a
+surface enough times, this can push ``vstar_t2`` strictly above ``vstar_t1``,
+inverting the documented ``vstar_t1 >= vstar_t2`` invariant outright — not just
+eroding the margin.
+
+This module does not fix the root cause. The principled fix is to dedupe
+``maj_hit_on_surface`` to first-visit-per-surface using a ``surface_id`` column,
+so a revisited surface contributes at most once to either tier's forward count.
+That fix is deferred: it requires threading ``surface_id`` through
+:func:`build_step_table` and changing this function's input contract, which is
+out of scope here.
+
+Instead, :func:`compute_value_targets` adds a boolean column,
+``tier_invariant_violated``, set when ``vstar_t1 < vstar_t2 - 1e-12`` (with both
+values known/non-NaN). This flag catches only the **severe** cases — those bad
+enough to flip the ordering of the two tiers. It does not catch the milder,
+far more common case where revisits inflate both tiers together without
+inverting them; those rows pass through unflagged with a target that is still
+biased high, just not detectably so from the tier comparison alone. Consumers
+of ``vstar_t2`` as a training target are expected to drop rows where
+``tier_invariant_violated`` is True, the same way they are expected to drop
+rows with a NaN target.
+
 The Tier 1 − Tier 2 gap
 -----------------------
 Both tiers are computed together, so the gap is free. It is a difference between
@@ -193,7 +229,15 @@ def compute_value_targets(
         particle is absent from ``particle_nhits`` get NaN targets and must be
         dropped before training — a missing count is unknown, not zero.
 
-        By construction ``vstar_t1 >= vstar_t2``.
+        Also adds ``tier_invariant_violated`` (bool): True where ``vstar_t1 <
+        vstar_t2 - 1e-12``, i.e. where a surface revisit has over-counted
+        ``maj_hit_on_surface`` badly enough to invert the two tiers. See the
+        module docstring's "Known limitation" section — this flags only the
+        severe, invariant-breaking cases, not every row a revisit has biased.
+        Never True when either ``vstar_t1`` or ``vstar_t2`` is NaN. Consumers
+        should drop flagged rows before training, same as NaN rows.
+
+        In general (i.e. outside the flagged rows) ``vstar_t1 >= vstar_t2``.
     """
     out = step.sort_values([*_GROUP, "step_k"]).reset_index(drop=True).copy()
     grp = out.groupby(_GROUP, sort=False)
@@ -239,4 +283,17 @@ def compute_value_targets(
 
     for suffix in ("_t1", "_t2"):
         _finish(out[f"n_findable{suffix}"].to_numpy(dtype=np.float64), suffix)
+
+    # Accepted limitation (see module docstring, "Known limitation" section):
+    # `maj_hit_on_surface` over-counts on a revisited surface, which can inflate
+    # n_findable_t2 past n_findable_t1 and invert the two tiers. Flag rather than
+    # silently correct. Explicit NaN handling below, even though a NaN compares
+    # False under `<` in numpy/pandas anyway — the intent (never flag an
+    # already-unknown target as a "violation") should not depend on that
+    # incidental fact.
+    v1 = out["vstar_t1"].to_numpy(dtype=np.float64)
+    v2 = out["vstar_t2"].to_numpy(dtype=np.float64)
+    both_known = ~np.isnan(v1) & ~np.isnan(v2)
+    out["tier_invariant_violated"] = both_known & (v1 < v2 - 1e-12)
+
     return out

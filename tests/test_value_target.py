@@ -140,6 +140,56 @@ def test_build_step_table_collapses_candidates_to_one_row_per_step():
     assert step.loc[step["step_k"] == 1, "sel_wrong"].iloc[0] == 0
 
 
+def test_tier_invariant_violated_flags_surface_revisit_inversion():
+    """A branch that revisits the same surface double-counts the one real
+    simhit there, which can inflate vstar_t2 past vstar_t1 and invert the
+    documented vstar_t1 >= vstar_t2 invariant. This must be flagged, not
+    silently corrected."""
+    step = pd.DataFrame({
+        "seed_id": [0, 0], "branch_id": [0, 0], "step_k": [0, 1],
+        "sel_correct": [0, 0], "sel_wrong": [0, 0],
+        "maj_hit_on_surface": [True, True],  # same surface, one real hit
+        "branch_majority_pid": [7, 7],
+    })
+    out = vt.compute_value_targets(step, {7: 1})
+    assert out["vstar_t1"].iloc[0] == pytest.approx(0.0)
+    assert out["vstar_t2"].iloc[0] == pytest.approx(1.0)
+    assert out["tier_invariant_violated"].iloc[0] == True  # noqa: E712
+
+
+def test_tier_invariant_violated_is_false_on_the_single_visit_fixture():
+    out = vt.compute_value_targets(_step_table(), {7: 4})
+    assert not out["tier_invariant_violated"].any()
+
+
+def test_tier_invariant_holds_among_non_flagged_rows():
+    step = pd.DataFrame({
+        "seed_id": [0, 0], "branch_id": [0, 0], "step_k": [0, 1],
+        "sel_correct": [0, 0], "sel_wrong": [0, 0],
+        "maj_hit_on_surface": [True, True],
+        "branch_majority_pid": [7, 7],
+    })
+    combined = pd.concat(
+        [_step_table(), step.assign(seed_id=1)], ignore_index=True
+    )
+    out = vt.compute_value_targets(combined, {7: 4})
+    clean = out[~out["tier_invariant_violated"]]
+    assert (clean["vstar_t1"] >= clean["vstar_t2"] - 1e-12).all()
+
+
+def test_tier_invariant_violated_is_false_when_target_is_nan():
+    step = pd.DataFrame({
+        "seed_id": [0, 0], "branch_id": [0, 0], "step_k": [0, 1],
+        "sel_correct": [0, 0], "sel_wrong": [0, 0],
+        "maj_hit_on_surface": [True, True],
+        "branch_majority_pid": [7, 7],
+    })
+    out = vt.compute_value_targets(step, {})  # pid 7 absent -> NaN targets
+    assert out["vstar_t1"].isna().all()
+    assert out["vstar_t2"].isna().all()
+    assert not out["tier_invariant_violated"].any()
+
+
 def test_build_step_table_marks_wrong_when_selected_candidate_is_negative():
     df = pd.DataFrame({
         "seed_id": [0, 0],
