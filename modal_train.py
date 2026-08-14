@@ -18,8 +18,6 @@ Usage
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 import modal
 
 app = modal.App("cckf-train")
@@ -76,6 +74,7 @@ def patch_selected_all() -> list[dict]:
 
     sys.path.insert(0, "/root")
     from cckf import splits
+    from cckf.trackstates_index import find_trackstates
     from scripts.patch_is_selected import patch_event
 
     reports = []
@@ -104,7 +103,7 @@ def patch_selected_all() -> list[dict]:
             else:
                 print(f"event {event_id}: already patched, skipping")
                 continue
-        root = _find_trackstates(event_id, index)
+        root = find_trackstates(event_id, index)
         report = patch_event(src, root, event_id, out)
         print(report)
         reports.append(report)
@@ -112,19 +111,15 @@ def patch_selected_all() -> list[dict]:
     return reports
 
 
-@dataclass
-class TrackstatesIndex:
-    """Result of one scan of ``/data/results`` for ``trackstates_ckf.root`` files."""
-
-    n_candidates: int = 0
-    matched: dict[int, str] = field(default_factory=dict)  # event_id -> path
-    no_event_nr: list[str] = field(default_factory=list)  # files w/o an event_nr branch
-    unreadable: list[tuple[str, str]] = field(default_factory=list)  # (path, repr(exc))
-
-
-def _build_trackstates_index() -> TrackstatesIndex:
+def _build_trackstates_index():
     """Scan ``/data/results`` once and record which event(s) each trackstates
     file covers.
+
+    Returns a ``cckf.trackstates_index.TrackstatesIndex``. That module holds
+    the dataclass and the pure-logic lookup (:func:`cckf.trackstates_index.
+    find_trackstates`) so both are importable and unit-testable without the
+    ``modal`` package or a live ROOT file; this function is the only part
+    that actually touches the filesystem.
 
     Stage 1 wrote 32 events across 16 batch directories, so the layout is not a
     single predictable path -- every ``trackstates_ckf.root`` under
@@ -144,12 +139,17 @@ def _build_trackstates_index() -> TrackstatesIndex:
     A file with no ``event_nr`` branch is *not* unreadable: per
     ``expansion.load_trackstates``, that is a legitimate single-event file
     from an older pipeline stage, and the whole file is treated as belonging
-    to whichever event is requested. Such files go in ``no_event_nr`` and are
-    used only as a last resort when no file has an exact ``event_nr`` match.
+    to whichever event is requested. Such files go in ``no_event_nr``;
+    :func:`cckf.trackstates_index.find_trackstates` decides whether that
+    fallback is safe to use for a given lookup.
     """
+    import sys
     from pathlib import Path
 
     import uproot
+
+    sys.path.insert(0, "/root")
+    from cckf.trackstates_index import TrackstatesIndex
 
     candidates = sorted(Path(f"{DATA_PATH}/results").rglob("trackstates_ckf.root"))
     if not candidates:
@@ -184,40 +184,6 @@ def _build_trackstates_index() -> TrackstatesIndex:
                 continue
             index.matched[event_id] = str(path)
     return index
-
-
-def _find_trackstates(event_id: int, index: TrackstatesIndex) -> str:
-    """Look up the trackstates file for one event from a pre-built index.
-
-    Prefers an exact ``event_nr`` match. Falls back to a no-``event_nr`` file
-    only when no exact match exists -- see :func:`_build_trackstates_index`.
-    """
-    if event_id in index.matched:
-        path = index.matched[event_id]
-        print(f"event {event_id}: trackstates at {path}")
-        return path
-
-    if index.no_event_nr:
-        path = index.no_event_nr[0]
-        print(
-            f"event {event_id}: no exact event_nr match, falling back to "
-            f"no-event_nr file {path}"
-        )
-        return path
-
-    n_unreadable = len(index.unreadable)
-    if n_unreadable:
-        bad = ", ".join(p for p, _ in index.unreadable)
-        raise FileNotFoundError(
-            f"no trackstates file contains event {event_id}; probed "
-            f"{index.n_candidates} file(s), {n_unreadable} unreadable "
-            f"({bad}), the rest readable but none matched"
-        )
-    raise FileNotFoundError(
-        f"no trackstates file contains event {event_id}; probed "
-        f"{index.n_candidates} file(s), all readable, none contained "
-        f"event {event_id}"
-    )
 
 
 @app.function(image=image, volumes={DATA_PATH: data_vol}, cpu=16, memory=262144, timeout=86400)
