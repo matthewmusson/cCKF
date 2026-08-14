@@ -1,6 +1,7 @@
 """Tests for recovering the CKF-selected candidate per state."""
 from __future__ import annotations
 
+import awkward as ak
 import numpy as np
 import pandas as pd
 import pytest
@@ -167,3 +168,144 @@ def test_selected_correctness_is_exclusive():
     assert ((out["sel_correct"] + out["sel_wrong"]) <= 1).all()
     assert out["sel_correct"].tolist() == [1, 0, 0]
     assert out["sel_wrong"].tolist() == [0, 1, 0]
+
+
+# --- Primary route: doubly-jagged ROOT parsing -----------------------------
+#
+# expansion.py:418-425 establishes that the trackstates tree is one entry
+# per TRACK, with per-state values as jagged sublists -- not one entry per
+# state, as an earlier draft of this module wrongly assumed. These tests
+# build synthetic awkward arrays with that real shape (doubly-jagged for
+# particle_ids_*, singly-jagged for the res_eLOC*_prt residuals) and drive
+# the pure-parsing helpers directly, so the parsing logic is covered without
+# needing a ROOT fixture.
+
+
+def _synthetic_contributor_arrays() -> ak.Array:
+    """Two tracks in event 0, one track in event 1.
+
+    Track 0 (seed_id 0) has 3 states: a normal single-contributor state, a
+    hole (0 contributors), and a merged cluster (2 contributors) -- the exact
+    shape that crashed the old ``ak.flatten(..., axis=1)`` + ``ak.to_numpy``
+    approach. Track 1 (seed_id 1) has 1 state. Track 2 belongs to event 1 and
+    must be dropped when filtering for event_id=0.
+    """
+    return ak.Array({
+        "event_nr": [0, 0, 1],
+        "particle_ids_particle": [[[101], [], [101, 202]], [[303]], [[404]]],
+        "particle_ids_vertex_primary": [[[0], [], [0, 0]], [[0]], [[0]]],
+        "particle_ids_vertex_secondary": [[[0], [], [0, 0]], [[0]], [[0]]],
+        "particle_ids_generation": [[[0], [], [0, 0]], [[0]], [[0]]],
+        "particle_ids_sub_particle": [[[0], [], [0, 0]], [[0]], [[0]]],
+    })
+
+
+def test_select_contributors_handles_hole_and_merged_cluster():
+    """The exact shape that crashed: a 0-contributor hole and a 2-contributor
+    merged cluster in the same track."""
+    from expansion import encode_particle_id
+    from scripts.patch_is_selected import _select_contributors_from_arrays
+
+    df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
+
+    row_hole = df[(df["seed_id"] == 0) & (df["step_k"] == 1)].iloc[0]
+    assert row_hole["sel_contrib_pids"] == []
+
+    row_merged = df[(df["seed_id"] == 0) & (df["step_k"] == 2)].iloc[0]
+    expected = encode_particle_id(
+        np.array([0, 0]), np.array([0, 0]), np.array([101, 202]),
+        np.array([0, 0]), np.array([0, 0]),
+    ).tolist()
+    assert row_merged["sel_contrib_pids"] == expected
+
+
+def test_select_contributors_step_k_is_per_track_ordinal():
+    """step_k is a 0-based ordinal within each track, independent across
+    tracks with differing state counts -- not a groupby().cumcount() over a
+    flat per-state table (there is no such table; the tree is per-track)."""
+    from scripts.patch_is_selected import _select_contributors_from_arrays
+
+    df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
+
+    track0 = df[df["seed_id"] == 0].sort_values("step_k")["step_k"].tolist()
+    track1 = df[df["seed_id"] == 1].sort_values("step_k")["step_k"].tolist()
+    assert track0 == [0, 1, 2]
+    assert track1 == [0]
+
+
+def test_select_contributors_sel_has_hit_false_only_for_empty_contrib_list():
+    from scripts.patch_is_selected import _select_contributors_from_arrays
+
+    df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
+    df = df.sort_values(["seed_id", "step_k"]).reset_index(drop=True)
+    assert df["sel_has_hit"].tolist() == [True, False, True, True]
+
+
+def test_select_contributors_filters_to_the_requested_event():
+    """Track 2 (event_nr=1) must not appear when event_id=0 is requested."""
+    from scripts.patch_is_selected import _select_contributors_from_arrays
+
+    df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
+    assert set(df["seed_id"].unique()) == {0, 1}
+    assert len(df) == 4  # 3 states for track 0 + 1 state for track 1
+
+    df1 = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=1)
+    assert len(df1) == 1
+
+
+# --- Primary route: doubly-jagged residual parsing -------------------------
+
+
+def _synthetic_residual_arrays() -> ak.Array:
+    """Same track layout as the contributor fixture: track 0 has 3 states
+    (middle one a hole -> NaN residual), track 1 has 1 state, track 2 is a
+    different event and must be filtered out."""
+    return ak.Array({
+        "event_nr": [0, 0, 1],
+        "res_eLOC0_prt": [[0.10, np.nan, -0.30], [0.05], [9.9]],
+        "res_eLOC1_prt": [[0.20, np.nan, 0.40], [0.15], [9.9]],
+    })
+
+
+def test_root_residuals_drops_hole_and_keeps_correct_step_k():
+    from scripts.patch_is_selected import _root_residuals_from_arrays
+
+    df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
+    df = df.sort_values(["seed_id", "step_k"]).reset_index(drop=True)
+
+    # The hole (track 0, step_k 1) is dropped; step_k 0 and 2 survive with
+    # their correct per-track ordinal, not renumbered after the drop.
+    assert df["seed_id"].tolist() == [0, 0, 1]
+    assert df["step_k"].tolist() == [0, 2, 0]
+    np.testing.assert_allclose(df["res_l0"].tolist(), [0.10, -0.30, 0.05])
+    np.testing.assert_allclose(df["res_l1"].tolist(), [0.20, 0.40, 0.15])
+
+
+def test_root_residuals_filters_to_the_requested_event():
+    """seed_id is synthesized from position among the *filtered* tracks
+    (expansion.py:423's convention), so the sole event-1 track is reindexed
+    to seed_id 0, not its original position (2) in the unfiltered array."""
+    from scripts.patch_is_selected import _root_residuals_from_arrays
+
+    df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=1)
+    assert df["seed_id"].tolist() == [0]
+    assert df["step_k"].tolist() == [0]
+
+
+def test_root_and_contributor_parsing_agree_on_step_k_layout():
+    """Both parsers must derive step_k the same way from the same track
+    layout, since match_selected and selected_correctness join on
+    (seed_id, step_k) across their outputs."""
+    from scripts.patch_is_selected import (
+        _root_residuals_from_arrays,
+        _select_contributors_from_arrays,
+    )
+
+    contrib = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
+    resid = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
+
+    contrib_states = set(zip(contrib["seed_id"], contrib["step_k"]))
+    # Residuals drop the hole at (0, 1); contributors keep it (empty list).
+    resid_states = set(zip(resid["seed_id"], resid["step_k"]))
+    assert resid_states <= contrib_states
+    assert (0, 1) in contrib_states and (0, 1) not in resid_states

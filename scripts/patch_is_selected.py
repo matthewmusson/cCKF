@@ -74,6 +74,78 @@ from expansion import encode_particle_id
 DEFAULT_TOL = 1e-4
 
 
+#: particle_ids_* branches, doubly-jagged (track, state, contributor) -- see
+#: expansion.py's ``_TRACKSTATE_PARTICLE_BRANCHES`` docstring.
+_PARTICLE_ID_FIELDS = (
+    "particle_ids_vertex_primary",
+    "particle_ids_vertex_secondary",
+    "particle_ids_particle",
+    "particle_ids_generation",
+    "particle_ids_sub_particle",
+)
+
+
+def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
+    """Pure parsing step of :func:`load_selected_contributors`.
+
+    Takes an already-loaded awkward Array (one entry per track, as read from
+    the ``trackstates`` tree with ``library="ak"``) so it can be exercised
+    directly against synthetic doubly-jagged fixtures without a ROOT file.
+
+    The tree is one entry per **track**, not per state (expansion.py:418-425).
+    ``particle_ids_particle`` (and its four sibling fields) is doubly-jagged:
+    (track, state, contributor) -- expansion.py:135-136. This mirrors
+    ``expansion.py``'s ``load_trackstates`` exactly: ``ak.num(..., axis=1)``
+    and ``ak.local_index(..., axis=1)`` peel off the per-state layer to
+    build ``seed_id``/``step_k``, then a single ``axis=1`` flatten drops the
+    per-track nesting (leaving one, possibly empty, jagged contributor list
+    per state) before a full flatten and re-grouping by per-state counts
+    recovers the contributor lists.
+    """
+    import awkward as ak
+
+    if "event_nr" in arrays.fields:
+        event_mask = ak.to_numpy(arrays["event_nr"]) == int(event_id)
+        arrays = arrays[event_mask]
+
+    empty = pd.DataFrame(columns=["seed_id", "step_k", "sel_contrib_pids", "sel_has_hit"])
+    n_tracks = len(arrays)
+    if n_tracks == 0:
+        return empty
+
+    # particle_ids_particle is doubly-jagged (track, state, contributor):
+    # axis=1 num/local_index operate on the per-state layer directly.
+    n_states = ak.to_numpy(ak.num(arrays["particle_ids_particle"], axis=1)).astype(np.int64)
+    if n_states.sum() == 0:
+        return empty
+    track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
+    state_idx = ak.to_numpy(
+        ak.flatten(ak.local_index(arrays["particle_ids_particle"], axis=1))
+    ).astype(np.int64)
+
+    # Drop the per-track nesting only -- each element is now one (possibly
+    # empty) jagged contributor list per state, in (track, state) order.
+    per_state = {name: ak.flatten(arrays[name], axis=1) for name in _PARTICLE_ID_FIELDS}
+    counts = ak.to_numpy(ak.num(per_state["particle_ids_particle"])).astype(np.int64)
+
+    flat_pv = ak.to_numpy(ak.flatten(per_state["particle_ids_vertex_primary"]))
+    flat_sv = ak.to_numpy(ak.flatten(per_state["particle_ids_vertex_secondary"]))
+    flat_p = ak.to_numpy(ak.flatten(per_state["particle_ids_particle"]))
+    flat_gen = ak.to_numpy(ak.flatten(per_state["particle_ids_generation"]))
+    flat_sub = ak.to_numpy(ak.flatten(per_state["particle_ids_sub_particle"]))
+
+    codes = encode_particle_id(flat_pv, flat_sv, flat_p, flat_gen, flat_sub)
+    nested = ak.unflatten(codes, counts)
+
+    df = pd.DataFrame({
+        "seed_id": track_nr,
+        "step_k": state_idx,
+        "sel_contrib_pids": ak.to_list(nested),
+    })
+    df["sel_has_hit"] = df["sel_contrib_pids"].map(len) > 0
+    return df
+
+
 def load_selected_contributors(root_path: str, event_id: int) -> pd.DataFrame:
     """Read the contributor list of each state's CKF-selected hit.
 
@@ -83,44 +155,20 @@ def load_selected_contributors(root_path: str, event_id: int) -> pd.DataFrame:
         ``seed_id``, ``step_k``, ``sel_contrib_pids`` (list of int64 barcodes),
         ``sel_has_hit`` (False for holes, where the contributor list is empty).
     """
-    import awkward as ak
     import uproot
 
     with uproot.open(root_path) as fh:
         tree = fh["trackstates"]
-        arrays = tree.arrays(
-            [
-                "event_nr",
-                "track_nr",
-                "particle_ids_vertex_primary",
-                "particle_ids_vertex_secondary",
-                "particle_ids_particle",
-                "particle_ids_generation",
-                "particle_ids_sub_particle",
-            ],
-            library="ak",
-        )
+        available = set(tree.keys())
+        fields = list(_PARTICLE_ID_FIELDS)
+        if "event_nr" in available:
+            fields = fields + ["event_nr"]
+        # uproot's `cut=` filtering silently no-ops in this environment (see
+        # expansion.py's load_trackstates); boolean-mask the loaded awkward
+        # array instead.
+        arrays = tree.arrays(fields, library="ak")
 
-    arrays = arrays[arrays["event_nr"] == event_id]
-    codes = encode_particle_id(
-        ak.to_numpy(ak.flatten(arrays["particle_ids_vertex_primary"], axis=1)),
-        ak.to_numpy(ak.flatten(arrays["particle_ids_vertex_secondary"], axis=1)),
-        ak.to_numpy(ak.flatten(arrays["particle_ids_particle"], axis=1)),
-        ak.to_numpy(ak.flatten(arrays["particle_ids_generation"], axis=1)),
-        ak.to_numpy(ak.flatten(arrays["particle_ids_sub_particle"], axis=1)),
-    )
-    counts = ak.to_numpy(ak.num(arrays["particle_ids_particle"], axis=1))
-    nested = ak.unflatten(codes, counts)
-
-    track_nr = ak.to_numpy(arrays["track_nr"]).astype(np.int64)
-    df = pd.DataFrame({
-        "seed_id": track_nr,
-        "sel_contrib_pids": ak.to_list(nested),
-    })
-    # step_k is the within-track state ordinal, matching the expansion.
-    df["step_k"] = df.groupby("seed_id").cumcount()
-    df["sel_has_hit"] = df["sel_contrib_pids"].map(len) > 0
-    return df
+    return _select_contributors_from_arrays(arrays, event_id)
 
 
 def selected_correctness(
@@ -154,6 +202,55 @@ def selected_correctness(
     return out[["seed_id", "step_k", "sel_correct", "sel_wrong"]]
 
 
+#: Per-state residual branches. Same ``_prt`` convention as ``eLOC0_prt`` etc.
+#: in expansion.py's ``_TRACKSTATE_SCALAR_BRANCHES``: singly-jagged
+#: (track, state), not one entry per state.
+_RESIDUAL_FIELDS = ("res_eLOC0_prt", "res_eLOC1_prt")
+
+
+def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
+    """Pure parsing step of :func:`load_root_residuals`.
+
+    Takes an already-loaded awkward Array (one entry per track) so it can be
+    exercised directly against synthetic fixtures without a ROOT file.
+    ``res_eLOC0_prt``/``res_eLOC1_prt`` are singly-jagged, per-state scalar
+    branches -- the tree is one entry per track (expansion.py:418-429), not
+    one entry per state as originally assumed; ``ak.num``/``ak.local_index``
+    at ``axis=1`` peel off the per-state layer to build ``seed_id``/``step_k``
+    exactly as expansion.py's ``load_trackstates`` does for its own
+    ``_prt``-suffixed scalar branches.
+    """
+    import awkward as ak
+
+    if "event_nr" in arrays.fields:
+        event_mask = ak.to_numpy(arrays["event_nr"]) == int(event_id)
+        arrays = arrays[event_mask]
+
+    empty = pd.DataFrame(columns=["seed_id", "step_k", "res_l0", "res_l1"])
+    n_tracks = len(arrays)
+    if n_tracks == 0:
+        return empty
+
+    n_states = ak.to_numpy(ak.num(arrays["res_eLOC0_prt"], axis=1)).astype(np.int64)
+    if n_states.sum() == 0:
+        return empty
+    track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
+    state_idx = ak.to_numpy(
+        ak.flatten(ak.local_index(arrays["res_eLOC0_prt"], axis=1))
+    ).astype(np.int64)
+
+    res0 = ak.to_numpy(ak.flatten(arrays["res_eLOC0_prt"], axis=1)).astype(np.float64)
+    res1 = ak.to_numpy(ak.flatten(arrays["res_eLOC1_prt"], axis=1)).astype(np.float64)
+
+    df = pd.DataFrame({
+        "seed_id": track_nr,
+        "step_k": state_idx,
+        "res_l0": res0,
+        "res_l1": res1,
+    })
+    return df.loc[np.isfinite(df["res_l0"]) & np.isfinite(df["res_l1"])].reset_index(drop=True)
+
+
 def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
     """Read per-state selected-hit residuals from the trackstates ROOT tree.
 
@@ -168,22 +265,17 @@ def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
 
     with uproot.open(root_path) as fh:
         tree = fh["trackstates"]
-        arrays = tree.arrays(
-            ["event_nr", "track_nr", "res_eLOC0_prt", "res_eLOC1_prt"],
-            library="np",
-        )
+        available = set(tree.keys())
+        fields = list(_RESIDUAL_FIELDS)
+        if "event_nr" in available:
+            fields = fields + ["event_nr"]
+        # uproot's `cut=` filtering silently no-ops in this environment (see
+        # expansion.py's load_trackstates); boolean-mask the loaded awkward
+        # array instead. Read as awkward, not "np" -- these are jagged
+        # per-state branches, not one flat value per row.
+        arrays = tree.arrays(fields, library="ak")
 
-    # The ROOT tree is one entry per state, ordered within each track; the
-    # expansion's step_k is that within-track ordinal.
-    event_nr = np.asarray(arrays["event_nr"], dtype=np.int64)
-    keep = event_nr == event_id
-    track_nr = np.asarray(arrays["track_nr"], dtype=np.int64)[keep]
-    res0 = np.asarray(arrays["res_eLOC0_prt"], dtype=np.float64)[keep]
-    res1 = np.asarray(arrays["res_eLOC1_prt"], dtype=np.float64)[keep]
-
-    df = pd.DataFrame({"seed_id": track_nr, "res_l0": res0, "res_l1": res1})
-    df["step_k"] = df.groupby("seed_id").cumcount()
-    return df.loc[np.isfinite(df["res_l0"]) & np.isfinite(df["res_l1"])].reset_index(drop=True)
+    return _root_residuals_from_arrays(arrays, event_id)
 
 
 def match_selected(
