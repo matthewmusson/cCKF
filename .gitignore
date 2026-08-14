@@ -1,0 +1,9 @@
+# Agent scratch and worktrees. These hold nested git worktrees
+# (.claude/worktrees/) and per-plan execution state (.superpowers/sdd/);
+# committing either would pull a whole second checkout into this repo.
+.claude/
+.superpowers/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
