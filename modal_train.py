@@ -18,6 +18,8 @@ Usage
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import modal
 
 app = modal.App("cckf-train")
@@ -70,6 +72,8 @@ def patch_selected_all() -> list[dict]:
     import sys
     from pathlib import Path
 
+    import pyarrow.parquet as pq
+
     sys.path.insert(0, "/root")
     from cckf import splits
     from scripts.patch_is_selected import patch_event
@@ -78,13 +82,29 @@ def patch_selected_all() -> list[dict]:
     events = [*splits.TRAIN_EVENTS, *splits.VAL_EVENTS, *splits.CAL_EVENTS]
     splits.assert_not_test(events)
 
+    index = _build_trackstates_index()  # one scan, not one per event
+
     for event_id in sorted(events):
         src = f"{EXPANDED_DIR}/expanded_event{event_id:09d}.parquet"
         out = f"{SELECTED_DIR}/expanded_event{event_id:09d}.parquet"
         if Path(out).exists():
-            print(f"event {event_id}: already patched, skipping")
-            continue
-        root = _find_trackstates(event_id)
+            # This volume has a documented history of Parquet corruption
+            # (11 files, "magic bytes not found in footer" -- see
+            # experiments/LOG.md) from a prior concurrent-commit incident. A
+            # crash mid-commit is not provably excluded, so confirm the
+            # existing output's footer is actually readable before trusting
+            # it -- metadata-only, no row read.
+            try:
+                pq.ParquetFile(out)
+            except Exception as exc:
+                print(
+                    f"event {event_id}: existing output at {out} failed "
+                    f"integrity check ({exc!r}); re-patching"
+                )
+            else:
+                print(f"event {event_id}: already patched, skipping")
+                continue
+        root = _find_trackstates(event_id, index)
         report = patch_event(src, root, event_id, out)
         print(report)
         reports.append(report)
@@ -92,30 +112,112 @@ def patch_selected_all() -> list[dict]:
     return reports
 
 
-def _find_trackstates(event_id: int) -> str:
-    """Locate the trackstates ROOT file for one event on the volume.
+@dataclass
+class TrackstatesIndex:
+    """Result of one scan of ``/data/results`` for ``trackstates_ckf.root`` files."""
+
+    n_candidates: int = 0
+    matched: dict[int, str] = field(default_factory=dict)  # event_id -> path
+    no_event_nr: list[str] = field(default_factory=list)  # files w/o an event_nr branch
+    unreadable: list[tuple[str, str]] = field(default_factory=list)  # (path, repr(exc))
+
+
+def _build_trackstates_index() -> TrackstatesIndex:
+    """Scan ``/data/results`` once and record which event(s) each trackstates
+    file covers.
 
     Stage 1 wrote 32 events across 16 batch directories, so the layout is not a
-    single predictable path. Search rather than assume.
+    single predictable path -- every ``trackstates_ckf.root`` under
+    ``/data/results`` must be probed. Doing that scan once here, instead of
+    re-globbing and re-opening every candidate per event (the original
+    per-event search), turns up to ~512 file opens across 32 events into one
+    open per file (~16).
+
+    A file that fails to open, or whose ``trackstates`` tree can't be read, is
+    recorded in ``unreadable`` with the exception -- never silently dropped.
+    This volume has a documented history of exactly this kind of corruption
+    (11 Parquet files with unreadable footers from a prior concurrent-commit
+    incident, experiments/LOG.md), and a broken ROOT file that vanishes from
+    the index with no trace would misdirect debugging toward "the file is
+    missing" when the truth is "the file is broken".
+
+    A file with no ``event_nr`` branch is *not* unreadable: per
+    ``expansion.load_trackstates``, that is a legitimate single-event file
+    from an older pipeline stage, and the whole file is treated as belonging
+    to whichever event is requested. Such files go in ``no_event_nr`` and are
+    used only as a last resort when no file has an exact ``event_nr`` match.
     """
     from pathlib import Path
+
+    import uproot
 
     candidates = sorted(Path(f"{DATA_PATH}/results").rglob("trackstates_ckf.root"))
     if not candidates:
         raise FileNotFoundError("no trackstates_ckf.root anywhere under /data/results")
 
-    import uproot
-
+    index = TrackstatesIndex(n_candidates=len(candidates))
     for path in candidates:
         try:
             with uproot.open(path) as fh:
-                events = set(fh["trackstates"]["event_nr"].array(library="np").tolist())
-        except Exception:
+                tree = fh["trackstates"]
+                if "event_nr" not in set(tree.keys()):
+                    print(
+                        f"[modal_train] WARNING: {path} has no 'event_nr' "
+                        "branch -- treating it as a single-event file "
+                        "(matches expansion.load_trackstates fallback)"
+                    )
+                    index.no_event_nr.append(str(path))
+                    continue
+                file_events = set(tree["event_nr"].array(library="np").tolist())
+        except (OSError, KeyError, ValueError) as exc:
+            print(f"[modal_train] WARNING: could not read {path}: {exc!r}")
+            index.unreadable.append((str(path), repr(exc)))
             continue
-        if event_id in events:
-            print(f"event {event_id}: trackstates at {path}")
-            return str(path)
-    raise FileNotFoundError(f"no trackstates file contains event {event_id}")
+
+        for event_id in file_events:
+            event_id = int(event_id)
+            if event_id in index.matched:
+                print(
+                    f"[modal_train] WARNING: event {event_id} found in both "
+                    f"{index.matched[event_id]} and {path}; keeping the first"
+                )
+                continue
+            index.matched[event_id] = str(path)
+    return index
+
+
+def _find_trackstates(event_id: int, index: TrackstatesIndex) -> str:
+    """Look up the trackstates file for one event from a pre-built index.
+
+    Prefers an exact ``event_nr`` match. Falls back to a no-``event_nr`` file
+    only when no exact match exists -- see :func:`_build_trackstates_index`.
+    """
+    if event_id in index.matched:
+        path = index.matched[event_id]
+        print(f"event {event_id}: trackstates at {path}")
+        return path
+
+    if index.no_event_nr:
+        path = index.no_event_nr[0]
+        print(
+            f"event {event_id}: no exact event_nr match, falling back to "
+            f"no-event_nr file {path}"
+        )
+        return path
+
+    n_unreadable = len(index.unreadable)
+    if n_unreadable:
+        bad = ", ".join(p for p, _ in index.unreadable)
+        raise FileNotFoundError(
+            f"no trackstates file contains event {event_id}; probed "
+            f"{index.n_candidates} file(s), {n_unreadable} unreadable "
+            f"({bad}), the rest readable but none matched"
+        )
+    raise FileNotFoundError(
+        f"no trackstates file contains event {event_id}; probed "
+        f"{index.n_candidates} file(s), all readable, none contained "
+        f"event {event_id}"
+    )
 
 
 @app.function(image=image, volumes={DATA_PATH: data_vol}, cpu=16, memory=262144, timeout=86400)
