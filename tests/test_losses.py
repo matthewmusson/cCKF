@@ -33,10 +33,34 @@ def test_bce_accepts_soft_targets_in_the_open_interval():
 
 
 def test_bce_applies_no_positive_reweighting():
+    """An asymmetric batch pinned to its closed-form unweighted value.
+
+    Spec §2.4: imbalance is handled by the sampler, never by the loss. A
+    pos_weight w would shift the learned logit by log(w), so sigma(z) would no
+    longer estimate P(y=1|x) and the downstream Platt fit -- which assumes an
+    affine correction to a *proper* logit -- would be correcting the wrong
+    quantity.
+
+    Two positives and one negative, all at z = 0 so sigma(z) = 0.5 and every
+    sample contributes exactly -log(0.5) = log 2 when unweighted. Under a
+    pos_weight w the mean becomes (2w + 1)/3 * log 2, which differs from log 2
+    for every w != 1. The batch is deliberately NOT permutation-symmetric: a
+    symmetric batch lets w cancel, which is why the previous form of this test
+    passed even at w = 193.
+    """
+    loss = losses.bce_with_logits(
+        torch.zeros(3), torch.tensor([1.0, 1.0, 0.0])
+    ).item()
+    assert loss == pytest.approx(math.log(2.0), rel=1e-6)
+
+
+def test_bce_is_symmetric_under_simultaneous_logit_and_label_negation():
     """A balanced batch and its label-flipped mirror must give the same loss.
 
-    If any pos_weight were applied, flipping labels would change the value.
-    Spec §2.4: imbalance is handled by the sampler, never by the loss.
+    This symmetry holds for any pos_weight (w cancels in the algebra), so it
+    does NOT guard against reweighting being introduced -- that job belongs to
+    test_bce_applies_no_positive_reweighting above, which uses an asymmetric
+    batch. This test only pins the (weaker, always-true) symmetry property.
     """
     logits = torch.tensor([1.0, -1.0])
     a = losses.bce_with_logits(logits, torch.tensor([1.0, 0.0]))
