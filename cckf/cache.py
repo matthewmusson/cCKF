@@ -16,7 +16,11 @@ Files written per cache directory
     ``(n_rows, 3)`` float32 of ``chi2_inc``, ``n_window``, ``eta``. Kept
     separately from X because the calibration audit strata (§4.2) and the
     hard-negative sampler (§2.5 Approach C) need these *unstandardised*, while
-    X gets z-scored.
+    X gets z-scored. A NaN ``chi2_inc`` (e.g. a hole row with no residual) is
+    mapped to ``+inf`` in this column, not left as NaN, so that
+    ``cckf.samplers.hard_negative_subsample`` -- the sole consumer of
+    ``aux[:, 0]`` -- can treat it as maximally easy (weight -> 0) with a plain
+    ``np.isfinite`` check instead of also special-casing NaN.
 ``ambiguous.u8``
     Merged-cluster flag, for ablation A8b.
 ``meta.json``
@@ -25,6 +29,7 @@ Files written per cache directory
 Only one pass over the Parquet is ever needed: all three §2.5 sampling
 strategies are index-level samplers over this single cache, not separate caches.
 """
+
 from __future__ import annotations
 
 import json
@@ -81,7 +86,9 @@ class CacheWriter:
         meta = {
             "n_rows": self.n_rows,
             "n_positive": self.n_positive,
-            "positive_fraction": (self.n_positive / self.n_rows) if self.n_rows else 0.0,
+            "positive_fraction": (
+                (self.n_positive / self.n_rows) if self.n_rows else 0.0
+            ),
             "n_features": self.n_features,
             "feature_names": list(feat.GATE_FEATURES),
             "aux_columns": list(_AUX_COLUMNS),
@@ -142,11 +149,19 @@ def build_gate_cache(
             ambiguous = derived["label_ambiguous"][mask]
 
             X = feat.build_gate_features(df)
-            aux = np.column_stack([
-                np.nan_to_num(df["chi2_inc"].to_numpy(dtype=np.float64), nan=np.inf),
-                df["n_window"].to_numpy(dtype=np.float64),
-                feat.eta_from_theta(df["state_theta"].to_numpy(dtype=np.float64)),
-            ]).astype(np.float32)
+            aux = np.column_stack(
+                [
+                    # NaN -> +inf (see module docstring, "aux.f32"): a NaN chi2_inc
+                    # means no residual to compute one, and +inf reads to the
+                    # hard-negative sampler as maximally easy rather than as a
+                    # missing value it would need to special-case.
+                    np.nan_to_num(
+                        df["chi2_inc"].to_numpy(dtype=np.float64), nan=np.inf
+                    ),
+                    df["n_window"].to_numpy(dtype=np.float64),
+                    feat.eta_from_theta(df["state_theta"].to_numpy(dtype=np.float64)),
+                ]
+            ).astype(np.float32)
 
             writer.append(X, y, aux, ambiguous.astype(np.uint8))
 

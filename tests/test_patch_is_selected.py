@@ -1,4 +1,5 @@
 """Tests for recovering the CKF-selected candidate per state."""
+
 from __future__ import annotations
 
 import awkward as ak
@@ -11,24 +12,28 @@ from scripts.patch_is_selected import match_selected
 
 def _cands() -> pd.DataFrame:
     # Two states. State (0,0) has 3 candidates; state (0,1) has 2.
-    return pd.DataFrame({
-        "seed_id": [0, 0, 0, 0, 0],
-        "step_k": [0, 0, 0, 1, 1],
-        "cand_hit_id": [10, 11, 12, 20, 21],
-        "residual_l0": [0.10, -0.30, 0.90, 0.05, 2.00],
-        "residual_l1": [0.20, 0.40, -0.10, 0.15, 1.00],
-    })
+    return pd.DataFrame(
+        {
+            "seed_id": [0, 0, 0, 0, 0],
+            "step_k": [0, 0, 0, 1, 1],
+            "cand_hit_id": [10, 11, 12, 20, 21],
+            "residual_l0": [0.10, -0.30, 0.90, 0.05, 2.00],
+            "residual_l1": [0.20, 0.40, -0.10, 0.15, 1.00],
+        }
+    )
 
 
 def _root() -> pd.DataFrame:
     # ROOT says state (0,0) selected the candidate with residual (-0.30, 0.40)
     # and state (0,1) selected residual (0.05, 0.15).
-    return pd.DataFrame({
-        "seed_id": [0, 0],
-        "step_k": [0, 1],
-        "res_l0": [-0.30, 0.05],
-        "res_l1": [0.40, 0.15],
-    })
+    return pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "step_k": [0, 1],
+            "res_l0": [-0.30, 0.05],
+            "res_l1": [0.40, 0.15],
+        }
+    )
 
 
 def test_match_selected_picks_exactly_one_per_state():
@@ -60,22 +65,30 @@ def test_match_selected_respects_tolerance():
 
 def test_match_selected_breaks_ties_deterministically():
     """Two identical residuals in one state: flag the lower cand_hit_id only."""
-    cands = pd.DataFrame({
-        "seed_id": [0, 0],
-        "step_k": [0, 0],
-        "cand_hit_id": [11, 10],
-        "residual_l0": [0.5, 0.5],
-        "residual_l1": [0.5, 0.5],
-    })
-    root = pd.DataFrame({
-        "seed_id": [0], "step_k": [0], "res_l0": [0.5], "res_l1": [0.5],
-    })
+    cands = pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "step_k": [0, 0],
+            "cand_hit_id": [11, 10],
+            "residual_l0": [0.5, 0.5],
+            "residual_l1": [0.5, 0.5],
+        }
+    )
+    root = pd.DataFrame(
+        {
+            "seed_id": [0],
+            "step_k": [0],
+            "res_l0": [0.5],
+            "res_l1": [0.5],
+        }
+    )
     sel = match_selected(cands, root)
     assert sel.sum() == 1
     assert cands.loc[sel, "cand_hit_id"].iloc[0] == 10
 
 
 # --- Primary route: exact contributor join --------------------------------
+
 
 def test_expansion_barcode_packing_is_the_documented_layout():
     """Guards the shared encoding. `patch_is_selected` imports this rather than
@@ -114,11 +127,14 @@ def test_selected_correctness_flags_membership_not_primary_contributor():
     Using ROOT's state_primary_pid (the mode) would wrongly call this wrong."""
     from scripts.patch_is_selected import selected_correctness
 
-    sel = pd.DataFrame({
-        "seed_id": [0], "step_k": [0],
-        "sel_contrib_pids": [[999, 7]],  # 999 dominates, 7 is the majority pid
-        "sel_has_hit": [True],
-    })
+    sel = pd.DataFrame(
+        {
+            "seed_id": [0],
+            "step_k": [0],
+            "sel_contrib_pids": [[999, 7]],  # 999 dominates, 7 is the majority pid
+            "sel_has_hit": [True],
+        }
+    )
     majority = pd.DataFrame({"seed_id": [0], "branch_majority_pid": [7]})
     out = selected_correctness(sel, majority)
     assert out["sel_correct"].iloc[0] == 1
@@ -128,11 +144,14 @@ def test_selected_correctness_flags_membership_not_primary_contributor():
 def test_selected_correctness_flags_wrong_when_majority_absent():
     from scripts.patch_is_selected import selected_correctness
 
-    sel = pd.DataFrame({
-        "seed_id": [0], "step_k": [0],
-        "sel_contrib_pids": [[999, 888]],
-        "sel_has_hit": [True],
-    })
+    sel = pd.DataFrame(
+        {
+            "seed_id": [0],
+            "step_k": [0],
+            "sel_contrib_pids": [[999, 888]],
+            "sel_has_hit": [True],
+        }
+    )
     majority = pd.DataFrame({"seed_id": [0], "branch_majority_pid": [7]})
     out = selected_correctness(sel, majority)
     assert out["sel_correct"].iloc[0] == 0
@@ -143,11 +162,14 @@ def test_selected_correctness_counts_a_hole_as_neither():
     """A hole neither helps completeness nor pollutes purity."""
     from scripts.patch_is_selected import selected_correctness
 
-    sel = pd.DataFrame({
-        "seed_id": [0], "step_k": [0],
-        "sel_contrib_pids": [[]],
-        "sel_has_hit": [False],
-    })
+    sel = pd.DataFrame(
+        {
+            "seed_id": [0],
+            "step_k": [0],
+            "sel_contrib_pids": [[]],
+            "sel_has_hit": [False],
+        }
+    )
     majority = pd.DataFrame({"seed_id": [0], "branch_majority_pid": [7]})
     out = selected_correctness(sel, majority)
     assert out["sel_correct"].iloc[0] == 0
@@ -158,11 +180,14 @@ def test_selected_correctness_is_exclusive():
     """No state may be both correct and wrong."""
     from scripts.patch_is_selected import selected_correctness
 
-    sel = pd.DataFrame({
-        "seed_id": [0, 0, 0], "step_k": [0, 1, 2],
-        "sel_contrib_pids": [[7], [8], []],
-        "sel_has_hit": [True, True, False],
-    })
+    sel = pd.DataFrame(
+        {
+            "seed_id": [0, 0, 0],
+            "step_k": [0, 1, 2],
+            "sel_contrib_pids": [[7], [8], []],
+            "sel_has_hit": [True, True, False],
+        }
+    )
     majority = pd.DataFrame({"seed_id": [0], "branch_majority_pid": [7]})
     out = selected_correctness(sel, majority)
     assert ((out["sel_correct"] + out["sel_wrong"]) <= 1).all()
@@ -190,14 +215,16 @@ def _synthetic_contributor_arrays() -> ak.Array:
     approach. Track 1 (seed_id 1) has 1 state. Track 2 belongs to event 1 and
     must be dropped when filtering for event_id=0.
     """
-    return ak.Array({
-        "event_nr": [0, 0, 1],
-        "particle_ids_particle": [[[101], [], [101, 202]], [[303]], [[404]]],
-        "particle_ids_vertex_primary": [[[0], [], [0, 0]], [[0]], [[0]]],
-        "particle_ids_vertex_secondary": [[[0], [], [0, 0]], [[0]], [[0]]],
-        "particle_ids_generation": [[[0], [], [0, 0]], [[0]], [[0]]],
-        "particle_ids_sub_particle": [[[0], [], [0, 0]], [[0]], [[0]]],
-    })
+    return ak.Array(
+        {
+            "event_nr": [0, 0, 1],
+            "particle_ids_particle": [[[101], [], [101, 202]], [[303]], [[404]]],
+            "particle_ids_vertex_primary": [[[0], [], [0, 0]], [[0]], [[0]]],
+            "particle_ids_vertex_secondary": [[[0], [], [0, 0]], [[0]], [[0]]],
+            "particle_ids_generation": [[[0], [], [0, 0]], [[0]], [[0]]],
+            "particle_ids_sub_particle": [[[0], [], [0, 0]], [[0]], [[0]]],
+        }
+    )
 
 
 def test_select_contributors_handles_hole_and_merged_cluster():
@@ -213,8 +240,11 @@ def test_select_contributors_handles_hole_and_merged_cluster():
 
     row_merged = df[(df["seed_id"] == 0) & (df["step_k"] == 2)].iloc[0]
     expected = encode_particle_id(
-        np.array([0, 0]), np.array([0, 0]), np.array([101, 202]),
-        np.array([0, 0]), np.array([0, 0]),
+        np.array([0, 0]),
+        np.array([0, 0]),
+        np.array([101, 202]),
+        np.array([0, 0]),
+        np.array([0, 0]),
     ).tolist()
     assert row_merged["sel_contrib_pids"] == expected
 
@@ -260,11 +290,13 @@ def _synthetic_residual_arrays() -> ak.Array:
     """Same track layout as the contributor fixture: track 0 has 3 states
     (middle one a hole -> NaN residual), track 1 has 1 state, track 2 is a
     different event and must be filtered out."""
-    return ak.Array({
-        "event_nr": [0, 0, 1],
-        "res_eLOC0_prt": [[0.10, np.nan, -0.30], [0.05], [9.9]],
-        "res_eLOC1_prt": [[0.20, np.nan, 0.40], [0.15], [9.9]],
-    })
+    return ak.Array(
+        {
+            "event_nr": [0, 0, 1],
+            "res_eLOC0_prt": [[0.10, np.nan, -0.30], [0.05], [9.9]],
+            "res_eLOC1_prt": [[0.20, np.nan, 0.40], [0.15], [9.9]],
+        }
+    )
 
 
 def test_root_residuals_drops_hole_and_keeps_correct_step_k():
@@ -301,7 +333,9 @@ def test_root_and_contributor_parsing_agree_on_step_k_layout():
         _select_contributors_from_arrays,
     )
 
-    contrib = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
+    contrib = _select_contributors_from_arrays(
+        _synthetic_contributor_arrays(), event_id=0
+    )
     resid = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
 
     contrib_states = set(zip(contrib["seed_id"], contrib["step_k"]))

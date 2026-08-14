@@ -1,4 +1,5 @@
 """Tests for Platt scaling."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -35,7 +36,9 @@ def test_platt_reduces_ece_on_miscalibrated_logits():
     raw = 1.0 / (1.0 + np.exp(-z))
     a, b = calibration.fit_platt(z, y)
     cal = calibration.apply_platt(z, a, b)
-    assert metrics.expected_calibration_error(cal, y) < metrics.expected_calibration_error(raw, y)
+    assert metrics.expected_calibration_error(
+        cal, y
+    ) < metrics.expected_calibration_error(raw, y)
 
 
 def test_apply_platt_returns_probabilities():
@@ -89,11 +92,13 @@ def test_occupancy_platt_beats_two_param_when_miscalibration_is_occupancy_depend
 
     worst2 = max(
         metrics.expected_calibration_error(p2[m], y[m])
-        for m in metrics.quintile_strata(n_window).values() if m.sum() > 1000
+        for m in metrics.quintile_strata(n_window).values()
+        if m.sum() > 1000
     )
     worst4 = max(
         metrics.expected_calibration_error(p4[m], y[m])
-        for m in metrics.quintile_strata(n_window).values() if m.sum() > 1000
+        for m in metrics.quintile_strata(n_window).values()
+        if m.sum() > 1000
     )
     assert worst4 < worst2
 
@@ -101,5 +106,7 @@ def test_occupancy_platt_beats_two_param_when_miscalibration_is_occupancy_depend
 def test_occupancy_platt_handles_n_window_of_zero():
     """log(0) must not appear; n_window is floored at 1."""
     z = np.array([0.0, 1.0, -1.0, 2.0])
-    out = calibration.apply_platt_occupancy(z, np.array([0, 1, 2, 3]), (1.0, 0.1, 0.0, 0.0))
+    out = calibration.apply_platt_occupancy(
+        z, np.array([0, 1, 2, 3]), (1.0, 0.1, 0.0, 0.0)
+    )
     assert np.all(np.isfinite(out))

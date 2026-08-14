@@ -1,4 +1,5 @@
 """Tests for the V^{π†} value target."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -18,15 +19,17 @@ def _step_table() -> pd.DataFrame:
 
     majority_true_hit_on_surface is True at steps 0, 2, 3 and False at step 1.
     """
-    return pd.DataFrame({
-        "seed_id": [0, 0, 0, 0],
-        "branch_id": [0, 0, 0, 0],
-        "step_k": [0, 1, 2, 3],
-        "sel_correct": [1, 0, 0, 1],
-        "sel_wrong": [0, 1, 0, 0],
-        "maj_hit_on_surface": [True, False, True, True],
-        "branch_majority_pid": [7, 7, 7, 7],
-    })
+    return pd.DataFrame(
+        {
+            "seed_id": [0, 0, 0, 0],
+            "branch_id": [0, 0, 0, 0],
+            "step_k": [0, 1, 2, 3],
+            "sel_correct": [1, 0, 0, 1],
+            "sel_wrong": [0, 1, 0, 0],
+            "maj_hit_on_surface": [True, False, True, True],
+            "branch_majority_pid": [7, 7, 7, 7],
+        }
+    )
 
 
 def test_particle_simhit_counts_tallies_per_particle():
@@ -94,11 +97,17 @@ def test_no_tier3_columns_are_produced():
 
 
 def test_all_wrong_branch_has_zero_value():
-    step = pd.DataFrame({
-        "seed_id": [0, 0], "branch_id": [0, 0], "step_k": [0, 1],
-        "sel_correct": [0, 0], "sel_wrong": [1, 1],
-        "maj_hit_on_surface": [False, False], "branch_majority_pid": [7, 7],
-    })
+    step = pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "branch_id": [0, 0],
+            "step_k": [0, 1],
+            "sel_correct": [0, 0],
+            "sel_wrong": [1, 1],
+            "maj_hit_on_surface": [False, False],
+            "branch_majority_pid": [7, 7],
+        }
+    )
     out = vt.compute_value_targets(step, {7: 5})
     assert (out["vstar_t2"] == 0.0).all()
 
@@ -109,10 +118,13 @@ def test_missing_particle_count_yields_nan_not_a_wrong_number():
 
 
 def test_branches_are_independent():
-    step = pd.concat([
-        _step_table(),
-        _step_table().assign(seed_id=1),
-    ], ignore_index=True)
+    step = pd.concat(
+        [
+            _step_table(),
+            _step_table().assign(seed_id=1),
+        ],
+        ignore_index=True,
+    )
     out = vt.compute_value_targets(step, {7: 4})
     a = out[out["seed_id"] == 0]["vstar_t2"].to_numpy()
     b = out[out["seed_id"] == 1]["vstar_t2"].to_numpy()
@@ -120,16 +132,18 @@ def test_branches_are_independent():
 
 
 def test_build_step_table_collapses_candidates_to_one_row_per_step():
-    df = pd.DataFrame({
-        "seed_id": [0, 0, 0],
-        "branch_id": [0, 0, 0],
-        "step_k": [0, 0, 1],
-        "cand_hit_id": [10, 11, -1],
-        "is_ckf_selected": [False, True, False],
-        "label_same_particle": [0, 1, 0],
-        "majority_true_hit_on_surface": [True, True, False],
-        "branch_majority_pid": [7, 7, 7],
-    })
+    df = pd.DataFrame(
+        {
+            "seed_id": [0, 0, 0],
+            "branch_id": [0, 0, 0],
+            "step_k": [0, 0, 1],
+            "cand_hit_id": [10, 11, -1],
+            "is_ckf_selected": [False, True, False],
+            "label_same_particle": [0, 1, 0],
+            "majority_true_hit_on_surface": [True, True, False],
+            "branch_majority_pid": [7, 7, 7],
+        }
+    )
     step = vt.build_step_table(df)
     assert len(step) == 2
     # The selected candidate at step 0 was correct.
@@ -145,12 +159,17 @@ def test_tier_invariant_violated_flags_surface_revisit_inversion():
     simhit there, which can inflate vstar_t2 past vstar_t1 and invert the
     documented vstar_t1 >= vstar_t2 invariant. This must be flagged, not
     silently corrected."""
-    step = pd.DataFrame({
-        "seed_id": [0, 0], "branch_id": [0, 0], "step_k": [0, 1],
-        "sel_correct": [0, 0], "sel_wrong": [0, 0],
-        "maj_hit_on_surface": [True, True],  # same surface, one real hit
-        "branch_majority_pid": [7, 7],
-    })
+    step = pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "branch_id": [0, 0],
+            "step_k": [0, 1],
+            "sel_correct": [0, 0],
+            "sel_wrong": [0, 0],
+            "maj_hit_on_surface": [True, True],  # same surface, one real hit
+            "branch_majority_pid": [7, 7],
+        }
+    )
     out = vt.compute_value_targets(step, {7: 1})
     assert out["vstar_t1"].iloc[0] == pytest.approx(0.0)
     assert out["vstar_t2"].iloc[0] == pytest.approx(1.0)
@@ -163,27 +182,35 @@ def test_tier_invariant_violated_is_false_on_the_single_visit_fixture():
 
 
 def test_tier_invariant_holds_among_non_flagged_rows():
-    step = pd.DataFrame({
-        "seed_id": [0, 0], "branch_id": [0, 0], "step_k": [0, 1],
-        "sel_correct": [0, 0], "sel_wrong": [0, 0],
-        "maj_hit_on_surface": [True, True],
-        "branch_majority_pid": [7, 7],
-    })
-    combined = pd.concat(
-        [_step_table(), step.assign(seed_id=1)], ignore_index=True
+    step = pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "branch_id": [0, 0],
+            "step_k": [0, 1],
+            "sel_correct": [0, 0],
+            "sel_wrong": [0, 0],
+            "maj_hit_on_surface": [True, True],
+            "branch_majority_pid": [7, 7],
+        }
     )
+    combined = pd.concat([_step_table(), step.assign(seed_id=1)], ignore_index=True)
     out = vt.compute_value_targets(combined, {7: 4})
     clean = out[~out["tier_invariant_violated"]]
     assert (clean["vstar_t1"] >= clean["vstar_t2"] - 1e-12).all()
 
 
 def test_tier_invariant_violated_is_false_when_target_is_nan():
-    step = pd.DataFrame({
-        "seed_id": [0, 0], "branch_id": [0, 0], "step_k": [0, 1],
-        "sel_correct": [0, 0], "sel_wrong": [0, 0],
-        "maj_hit_on_surface": [True, True],
-        "branch_majority_pid": [7, 7],
-    })
+    step = pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "branch_id": [0, 0],
+            "step_k": [0, 1],
+            "sel_correct": [0, 0],
+            "sel_wrong": [0, 0],
+            "maj_hit_on_surface": [True, True],
+            "branch_majority_pid": [7, 7],
+        }
+    )
     out = vt.compute_value_targets(step, {})  # pid 7 absent -> NaN targets
     assert out["vstar_t1"].isna().all()
     assert out["vstar_t2"].isna().all()
@@ -191,16 +218,18 @@ def test_tier_invariant_violated_is_false_when_target_is_nan():
 
 
 def test_build_step_table_marks_wrong_when_selected_candidate_is_negative():
-    df = pd.DataFrame({
-        "seed_id": [0, 0],
-        "branch_id": [0, 0],
-        "step_k": [0, 0],
-        "cand_hit_id": [10, 11],
-        "is_ckf_selected": [True, False],
-        "label_same_particle": [0, 1],
-        "majority_true_hit_on_surface": [True, True],
-        "branch_majority_pid": [7, 7],
-    })
+    df = pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "branch_id": [0, 0],
+            "step_k": [0, 0],
+            "cand_hit_id": [10, 11],
+            "is_ckf_selected": [True, False],
+            "label_same_particle": [0, 1],
+            "majority_true_hit_on_surface": [True, True],
+            "branch_majority_pid": [7, 7],
+        }
+    )
     step = vt.build_step_table(df)
     assert step["sel_correct"].iloc[0] == 0
     assert step["sel_wrong"].iloc[0] == 1

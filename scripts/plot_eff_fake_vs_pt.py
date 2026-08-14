@@ -226,9 +226,7 @@ def metrics_vs_pt(
         if key in particles:
             track_maj_pt.append(particles[key]["pt"])
         else:
-            track_maj_pt.append(
-                tr["t_pT"] if np.isfinite(tr["t_pT"]) else float("nan")
-            )
+            track_maj_pt.append(tr["t_pT"] if np.isfinite(tr["t_pT"]) else float("nan"))
     track_maj_pt = np.asarray(track_maj_pt, dtype=float)
     track_cls = np.asarray([tr["classification"] for tr in tracks], dtype=int)
 
@@ -237,9 +235,9 @@ def metrics_vs_pt(
         n_t[i] = sel.sum()
         eff[i] = matched[sel].mean() if sel.any() else float("nan")
         if tracks and n_tracks > 0:
-            good = (
-                (track_cls == CLASS_MATCHED) | (track_cls == CLASS_DUPLICATE)
-            ) & (track_maj_pt >= cut)
+            good = ((track_cls == CLASS_MATCHED) | (track_cls == CLASS_DUPLICATE)) & (
+                track_maj_pt >= cut
+            )
             fake[i] = 1.0 - good.mean()
         else:
             fake[i] = float("nan")
@@ -279,8 +277,11 @@ def main() -> None:
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         dirs = {
-            name: Path(v["output_dir"]) if Path(v["output_dir"]).is_absolute()
-            else args.scan_dir / Path(v["output_dir"]).name
+            name: (
+                Path(v["output_dir"])
+                if Path(v["output_dir"]).is_absolute()
+                else args.scan_dir / Path(v["output_dir"]).name
+            )
             for name, v in manifest.items()
             if v.get("ok")
         }
@@ -295,9 +296,7 @@ def main() -> None:
         dirs = {p.name.split("_")[0]: p for p in args.scan_dir.glob("*_t*")}
 
     # 0.1 GeV trajectory grid + denser sampling for the vs-cutoff curves
-    pt_step = np.round(
-        np.arange(args.pt_min, args.pt_max + 1e-9, args.pt_step), 10
-    )
+    pt_step = np.round(np.arange(args.pt_min, args.pt_max + 1e-9, args.pt_step), 10)
     pt_step = pt_step[(pt_step >= args.pt_min) & (pt_step <= args.pt_max)]
     pt_cuts = np.unique(
         np.concatenate(
@@ -327,7 +326,9 @@ def main() -> None:
         matching = _load_matching(perf)
         tracks = _load_tracks(summ)
         if matching is None:
-            print("  (no matchingdetails — deriving particle matches from tracksummary)")
+            print(
+                "  (no matchingdetails — deriving particle matches from tracksummary)"
+            )
             matching = _matching_from_tracks(particles, tracks)
         series[name] = metrics_vs_pt(particles, matching, tracks, pt_cuts)
         print(
@@ -543,9 +544,7 @@ def _plot_eff_vs_fake_single(
     cbar.set_label(r"true $p_T$ cutoff (GeV)")
     ax.set_xlabel(r"$f_{\mathrm{DM}}$ (%)  (LOG def.; soft-matched → fake)")
     ax.set_ylabel(r"$\varepsilon_{\mathrm{DM}}$ (%)")
-    ax.set_title(
-        f"{name}: ε vs f · separate line per $0.1$ GeV $p_T$ step"
-    )
+    ax.set_title(f"{name}: ε vs f · separate line per $0.1$ GeV $p_T$ step")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=7.5, loc="lower right", ncols=2)
     fig.tight_layout()

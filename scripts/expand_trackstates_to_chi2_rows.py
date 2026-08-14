@@ -118,7 +118,12 @@ def load_measurements(path: Path) -> dict[tuple[int, int, int], dict[str, np.nda
     order = np.lexsort((sen, lay, vol))
     vol_s, lay_s, sen_s = vol[order], lay[order], sen[order]
     starts = np.flatnonzero(
-        np.r_[True, (vol_s[1:] != vol_s[:-1]) | (lay_s[1:] != lay_s[:-1]) | (sen_s[1:] != sen_s[:-1])]
+        np.r_[
+            True,
+            (vol_s[1:] != vol_s[:-1])
+            | (lay_s[1:] != lay_s[:-1])
+            | (sen_s[1:] != sen_s[:-1]),
+        ]
     )
     ends = np.r_[starts[1:], len(order)]
     for s, e in zip(starts, ends):
@@ -134,9 +139,7 @@ def load_measurements(path: Path) -> dict[tuple[int, int, int], dict[str, np.nda
     return by_surface
 
 
-def load_meas_to_pids(
-    map_path: Path, simhits_path: Path
-) -> dict[int, list[PidKey]]:
+def load_meas_to_pids(map_path: Path, simhits_path: Path) -> dict[int, list[PidKey]]:
     """measurement_id → list of contributing particle keys."""
     mmap = pd.read_csv(map_path, comment="#")
     mmap.columns = [c.strip() for c in mmap.columns]

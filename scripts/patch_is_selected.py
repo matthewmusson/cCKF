@@ -49,6 +49,7 @@ Usage
         --event-id 0 \\
         --out /data/results/train32/selected/expanded_event000000000.parquet
 """
+
 from __future__ import annotations
 
 import argparse
@@ -108,14 +109,18 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
         event_mask = ak.to_numpy(arrays["event_nr"]) == int(event_id)
         arrays = arrays[event_mask]
 
-    empty = pd.DataFrame(columns=["seed_id", "step_k", "sel_contrib_pids", "sel_has_hit"])
+    empty = pd.DataFrame(
+        columns=["seed_id", "step_k", "sel_contrib_pids", "sel_has_hit"]
+    )
     n_tracks = len(arrays)
     if n_tracks == 0:
         return empty
 
     # particle_ids_particle is doubly-jagged (track, state, contributor):
     # axis=1 num/local_index operate on the per-state layer directly.
-    n_states = ak.to_numpy(ak.num(arrays["particle_ids_particle"], axis=1)).astype(np.int64)
+    n_states = ak.to_numpy(ak.num(arrays["particle_ids_particle"], axis=1)).astype(
+        np.int64
+    )
     if n_states.sum() == 0:
         return empty
     track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
@@ -137,11 +142,13 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     codes = encode_particle_id(flat_pv, flat_sv, flat_p, flat_gen, flat_sub)
     nested = ak.unflatten(codes, counts)
 
-    df = pd.DataFrame({
-        "seed_id": track_nr,
-        "step_k": state_idx,
-        "sel_contrib_pids": ak.to_list(nested),
-    })
+    df = pd.DataFrame(
+        {
+            "seed_id": track_nr,
+            "step_k": state_idx,
+            "sel_contrib_pids": ak.to_list(nested),
+        }
+    )
     df["sel_has_hit"] = df["sel_contrib_pids"].map(len) > 0
     return df
 
@@ -171,9 +178,7 @@ def load_selected_contributors(root_path: str, event_id: int) -> pd.DataFrame:
     return _select_contributors_from_arrays(arrays, event_id)
 
 
-def selected_correctness(
-    sel: pd.DataFrame, majority: pd.DataFrame
-) -> pd.DataFrame:
+def selected_correctness(sel: pd.DataFrame, majority: pd.DataFrame) -> pd.DataFrame:
     """Split each state's accepted hit into correct / wrong / neither.
 
     Parameters
@@ -192,10 +197,12 @@ def selected_correctness(
     """
     out = sel.merge(majority, on="seed_id", how="left")
     maj = out["branch_majority_pid"].to_numpy()
-    member = np.array([
-        (m in pids) if isinstance(pids, (list, tuple)) else False
-        for m, pids in zip(maj, out["sel_contrib_pids"])
-    ])
+    member = np.array(
+        [
+            (m in pids) if isinstance(pids, (list, tuple)) else False
+            for m, pids in zip(maj, out["sel_contrib_pids"])
+        ]
+    )
     has_hit = out["sel_has_hit"].to_numpy(dtype=bool)
     out["sel_correct"] = (has_hit & member).astype(np.int64)
     out["sel_wrong"] = (has_hit & ~member).astype(np.int64)
@@ -242,13 +249,17 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     res0 = ak.to_numpy(ak.flatten(arrays["res_eLOC0_prt"], axis=1)).astype(np.float64)
     res1 = ak.to_numpy(ak.flatten(arrays["res_eLOC1_prt"], axis=1)).astype(np.float64)
 
-    df = pd.DataFrame({
-        "seed_id": track_nr,
-        "step_k": state_idx,
-        "res_l0": res0,
-        "res_l1": res1,
-    })
-    return df.loc[np.isfinite(df["res_l0"]) & np.isfinite(df["res_l1"])].reset_index(drop=True)
+    df = pd.DataFrame(
+        {
+            "seed_id": track_nr,
+            "step_k": state_idx,
+            "res_l0": res0,
+            "res_l1": res1,
+        }
+    )
+    return df.loc[np.isfinite(df["res_l0"]) & np.isfinite(df["res_l1"])].reset_index(
+        drop=True
+    )
 
 
 def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
@@ -326,7 +337,9 @@ def match_selected(
     return selected
 
 
-def patch_event(parquet_path: str, root_path: str, event_id: int, out_path: str) -> dict:
+def patch_event(
+    parquet_path: str, root_path: str, event_id: int, out_path: str
+) -> dict:
     """Add ``is_ckf_selected`` to one event's Parquet and write it out.
 
     Returns

@@ -86,8 +86,13 @@ def summarize_clusters(cells: pd.DataFrame) -> dict[str, Any]:
     def _stats(x: np.ndarray) -> dict[str, float]:
         x = x[np.isfinite(x)]
         if len(x) == 0:
-            return {"mean": float("nan"), "std": float("nan"), "min": float("nan"),
-                    "max": float("nan"), "frac_gt1": float("nan")}
+            return {
+                "mean": float("nan"),
+                "std": float("nan"),
+                "min": float("nan"),
+                "max": float("nan"),
+                "frac_gt1": float("nan"),
+            }
         return {
             "mean": float(x.mean()),
             "std": float(x.std(ddof=1)) if len(x) > 1 else 0.0,
@@ -101,9 +106,9 @@ def summarize_clusters(cells: pd.DataFrame) -> dict[str, Any]:
     charge_degenerate = bool(
         np.nanstd(q_tot) < 1e-12 and np.nanmean(q_tot) <= 0.0
     ) or bool(np.all(~np.isfinite(q_tot)))
-    moments_degenerate = bool(
-        np.nanmax(sig_uu) == 0.0 and np.nanmax(sig_vv) == 0.0
-    ) and size_degenerate
+    moments_degenerate = (
+        bool(np.nanmax(sig_uu) == 0.0 and np.nanmax(sig_vv) == 0.0) and size_degenerate
+    )
 
     n_meas = int(len(rows))
     n_with_cells = int((n_ch > 0).sum())
@@ -162,9 +167,9 @@ def probe_digi_dir(digi_dir: Path, events: list[int]) -> dict[str, Any]:
         else:
             per_event[str(ev)] = summarize_clusters(cells)
 
-    overall_pass = all(bool(v.get("pass")) for v in per_event.values()) and len(
-        per_event
-    ) > 0
+    overall_pass = (
+        all(bool(v.get("pass")) for v in per_event.values()) and len(per_event) > 0
+    )
     return {
         "check": 1,
         "name": "cluster_features_populated",

@@ -16,6 +16,7 @@ Usage
         --cal-cache /data/cache/gate/cal \\
         --out-dir /data/audit/gate_A
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,13 +32,15 @@ import torch
 
 from cckf import cache, calibration, features, metrics, models, train
 
-plt.rcParams.update({
-    "font.size": 12,
-    "axes.titlesize": 14,
-    "axes.labelsize": 12,
-    "legend.fontsize": 9,
-    "figure.dpi": 150,
-})
+plt.rcParams.update(
+    {
+        "font.size": 12,
+        "axes.titlesize": 14,
+        "axes.labelsize": 12,
+        "legend.fontsize": 9,
+        "figure.dpi": 150,
+    }
+)
 COLORS = plt.cm.tab10.colors
 DIAGONAL = dict(color="black", linestyle="--", linewidth=1, zorder=0)
 
@@ -51,7 +54,12 @@ ECE_TARGET_STRATUM = 0.05
 EDGES = metrics.logit_bin_edges(n_bins=30)
 
 
-def _plot_curve(ax, data: dict, color, label: str | None) -> None:
+def _plot_curve(
+    ax: matplotlib.axes.Axes,
+    data: dict,
+    color: tuple[float, float, float],
+    label: str | None,
+) -> None:
     """Draw one reliability curve, omitting sparse bins from the line."""
     bins = [b for b in data["bins"] if b["count"] > 0 and not b["sparse"]]
     if not bins:
@@ -60,20 +68,26 @@ def _plot_curve(ax, data: dict, color, label: str | None) -> None:
     y = [b["observed_fraction"] for b in bins]
     ax.plot(x, y, "o-", color=color, markersize=4, label=label)
     ax.fill_between(
-        x, [b["ci_lower"] for b in bins], [b["ci_upper"] for b in bins],
-        alpha=0.2, color=color,
+        x,
+        [b["ci_lower"] for b in bins],
+        [b["ci_upper"] for b in bins],
+        alpha=0.2,
+        color=color,
     )
     # Sparse bins are still shown, as bare Wilson intervals with no marker, so a
     # thin region reads as "uncertain" rather than silently absent.
     thin = [b for b in data["bins"] if 0 < b["count"] and b["sparse"]]
     for b in thin:
         ax.plot(
-            [b["mean_predicted"]] * 2, [b["ci_lower"], b["ci_upper"]],
-            color=color, alpha=0.35, linewidth=1,
+            [b["mean_predicted"]] * 2,
+            [b["ci_lower"], b["ci_upper"]],
+            color=color,
+            alpha=0.35,
+            linewidth=1,
         )
 
 
-def _style(ax, xlabel: str, title: str) -> None:
+def _style(ax: matplotlib.axes.Axes, xlabel: str, title: str) -> None:
     """Log-scaled reliability axes.
 
     Both axes are log: the gate spans several orders of magnitude in probability
@@ -96,7 +110,14 @@ def _style(ax, xlabel: str, title: str) -> None:
     ax.axvspan(*metrics.DECISION_REGION, color="grey", alpha=0.10, zorder=0)
 
 
-def _stratified(ax, pred, y, strata: dict[str, np.ndarray], xlabel, title) -> dict:
+def _stratified(
+    ax: matplotlib.axes.Axes,
+    pred: np.ndarray,
+    y: np.ndarray,
+    strata: dict[str, np.ndarray],
+    xlabel: str,
+    title: str,
+) -> dict:
     """Overlay one reliability curve per stratum on the shared axis."""
     out = {}
     for i, (name, mask) in enumerate(strata.items()):
@@ -127,8 +148,11 @@ def main() -> None:
     parser.add_argument("--cal-cache", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--value-predictions", default="",
-                        help="optional value_val_predictions.npz for the V_φ diagonal plot")
+    parser.add_argument(
+        "--value-predictions",
+        default="",
+        help="optional value_val_predictions.npz for the V_φ diagonal plot",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -144,7 +168,9 @@ def main() -> None:
     # The checkpoint's mu/sigma are already subset to the model's own columns,
     # so subset the raw cached features first, then standardise with them.
     col_idx = np.array([features.GATE_FEATURES.index(n) for n in ckpt["feature_names"]])
-    X = ((np.asarray(cal["X"])[:, col_idx] - ckpt["mu"]) / ckpt["sigma"]).astype(np.float32)
+    X = ((np.asarray(cal["X"])[:, col_idx] - ckpt["mu"]) / ckpt["sigma"]).astype(
+        np.float32
+    )
     y = np.asarray(cal["y"]).astype(np.uint8)
 
     aux = np.asarray(cal["aux"])
@@ -168,8 +194,10 @@ def main() -> None:
     audit = {
         "platt_2param": {"a": a, "b": b},
         "platt_4param": {
-            "a0": occ_params[0], "a1": occ_params[1],
-            "b0": occ_params[2], "b1": occ_params[3],
+            "a0": occ_params[0],
+            "a1": occ_params[1],
+            "b0": occ_params[2],
+            "b1": occ_params[3],
         },
         "prior_logit_shift_from_training": ckpt.get("prior_logit_shift", 0.0),
         "n_cal_rows": int(len(y)),
@@ -212,10 +240,19 @@ def main() -> None:
     # --- Plots -----------------------------------------------------------
     fig, ax = plt.subplots(figsize=(6.5, 6.5))
     for i, (pred, name) in enumerate(
-        [(lam, r"$\Lambda_{\chi^2}$"), (raw_pred, "gate (raw)"), (cal_pred, "gate (Platt)")]
+        [
+            (lam, r"$\Lambda_{\chi^2}$"),
+            (raw_pred, "gate (raw)"),
+            (cal_pred, "gate (Platt)"),
+        ]
     ):
         ece = metrics.expected_calibration_error(pred, y, edges=EDGES)
-        _plot_curve(ax, metrics.reliability_bins(pred, y, edges=EDGES), COLORS[i], f"{name}: ECE={ece:.4f}")
+        _plot_curve(
+            ax,
+            metrics.reliability_bins(pred, y, edges=EDGES),
+            COLORS[i],
+            f"{name}: ECE={ece:.4f}",
+        )
     _style(ax, "Predicted probability", "Gate calibration on the calibration split")
     ax.legend(loc="lower right")
     for ext in ("pdf", "png"):
@@ -224,7 +261,12 @@ def main() -> None:
 
     fig, ax = plt.subplots(figsize=(7, 6.5))
     audit["eta_strata_platt2"] = _stratified(
-        ax, cal_pred, y, eta_s, "Predicted probability (gate, Platt)", "Gate reliability by η"
+        ax,
+        cal_pred,
+        y,
+        eta_s,
+        "Predicted probability (gate, Platt)",
+        "Gate reliability by η",
     )
     for ext in ("pdf", "png"):
         fig.savefig(out_dir / f"reliability_eta.{ext}", bbox_inches="tight")
@@ -232,8 +274,12 @@ def main() -> None:
 
     fig, ax = plt.subplots(figsize=(7, 6.5))
     audit["occupancy_strata_platt2"] = _stratified(
-        ax, cal_pred, y, occ_s,
-        "Predicted probability (gate, Platt)", "Gate reliability by $n_{window}$ quintile"
+        ax,
+        cal_pred,
+        y,
+        occ_s,
+        "Predicted probability (gate, Platt)",
+        "Gate reliability by $n_{window}$ quintile",
     )
     for ext in ("pdf", "png"):
         fig.savefig(out_dir / f"reliability_occupancy.{ext}", bbox_inches="tight")
@@ -252,7 +298,12 @@ def main() -> None:
             axes[1, 0], lam, y, occ_s, r"$\Lambda_{\chi^2}$", r"$\chi^2$ by occupancy"
         ),
         "gate_occupancy": _stratified(
-            axes[1, 1], cal_pred, y, occ_s, "gate (Platt)", "Calibrated gate by occupancy"
+            axes[1, 1],
+            cal_pred,
+            y,
+            occ_s,
+            "gate (Platt)",
+            "Calibrated gate by occupancy",
         ),
     }
     fig.suptitle(
@@ -278,7 +329,10 @@ def main() -> None:
         fig, axes = plt.subplots(1, 2, figsize=(13, 6))
 
         h = axes[0].hist2d(
-            target_v, pred_v, bins=50, range=[[0, 1], [0, 1]],
+            target_v,
+            pred_v,
+            bins=50,
+            range=[[0, 1], [0, 1]],
             norm=matplotlib.colors.LogNorm(),
         )
         fig.colorbar(h[3], ax=axes[0], label="states")
@@ -295,17 +349,25 @@ def main() -> None:
         axes[1].plot(
             [b["mean_predicted"] for b in drawn],
             [b["mean_target"] for b in drawn],
-            "o-", color=COLORS[0], markersize=4,
+            "o-",
+            color=COLORS[0],
+            markersize=4,
             label=rf"$V_\varphi$ (soft ECE = {sce:.4f})",
         )
         axes[1].fill_between(
             [b["mean_predicted"] for b in drawn],
             [b["ci_lower"] for b in drawn],
             [b["ci_upper"] for b in drawn],
-            alpha=0.2, color=COLORS[0],
+            alpha=0.2,
+            color=COLORS[0],
         )
-        axes[1].axvline(0.5, color="red", linestyle=":", linewidth=1,
-                        label=r"prune threshold $V=0.5$")
+        axes[1].axvline(
+            0.5,
+            color="red",
+            linestyle=":",
+            linewidth=1,
+            label=r"prune threshold $V=0.5$",
+        )
         axes[1].set_xlabel(r"$V_\varphi$ prediction")
         axes[1].set_ylabel(r"mean $V^{\pi^\dagger}$ in bin")
         axes[1].set_title(r"Reliability: $E[V^{\pi^\dagger} \mid V_\varphi]$")
@@ -331,12 +393,8 @@ def main() -> None:
             # Fraction of states the 0.5 prune threshold would mis-classify:
             # both a branch killed that was actually matchable and one kept that
             # was not. The first kind is the expensive one under DAgger.
-            "wrongly_pruned_frac": float(
-                np.mean((pred_v < 0.5) & (target_v >= 0.5))
-            ),
-            "wrongly_kept_frac": float(
-                np.mean((pred_v >= 0.5) & (target_v < 0.5))
-            ),
+            "wrongly_pruned_frac": float(np.mean((pred_v < 0.5) & (target_v >= 0.5))),
+            "wrongly_kept_frac": float(np.mean((pred_v >= 0.5) & (target_v < 0.5))),
             "n_bins_drawn": len(drawn),
         }
 
@@ -374,12 +432,18 @@ def main() -> None:
     )
 
     (out_dir / "platt_params.json").write_text(
-        json.dumps({"two_param": audit["platt_2param"],
-                    "four_param": audit["platt_4param"]}, indent=2)
+        json.dumps(
+            {"two_param": audit["platt_2param"], "four_param": audit["platt_4param"]},
+            indent=2,
+        )
     )
-    (out_dir / "calibration_audit.json").write_text(json.dumps(audit, indent=2, default=str))
+    (out_dir / "calibration_audit.json").write_text(
+        json.dumps(audit, indent=2, default=str)
+    )
 
-    print(json.dumps({k: v for k, v in audit.items() if k != "G3"}, indent=2, default=str))
+    print(
+        json.dumps({k: v for k, v in audit.items() if k != "G3"}, indent=2, default=str)
+    )
     print(f"\nfigures written to {out_dir}")
 
 

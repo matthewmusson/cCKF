@@ -28,6 +28,7 @@ Value function (spec §3.4)
     ``1[V^{π†} ≥ 0.5]``. A branch at V = 0.45 is nearly matchable and a branch
     at V = 0.05 is hopeless; hard labels would throw that distinction away.
 """
+
 from __future__ import annotations
 
 import torch

@@ -28,6 +28,7 @@ from the weights the caller already put on ``model`` (e.g. a loaded
 checkpoint) instead -- see ``train_model``'s docstring for the reproducibility
 trade-off that implies.
 """
+
 from __future__ import annotations
 
 import copy
@@ -201,7 +202,12 @@ def train_model(
         history["lr"].append(current_lr)
         if wandb_run is not None:
             wandb_run.log(
-                {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "lr": current_lr}
+                {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "lr": current_lr,
+                }
             )
 
         if val_loss < best_val:

@@ -25,10 +25,34 @@ SLIM_SCHEMA_B = 48  # 12 numeric/bool columns, parquet-compressed ~this
 # Row model: each CKF-visited state expands to all window candidates.
 # Pilot has no CKF yet; bound using seeds × surfaces × candidates × branch factor.
 SCENARIOS = [
-    {"name": "greedy_low", "surfaces": 8, "avg_cands": 3, "branch": 1.0, "survive": 0.35},
-    {"name": "greedy_mid", "surfaces": 10, "avg_cands": 5, "branch": 1.0, "survive": 0.35},
-    {"name": "branch5_mid", "surfaces": 10, "avg_cands": 5, "branch": 2.0, "survive": 0.35},
-    {"name": "branch5_high", "surfaces": 12, "avg_cands": 8, "branch": 3.0, "survive": 0.35},
+    {
+        "name": "greedy_low",
+        "surfaces": 8,
+        "avg_cands": 3,
+        "branch": 1.0,
+        "survive": 0.35,
+    },
+    {
+        "name": "greedy_mid",
+        "surfaces": 10,
+        "avg_cands": 5,
+        "branch": 1.0,
+        "survive": 0.35,
+    },
+    {
+        "name": "branch5_mid",
+        "surfaces": 10,
+        "avg_cands": 5,
+        "branch": 2.0,
+        "survive": 0.35,
+    },
+    {
+        "name": "branch5_high",
+        "surfaces": 12,
+        "avg_cands": 8,
+        "branch": 3.0,
+        "survive": 0.35,
+    },
 ]
 
 N_EVENTS = 32
@@ -100,7 +124,12 @@ def estimate() -> dict:
 
 
 def main() -> None:
-    out = Path(__file__).resolve().parents[1] / "experiments" / "chi2_gate_calib" / "storage_estimate.json"
+    out = (
+        Path(__file__).resolve().parents[1]
+        / "experiments"
+        / "chi2_gate_calib"
+        / "storage_estimate.json"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     report = estimate()
     out.write_text(json.dumps(report, indent=2))

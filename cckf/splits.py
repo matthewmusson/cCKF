@@ -25,14 +25,37 @@ VAL_EVENTS and CAL_EVENTS must never change. Early-stopping decisions and
 calibration statistics are only comparable across experiments if the splits
 they are measured on are identical.
 """
+
 from __future__ import annotations
 
 from typing import Iterable
 
 # --- Frozen assignment (never modify) -------------------------------------
 TRAIN_EVENTS: tuple[int, ...] = (
-    0, 1, 2, 3, 5, 6, 8, 9, 10, 11, 13, 14,
-    16, 17, 18, 19, 21, 22, 24, 25, 26, 27, 29, 30,
+    0,
+    1,
+    2,
+    3,
+    5,
+    6,
+    8,
+    9,
+    10,
+    11,
+    13,
+    14,
+    16,
+    17,
+    18,
+    19,
+    21,
+    22,
+    24,
+    25,
+    26,
+    27,
+    29,
+    30,
 )
 VAL_EVENTS: tuple[int, ...] = (4, 12, 20, 28)
 CAL_EVENTS: tuple[int, ...] = (7, 15, 23, 31)

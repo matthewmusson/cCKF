@@ -1,4 +1,5 @@
 """Tests for gate label derivation and row inclusion."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -41,12 +42,14 @@ def test_derive_labels_dtypes_are_compact(synthetic_parquet):
 
 def test_empty_contrib_pids_is_negative_not_error():
     """A hole row has contrib_pids = []. Membership must be False, not raise."""
-    table = pa.table({
-        "cand_hit_id": pa.array([-1], pa.int64()),
-        "contrib_pids": pa.array([[]], pa.list_(pa.int64())),
-        "branch_majority_pid": pa.array([1001], pa.int64()),
-        "majority_undefined": pa.array([False]),
-    })
+    table = pa.table(
+        {
+            "cand_hit_id": pa.array([-1], pa.int64()),
+            "contrib_pids": pa.array([[]], pa.list_(pa.int64())),
+            "branch_majority_pid": pa.array([1001], pa.int64()),
+            "majority_undefined": pa.array([False]),
+        }
+    )
     out = labels.derive_labels(table)
     assert out["label_same_particle"].tolist() == [0]
     assert out["gate_row_mask"].tolist() == [False]
@@ -54,12 +57,14 @@ def test_empty_contrib_pids_is_negative_not_error():
 
 def test_undefined_majority_is_excluded_even_when_pid_would_match():
     """majority_undefined dominates: the label is undefined, so drop the row."""
-    table = pa.table({
-        "cand_hit_id": pa.array([10], pa.int64()),
-        "contrib_pids": pa.array([[-1]], pa.list_(pa.int64())),
-        "branch_majority_pid": pa.array([-1], pa.int64()),
-        "majority_undefined": pa.array([True]),
-    })
+    table = pa.table(
+        {
+            "cand_hit_id": pa.array([10], pa.int64()),
+            "contrib_pids": pa.array([[-1]], pa.list_(pa.int64())),
+            "branch_majority_pid": pa.array([-1], pa.int64()),
+            "majority_undefined": pa.array([True]),
+        }
+    )
     out = labels.derive_labels(table)
     assert out["gate_row_mask"].tolist() == [False]
 
@@ -67,12 +72,16 @@ def test_undefined_majority_is_excluded_even_when_pid_would_match():
 def test_multi_row_group_table_is_handled():
     """Arrow tables from Parquet can be chunked; membership must still align."""
     n = 5
-    t1 = pa.table({
-        "cand_hit_id": pa.array([10] * n, pa.int64()),
-        "contrib_pids": pa.array([[7], [8], [7, 8], [], [8, 7]], pa.list_(pa.int64())),
-        "branch_majority_pid": pa.array([7] * n, pa.int64()),
-        "majority_undefined": pa.array([False] * n),
-    })
+    t1 = pa.table(
+        {
+            "cand_hit_id": pa.array([10] * n, pa.int64()),
+            "contrib_pids": pa.array(
+                [[7], [8], [7, 8], [], [8, 7]], pa.list_(pa.int64())
+            ),
+            "branch_majority_pid": pa.array([7] * n, pa.int64()),
+            "majority_undefined": pa.array([False] * n),
+        }
+    )
     combined = pa.concat_tables([t1, t1])
     out = labels.derive_labels(combined)
     expected = [1, 0, 1, 0, 1] * 2

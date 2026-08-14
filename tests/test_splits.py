@@ -1,4 +1,5 @@
 """Tests for the frozen event→split assignment."""
+
 from __future__ import annotations
 
 import pytest
@@ -7,7 +8,11 @@ from cckf import splits
 
 
 def test_splits_partition_the_lower_range_exactly():
-    train, val, cal = set(splits.TRAIN_EVENTS), set(splits.VAL_EVENTS), set(splits.CAL_EVENTS)
+    train, val, cal = (
+        set(splits.TRAIN_EVENTS),
+        set(splits.VAL_EVENTS),
+        set(splits.CAL_EVENTS),
+    )
     assert train & val == set()
     assert train & cal == set()
     assert val & cal == set()
@@ -68,6 +73,18 @@ def test_assert_not_test_raises_on_sealed_event():
     splits.assert_not_test([0, 1, 4, 7])  # no raise
     with pytest.raises(ValueError, match="sealed"):
         splits.assert_not_test([0, 32])
+
+
+def test_events_for_returns_the_matching_tuple():
+    assert splits.events_for("train") == splits.TRAIN_EVENTS
+    assert splits.events_for("val") == splits.VAL_EVENTS
+    assert splits.events_for("cal") == splits.CAL_EVENTS
+    assert splits.events_for("test") == splits.TEST_EVENTS
+
+
+def test_events_for_rejects_an_unknown_split():
+    with pytest.raises(ValueError):
+        splits.events_for("bogus")
 
 
 def test_schema_76_has_76_columns_in_expansion_order():

@@ -1,4 +1,5 @@
 """Tests for calibration metrics."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -61,11 +62,13 @@ def test_logit_bins_resolve_the_decision_region_on_imbalanced_predictions():
     bins must instead spread several populated bins across [0.01, 0.5].
     """
     rng = np.random.default_rng(0)
-    p = np.concatenate([
-        rng.uniform(1e-5, 0.01, size=990_000),   # the easy-negative spike
-        rng.uniform(0.01, 0.5, size=9_000),      # the decision region
-        rng.uniform(0.5, 1.0, size=1_000),
-    ])
+    p = np.concatenate(
+        [
+            rng.uniform(1e-5, 0.01, size=990_000),  # the easy-negative spike
+            rng.uniform(0.01, 0.5, size=9_000),  # the decision region
+            rng.uniform(0.5, 1.0, size=1_000),
+        ]
+    )
     y = (rng.uniform(size=p.size) < p).astype(np.uint8)
 
     bins = metrics.reliability_bins(p, y)["bins"]
@@ -73,10 +76,13 @@ def test_logit_bins_resolve_the_decision_region_on_imbalanced_predictions():
     # there, since a bin straddling an endpoint still resolves inside it.
     lo, hi = metrics.DECISION_REGION
     in_region = [
-        b for b in bins
+        b
+        for b in bins
         if b["bin_hi"] > lo and b["bin_lo"] < hi and b["count"] >= metrics.MIN_BIN_COUNT
     ]
-    assert len(in_region) >= 4, f"only {len(in_region)} populated bins over [{lo}, {hi}]"
+    assert (
+        len(in_region) >= 4
+    ), f"only {len(in_region)} populated bins over [{lo}, {hi}]"
 
     # Contrast: 15 equal-count bins put 15 of 16 edges below 0.01 and leave the
     # top bin spanning ~0.0094 to ~0.999 — one point covering the whole τ range.
@@ -130,13 +136,15 @@ def test_max_calibration_error_catches_a_localised_failure_that_ece_hides():
 
     ece = metrics.expected_calibration_error(p, y)
     mce = metrics.max_calibration_error(p, y)
-    assert ece < 0.02, ece            # looks fine on the count-weighted average
-    assert mce > 0.2, mce             # the localised failure is visible
+    assert ece < 0.02, ece  # looks fine on the count-weighted average
+    assert mce > 0.2, mce  # the localised failure is visible
 
 
 def test_decision_region_ece_restricts_to_the_tau_range():
     rng = np.random.default_rng(0)
-    p = np.concatenate([rng.uniform(1e-5, 0.01, 100_000), rng.uniform(0.01, 0.5, 20_000)])
+    p = np.concatenate(
+        [rng.uniform(1e-5, 0.01, 100_000), rng.uniform(0.01, 0.5, 20_000)]
+    )
     y = (rng.uniform(size=p.size) < p).astype(np.uint8)
     out = metrics.decision_region_ece(p, y)
     assert out["n_rows"] == 20_000
@@ -216,7 +224,9 @@ def test_soft_reliability_uses_sem_not_wilson():
     Wilson interval on the same bin would report a wide binomial interval."""
     pred = np.full(1_000, 0.5)
     target = np.full(1_000, 0.5)
-    b = [x for x in metrics.soft_reliability_bins(pred, target)["bins"] if x["count"]][0]
+    b = [x for x in metrics.soft_reliability_bins(pred, target)["bins"] if x["count"]][
+        0
+    ]
     assert b["ci_upper"] - b["ci_lower"] < 1e-6
     wilson_width = metrics.wilson_ci(500, 1000)
     assert (wilson_width[1] - wilson_width[0]) > 0.05
@@ -225,8 +235,12 @@ def test_soft_reliability_uses_sem_not_wilson():
 def test_soft_reliability_widens_with_target_spread():
     rng = np.random.default_rng(0)
     pred = np.full(1_000, 0.5)
-    tight = metrics.soft_reliability_bins(pred, np.clip(0.5 + rng.normal(0, 0.01, 1_000), 0, 1))
-    broad = metrics.soft_reliability_bins(pred, np.clip(0.5 + rng.normal(0, 0.30, 1_000), 0, 1))
+    tight = metrics.soft_reliability_bins(
+        pred, np.clip(0.5 + rng.normal(0, 0.01, 1_000), 0, 1)
+    )
+    broad = metrics.soft_reliability_bins(
+        pred, np.clip(0.5 + rng.normal(0, 0.30, 1_000), 0, 1)
+    )
     tb = [b for b in tight["bins"] if b["count"]][0]
     bb = [b for b in broad["bins"] if b["count"]][0]
     assert (bb["ci_upper"] - bb["ci_lower"]) > (tb["ci_upper"] - tb["ci_lower"])

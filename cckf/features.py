@@ -67,6 +67,7 @@ whose absolute values carry meaning, and z-scoring them would make the value
 likewise exempt (none are in the primary vector). Everything else is
 standardised with train-split μ and σ.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -79,10 +80,21 @@ _LAMBDA_CLIP = 1e-6  # keeps logit(Lambda) finite at chi2 -> 0 and chi2 -> inf
 
 # --- Feature name lists (order is the network's input order; do not reorder)
 GATE_GROUPS: dict[str, tuple[str, ...]] = {
-    "kalman": ("residual_l0", "residual_l1", "chol_S_00", "chol_S_10", "chol_S_11", "chi2_inc"),
+    "kalman": (
+        "residual_l0",
+        "residual_l1",
+        "chol_S_00",
+        "chol_S_10",
+        "chol_S_11",
+        "chi2_inc",
+    ),
     "cluster_raw": (
-        "clus_s_u", "clus_s_v", "clus_q_tot",
-        "clus_sigma_uu", "clus_sigma_uv", "clus_sigma_vv",
+        "clus_s_u",
+        "clus_s_v",
+        "clus_q_tot",
+        "clus_sigma_uu",
+        "clus_sigma_uv",
+        "clus_sigma_vv",
     ),
     "cluster_norm": ("kappa_u", "kappa_v", "q_tilde"),
     "occupancy": ("n_window",),
@@ -111,22 +123,49 @@ NO_STANDARDIZE: frozenset[str] = frozenset({"n_hits", "n_holes", "n_seq_holes"})
 
 #: Parquet columns needed to build the gate feature matrix.
 GATE_SOURCE_COLUMNS: tuple[str, ...] = (
-    "residual_l0", "residual_l1", "S00", "S01", "S11", "chi2_inc",
-    "clus_s_u", "clus_s_v", "clus_q_tot",
-    "clus_sigma_uu", "clus_sigma_uv", "clus_sigma_vv",
-    "alpha_u", "alpha_v",
+    "residual_l0",
+    "residual_l1",
+    "S00",
+    "S01",
+    "S11",
+    "chi2_inc",
+    "clus_s_u",
+    "clus_s_v",
+    "clus_q_tot",
+    "clus_sigma_uu",
+    "clus_sigma_uv",
+    "clus_sigma_vv",
+    "alpha_u",
+    "alpha_v",
     "n_window",
-    "state_theta", "state_qop", "step_k", "pathInX0_interval",
-    "pitch_u", "pitch_v", "thickness",
-    "n_hits", "n_holes", "n_seq_holes",
+    "state_theta",
+    "state_qop",
+    "step_k",
+    "pathInX0_interval",
+    "pitch_u",
+    "pitch_v",
+    "thickness",
+    "n_hits",
+    "n_holes",
+    "n_seq_holes",
 )
 
 #: Parquet columns needed to build the value feature matrix.
 VALUE_SOURCE_COLUMNS: tuple[str, ...] = (
-    "event_id", "seed_id", "branch_id", "step_k",
-    "state_theta", "state_qop", "cov_00", "cov_06",
-    "n_hits", "n_holes", "n_seq_holes",
-    "chi2_inc", "cand_hit_id", "pathInX0_interval",
+    "event_id",
+    "seed_id",
+    "branch_id",
+    "step_k",
+    "state_theta",
+    "state_qop",
+    "cov_00",
+    "cov_06",
+    "n_hits",
+    "n_holes",
+    "n_seq_holes",
+    "chi2_inc",
+    "cand_hit_id",
+    "pathInX0_interval",
 )
 
 

@@ -6,6 +6,7 @@ Usage
         --parquet-dir /data/results/train32/selected \\
         --out-dir /data/cache/gate/train
 """
+
 from __future__ import annotations
 
 import argparse

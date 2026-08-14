@@ -36,6 +36,7 @@ Still convex — it is logistic regression on the three features
 form to reach for only if the §4.2 stratified diagrams show occupancy-dependent
 bias. Let the diagnostics decide; do not add the parameters pre-emptively.
 """
+
 from __future__ import annotations
 
 import numpy as np

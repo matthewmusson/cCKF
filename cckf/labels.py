@@ -44,6 +44,7 @@ vectorised ``equal``, and ``np.bincount`` folds the per-element matches back to
 per-row booleans. This runs over 1.44B rows in streaming row-group batches;
 a per-row Python check would not.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -86,13 +87,17 @@ def derive_labels(table: pa.Table) -> dict[str, np.ndarray]:
         pids = pids.chunk(0) if pids.num_chunks == 1 else pa.concat_arrays(pids.chunks)
 
     majority = np.asarray(
-        table.column("branch_majority_pid").combine_chunks().to_numpy(zero_copy_only=False),
+        table.column("branch_majority_pid")
+        .combine_chunks()
+        .to_numpy(zero_copy_only=False),
         dtype=np.int64,
     )
 
     # Ragged → flat, with a parent row index per element.
     flat = pc.list_flatten(pids)
-    parent = np.asarray(pc.list_parent_indices(pids).to_numpy(zero_copy_only=False), dtype=np.int64)
+    parent = np.asarray(
+        pc.list_parent_indices(pids).to_numpy(zero_copy_only=False), dtype=np.int64
+    )
 
     same = np.zeros(n_rows, dtype=np.uint8)
     if len(parent) > 0:
@@ -102,14 +107,14 @@ def derive_labels(table: pa.Table) -> dict[str, np.ndarray]:
             hit_counts = np.bincount(parent[matches], minlength=n_rows)
             same = (hit_counts > 0).astype(np.uint8)
 
-    n_contrib = np.asarray(
-        pc.list_value_length(pids).to_numpy(zero_copy_only=False)
-    )
+    n_contrib = np.asarray(pc.list_value_length(pids).to_numpy(zero_copy_only=False))
     n_contrib = np.nan_to_num(n_contrib, nan=0.0).astype(np.int64)
     ambiguous = n_contrib > 1
 
     undefined = np.asarray(
-        table.column("majority_undefined").combine_chunks().to_numpy(zero_copy_only=False)
+        table.column("majority_undefined")
+        .combine_chunks()
+        .to_numpy(zero_copy_only=False)
     ).astype(bool)
     cand_hit_id = np.asarray(
         table.column("cand_hit_id").combine_chunks().to_numpy(zero_copy_only=False),

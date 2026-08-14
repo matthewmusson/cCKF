@@ -49,9 +49,7 @@ def load_df(paths: list[Path]) -> pd.DataFrame:
     frames = []
     for p in paths:
         if p.suffix == ".parquet":
-            frames.append(
-                pq.read_table(p).to_pandas() if pq else pd.read_parquet(p)
-            )
+            frames.append(pq.read_table(p).to_pandas() if pq else pd.read_parquet(p))
         else:
             frames.append(pd.read_csv(p))
     df = pd.concat(frames, ignore_index=True)
@@ -88,7 +86,12 @@ def barrel_endcap(eta: np.ndarray) -> np.ndarray:
 def summarize_rho(rho: np.ndarray) -> dict[str, float]:
     rho = rho[np.isfinite(rho)]
     if len(rho) == 0:
-        return {"n": 0, "median": float("nan"), "p05": float("nan"), "p95": float("nan")}
+        return {
+            "n": 0,
+            "median": float("nan"),
+            "p05": float("nan"),
+            "p95": float("nan"),
+        }
     return {
         "n": int(len(rho)),
         "median": float(np.median(rho)),
@@ -205,7 +208,8 @@ def run(df: pd.DataFrame) -> dict[str, Any]:
             "mean_delta_spread_across_quintiles": spread,
             "rho_median_abs": float(np.median(np.abs(rho[np.isfinite(rho)]))),
             "diagonal_safe_for_main_analysis": bool(
-                np.isfinite(spread) and spread < 0.1
+                np.isfinite(spread)
+                and spread < 0.1
                 and float(np.median(np.abs(rho[np.isfinite(rho)]))) < 0.2
             ),
             "criterion": (

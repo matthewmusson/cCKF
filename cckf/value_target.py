@@ -138,6 +138,7 @@ model has converged. At iteration 0 it is a single scalar with nothing to compar
 against; it becomes a diagnostic only once successive iterations exist (deferred
 with §5).
 """
+
 from __future__ import annotations
 
 from typing import Mapping
@@ -258,13 +259,18 @@ def compute_value_targets(
     out["n_findable_t2"] = _forward("maj_hit_on_surface")
 
     n_total = (
-        out["branch_majority_pid"].map(particle_nhits).astype("Float64").to_numpy(dtype=np.float64)
+        out["branch_majority_pid"]
+        .map(particle_nhits)
+        .astype("Float64")
+        .to_numpy(dtype=np.float64)
     )
 
     # Tier 1: every remaining simhit of the particle, whether or not the branch's
     # trajectory reaches that surface. Clamped at 0 because a branch can revisit
     # surfaces, which would otherwise push the remainder negative.
-    cum_maj = out["maj_hit_on_surface"].astype(np.int64).groupby(keys).cumsum().to_numpy()
+    cum_maj = (
+        out["maj_hit_on_surface"].astype(np.int64).groupby(keys).cumsum().to_numpy()
+    )
     out["n_findable_t1"] = np.maximum(n_total - cum_maj, 0.0)
 
     def _finish(n_findable: np.ndarray, suffix: str) -> None:

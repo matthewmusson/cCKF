@@ -9,6 +9,7 @@ opening each candidate with ``uproot`` -- stays in
 set of requested events with :func:`check_no_event_nr_fallback_is_safe`, and
 then hands per-event lookups to :func:`find_trackstates`.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

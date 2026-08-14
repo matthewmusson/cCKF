@@ -11,6 +11,7 @@ instead of carrying the true running-worst score forward. The fix is
 ``cummin()`` -> grouped ``ffill()`` -> ``fillna(0.0)`` (the last step covering
 only leading holes, before any hit has been accepted).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -116,10 +117,14 @@ def test_min_gate_logodds_carries_running_worst_across_holes(per_state, logodds)
     np.testing.assert_allclose(branch_a["min_gate_logodds"].to_numpy(), expected)
     # Concretely: step 1 (a hole right after the chi2=1.0 hit) must equal `a`,
     # not 0.0.
-    assert branch_a.loc[branch_a["step_k"] == 1, "min_gate_logodds"].item() == pytest.approx(a)
+    assert branch_a.loc[
+        branch_a["step_k"] == 1, "min_gate_logodds"
+    ].item() == pytest.approx(a)
     # step 3 (a hole after the chi2=10.0 hit, the branch's worst) must carry
     # that worst value forward, not reset to 0.0.
-    assert branch_a.loc[branch_a["step_k"] == 3, "min_gate_logodds"].item() == pytest.approx(b)
+    assert branch_a.loc[
+        branch_a["step_k"] == 3, "min_gate_logodds"
+    ].item() == pytest.approx(b)
 
 
 def test_min_and_sum_gate_logodds_do_not_leak_across_branches(per_state, logodds):
@@ -130,8 +135,12 @@ def test_min_and_sum_gate_logodds_do_not_leak_across_branches(per_state, logodds
     branch_b = _branch(per_state, 0, 1)
     d = logodds["d"]
 
-    assert branch_b.loc[branch_b["step_k"] == 0, "min_gate_logodds"].item() == pytest.approx(0.0)
-    assert branch_b.loc[branch_b["step_k"] == 0, "sum_gate_logodds"].item() == pytest.approx(0.0)
+    assert branch_b.loc[
+        branch_b["step_k"] == 0, "min_gate_logodds"
+    ].item() == pytest.approx(0.0)
+    assert branch_b.loc[
+        branch_b["step_k"] == 0, "sum_gate_logodds"
+    ].item() == pytest.approx(0.0)
 
     expected_min = [0.0, d, d]
     np.testing.assert_allclose(branch_b["min_gate_logodds"].to_numpy(), expected_min)
@@ -161,4 +170,6 @@ def test_x0_accumulated_is_cumulative_per_branch_not_global(per_state):
         branch_a["x0_accumulated"].to_numpy(), [0.01, 0.03, 0.04, 0.06, 0.07]
     )
     # Branch B starts fresh at 0.05, not continuing from branch A's final 0.07.
-    np.testing.assert_allclose(branch_b["x0_accumulated"].to_numpy(), [0.05, 0.10, 0.15])
+    np.testing.assert_allclose(
+        branch_b["x0_accumulated"].to_numpy(), [0.05, 0.10, 0.15]
+    )

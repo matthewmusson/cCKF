@@ -9,6 +9,7 @@ Usage:
 
     where run_dir contains event_*/chi2_calib_rows.parquet
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,7 +24,6 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from scipy.stats import norm
-
 
 # --- Constants ---
 CHI2_MAX = 12.04  # Medium chi2CutOffMeasurement

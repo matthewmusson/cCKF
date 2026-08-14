@@ -133,9 +133,7 @@ def check_file(
                     f"entries are non-finite, expected all finite"
                 )
             elif spec.finite_where == "any" and not finite.any():
-                failures.append(
-                    f"{spec.name}: all {flat.size} entries are non-finite"
-                )
+                failures.append(f"{spec.name}: all {flat.size} entries are non-finite")
 
     return failures
 

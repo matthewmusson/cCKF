@@ -21,7 +21,6 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
-
 TRIPLET_COLS = ["bX", "bY", "bZ", "mX", "mY", "mZ", "tX", "tY", "tZ"]
 
 
@@ -80,9 +79,7 @@ def offline_filter_to_tight(
         buckets[middle_key(row)].append(i)
     for idxs in buckets.values():
         # Higher quality is better in ACTS seed filter
-        ranked = sorted(
-            idxs, key=lambda i: float(df.loc[i, "quality"]), reverse=True
-        )
+        ranked = sorted(idxs, key=lambda i: float(df.loc[i, "quality"]), reverse=True)
         kept_idx.extend(ranked[:max_seeds_per_spm])
     return df.loc[kept_idx].reset_index(drop=True)
 

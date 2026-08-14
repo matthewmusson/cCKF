@@ -1,4 +1,5 @@
 """Tests for the BCE losses."""
+
 from __future__ import annotations
 
 import math
@@ -13,7 +14,9 @@ def test_bce_matches_closed_form_hard_target():
     logits = torch.tensor([0.0, 2.0])
     targets = torch.tensor([1.0, 0.0])
     expected = (math.log(2.0) + (2.0 + math.log(1 + math.exp(-2.0)))) / 2.0
-    assert losses.bce_with_logits(logits, targets).item() == pytest.approx(expected, rel=1e-6)
+    assert losses.bce_with_logits(logits, targets).item() == pytest.approx(
+        expected, rel=1e-6
+    )
 
 
 def test_bce_is_minimised_when_sigmoid_equals_soft_target():
@@ -48,9 +51,7 @@ def test_bce_applies_no_positive_reweighting():
     symmetric batch lets w cancel, which is why the previous form of this test
     passed even at w = 193.
     """
-    loss = losses.bce_with_logits(
-        torch.zeros(3), torch.tensor([1.0, 1.0, 0.0])
-    ).item()
+    loss = losses.bce_with_logits(torch.zeros(3), torch.tensor([1.0, 1.0, 0.0])).item()
     assert loss == pytest.approx(math.log(2.0), rel=1e-6)
 
 

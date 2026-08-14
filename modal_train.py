@@ -202,10 +202,8 @@ def _build_trackstates_index(requested_events):
 @app.function(image=image, volumes={DATA_PATH: data_vol}, cpu=16, memory=262144, timeout=86400)
 def build_all_caches(csv_dir: str = "") -> dict:
     """Build gate and value caches for train/val/cal, sequentially."""
-    import subprocess
     import sys
 
-    sys.path.insert(0, "/root")
     results = {}
     for split in ("train", "val", "cal"):
         cmd = [
@@ -240,7 +238,6 @@ def build_all_caches(csv_dir: str = "") -> dict:
 def train_gate_sampler(sampler: str, wandb_project: str = "cckf-gate") -> dict:
     """Train the gate with one §2.5 sampling strategy (S1 ablation arm)."""
     import json
-    import subprocess
     import sys
 
     out_dir = f"{MODEL_DIR}/gate_{sampler}"
@@ -268,7 +265,6 @@ def run_audit(model_dir: str, value_predictions: str = "") -> dict:
     gate-only audits, which run before the value function is trained.
     """
     import json
-    import subprocess
     import sys
 
     out_dir = f"{model_dir}/audit"

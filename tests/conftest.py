@@ -9,6 +9,7 @@ Layout: one event (id 0), two seeds. Seed 0 / branch 0 walks 3 steps; seed 1 /
 branch 0 walks 2 steps and has an undefined majority. Step 1 of seed 0 has two
 in-window candidates (one correct, one wrong); step 2 is a hole.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -103,28 +104,48 @@ def _rows() -> list[dict]:
     # step 1, candidate A: correct AND ambiguous (merged cluster, 2 contributors)
     r = _base_row()
     r.update(
-        step_k=1, cand_hit_id=11, chi2_inc=1.0, residual_l0=0.5,
-        contrib_pids=[PID_MAJ, PID_OTHER], contrib_charge_frac=[0.6, 0.4],
-        n_hits=2, majority_true_hit_on_surface=True,
+        step_k=1,
+        cand_hit_id=11,
+        chi2_inc=1.0,
+        residual_l0=0.5,
+        contrib_pids=[PID_MAJ, PID_OTHER],
+        contrib_charge_frac=[0.6, 0.4],
+        n_hits=2,
+        majority_true_hit_on_surface=True,
     )
     rows.append(r)
 
     # step 1, candidate B: wrong particle (negative)
     r = _base_row()
     r.update(
-        step_k=1, cand_hit_id=12, chi2_inc=9.0, residual_l0=3.0,
-        contrib_pids=[PID_OTHER], contrib_charge_frac=[1.0],
-        n_hits=2, majority_true_hit_on_surface=True,
+        step_k=1,
+        cand_hit_id=12,
+        chi2_inc=9.0,
+        residual_l0=3.0,
+        contrib_pids=[PID_OTHER],
+        contrib_charge_frac=[1.0],
+        n_hits=2,
+        majority_true_hit_on_surface=True,
     )
     rows.append(r)
 
     # step 2: hole row (cand_hit_id == -1) — excluded from gate training
     r = _base_row()
     r.update(
-        step_k=2, cand_hit_id=-1, residual_l0=np.nan, residual_l1=np.nan,
-        chi2_inc=np.nan, contrib_pids=[], contrib_charge_frac=[],
-        clus_s_u=np.nan, clus_s_v=np.nan, clus_q_tot=np.nan,
-        action_taken=1, n_hits=2, n_holes=1, n_seq_holes=1,
+        step_k=2,
+        cand_hit_id=-1,
+        residual_l0=np.nan,
+        residual_l1=np.nan,
+        chi2_inc=np.nan,
+        contrib_pids=[],
+        contrib_charge_frac=[],
+        clus_s_u=np.nan,
+        clus_s_v=np.nan,
+        clus_q_tot=np.nan,
+        action_taken=1,
+        n_hits=2,
+        n_holes=1,
+        n_seq_holes=1,
         majority_true_hit_on_surface=False,
     )
     rows.append(r)
@@ -133,9 +154,13 @@ def _rows() -> list[dict]:
     for step in (0, 1):
         r = _base_row()
         r.update(
-            seed_id=1, step_k=step, cand_hit_id=20 + step,
-            branch_majority_pid=-1, majority_undefined=True,
-            contrib_pids=[PID_OTHER], contrib_charge_frac=[1.0],
+            seed_id=1,
+            step_k=step,
+            cand_hit_id=20 + step,
+            branch_majority_pid=-1,
+            majority_undefined=True,
+            contrib_pids=[PID_OTHER],
+            contrib_charge_frac=[1.0],
         )
         rows.append(r)
 

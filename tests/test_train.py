@@ -1,4 +1,5 @@
 """Tests for the shared training loop."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -36,7 +37,9 @@ def test_standardize_passes_through_unit_sigma_features():
 def test_train_model_reduces_validation_loss(separable_data):
     Xtr, ytr, Xva, yva = separable_data
     cfg = train.TrainConfig(batch_size=256, max_epochs=10, seed=0)
-    result = train.train_model(models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg)
+    result = train.train_model(
+        models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg
+    )
     assert result["history"]["val_loss"][-1] < result["history"]["val_loss"][0]
     assert result["best_val_loss"] < 0.3
 
@@ -44,29 +47,41 @@ def test_train_model_reduces_validation_loss(separable_data):
 def test_train_model_is_reproducible_from_seed(separable_data):
     Xtr, ytr, Xva, yva = separable_data
     cfg = train.TrainConfig(batch_size=256, max_epochs=3, seed=7)
-    a = train.train_model(models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg)
-    b = train.train_model(models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg)
+    a = train.train_model(
+        models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg
+    )
+    b = train.train_model(
+        models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg
+    )
     assert a["history"]["val_loss"] == pytest.approx(b["history"]["val_loss"])
 
 
 def test_train_model_early_stops_on_patience(separable_data):
     Xtr, ytr, Xva, yva = separable_data
     cfg = train.TrainConfig(batch_size=256, max_epochs=100, patience=2, seed=0)
-    result = train.train_model(models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg)
+    result = train.train_model(
+        models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg
+    )
     assert result["stopped_epoch"] < 100
 
 
 def test_train_model_returns_the_best_not_the_last_state(separable_data):
     Xtr, ytr, Xva, yva = separable_data
     cfg = train.TrainConfig(batch_size=256, max_epochs=8, seed=0)
-    result = train.train_model(models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg)
+    result = train.train_model(
+        models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg
+    )
     assert result["best_val_loss"] == pytest.approx(min(result["history"]["val_loss"]))
 
 
 def test_lr_schedule_decays_from_lr_to_lr_min(separable_data):
     Xtr, ytr, Xva, yva = separable_data
-    cfg = train.TrainConfig(batch_size=512, max_epochs=5, patience=99, lr=1e-3, lr_min=1e-5, seed=0)
-    result = train.train_model(models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg)
+    cfg = train.TrainConfig(
+        batch_size=512, max_epochs=5, patience=99, lr=1e-3, lr_min=1e-5, seed=0
+    )
+    result = train.train_model(
+        models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg
+    )
     lrs = result["history"]["lr"]
     assert lrs[0] == pytest.approx(1e-3, rel=1e-3)
     assert lrs[-1] < lrs[0]
@@ -79,8 +94,12 @@ def test_train_model_accepts_soft_targets_for_the_value_function():
     v = 1.0 / (1.0 + np.exp(-X[:, 0]))
     cfg = train.TrainConfig(batch_size=256, max_epochs=5, seed=0)
     result = train.train_model(
-        models.ValueMLP(n_features=3), X[:1500], v[:1500].astype(np.float32),
-        X[1500:], v[1500:].astype(np.float32), cfg
+        models.ValueMLP(n_features=3),
+        X[:1500],
+        v[:1500].astype(np.float32),
+        X[1500:],
+        v[1500:].astype(np.float32),
+        cfg,
     )
     assert np.isfinite(result["best_val_loss"])
 
@@ -100,7 +119,9 @@ def test_predict_logits_returns_one_value_per_row(separable_data):
     assert out.shape == (len(Xtr),)
 
 
-def test_gradient_clipping_bounds_the_post_clip_gradient_norm(separable_data, monkeypatch):
+def test_gradient_clipping_bounds_the_post_clip_gradient_norm(
+    separable_data, monkeypatch
+):
     """The clip actually bounds the gradient norm, not merely "stays finite".
 
     AdamW's per-parameter second-moment normalisation already keeps a single
@@ -158,7 +179,9 @@ def test_gradient_clipping_bounds_the_post_clip_gradient_norm(separable_data, mo
     monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", spy_clip)
 
     cfg = train.TrainConfig(batch_size=256, max_epochs=3, grad_clip=1.0, seed=0)
-    result = train.train_model(models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg)
+    result = train.train_model(
+        models.GateMLP(n_features=4, depth=2), Xtr, ytr, Xva, yva, cfg
+    )
 
     assert all(np.isfinite(v) for v in result["history"]["val_loss"])
     # The assertion below would be vacuous if no batch ever exceeded the
@@ -167,7 +190,9 @@ def test_gradient_clipping_bounds_the_post_clip_gradient_norm(separable_data, mo
     assert all(p <= cfg.grad_clip + 1e-4 for p in post_clip_norms)
 
 
-def test_reinit_default_ignores_caller_weights_reinit_false_preserves_them(separable_data):
+def test_reinit_default_ignores_caller_weights_reinit_false_preserves_them(
+    separable_data,
+):
     """``config.reinit`` controls whether ``train_model`` discards or keeps
     the caller's starting weights.
 
@@ -192,7 +217,9 @@ def test_reinit_default_ignores_caller_weights_reinit_false_preserves_them(separ
     default_a = _run(0.1234, reinit=True)
     default_b = _run(-0.9, reinit=True)
     for key in default_a["best_state"]:
-        torch.testing.assert_close(default_a["best_state"][key], default_b["best_state"][key])
+        torch.testing.assert_close(
+            default_a["best_state"][key], default_b["best_state"][key]
+        )
 
     warm_a = _run(0.1234, reinit=False)
     warm_b = _run(-0.9, reinit=False)

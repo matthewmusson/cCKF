@@ -1,4 +1,5 @@
 """Tests for the gate and value networks."""
+
 from __future__ import annotations
 
 import pytest
@@ -27,7 +28,10 @@ def test_gate_mlp_parameter_count_matches_the_specified_architecture():
     # 26->128: 26*128+128 = 3456
     # 128->128: 128*128+128 = 16512  (x2)
     # 128->1:   128*1+1    = 129
-    assert models.count_parameters(models.GateMLP(n_features=26, width=128, depth=3)) == 36_609
+    assert (
+        models.count_parameters(models.GateMLP(n_features=26, width=128, depth=3))
+        == 36_609
+    )
 
 
 def test_gate_mlp_depth_is_configurable_for_ablation():
@@ -57,8 +61,7 @@ def test_gradients_flow_through_gate():
     net = models.GateMLP(n_features=26)
     net(torch.randn(3, 26)).sum().backward()
     assert all(
-        p.grad is not None and torch.isfinite(p.grad).all()
-        for p in net.parameters()
+        p.grad is not None and torch.isfinite(p.grad).all() for p in net.parameters()
     )
 
 

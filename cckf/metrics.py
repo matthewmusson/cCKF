@@ -67,6 +67,7 @@ the metric that actually matters here: a model can be well calibrated on average
 while being badly overconfident in the dense forward region, and averaging hides
 exactly the failure the learned gate is meant to fix.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -183,16 +184,18 @@ def reliability_bins(
         # Geometric midpoint is the representative point for an empty log-odds
         # bin; a populated bin uses its actual mean prediction.
         midpoint = float(np.sqrt(max(edges[b], 1e-300) * max(edges[b + 1], 1e-300)))
-        bins.append({
-            "bin_lo": float(edges[b]),
-            "bin_hi": float(edges[b + 1]),
-            "mean_predicted": float(pred[mask].mean()) if n else midpoint,
-            "observed_fraction": (k / n) if n else 0.0,
-            "count": n,
-            "ci_lower": lo,
-            "ci_upper": hi,
-            "sparse": n < min_count,
-        })
+        bins.append(
+            {
+                "bin_lo": float(edges[b]),
+                "bin_hi": float(edges[b + 1]),
+                "mean_predicted": float(pred[mask].mean()) if n else midpoint,
+                "observed_fraction": (k / n) if n else 0.0,
+                "count": n,
+                "ci_lower": lo,
+                "ci_upper": hi,
+                "sparse": n < min_count,
+            }
+        )
 
     return {"bins": bins, "edges": [float(e) for e in edges]}
 
@@ -235,7 +238,9 @@ def max_calibration_error(
     well-calibrated one. Sparse bins are excluded so this is not just the
     noisiest bin's sampling error.
     """
-    data = reliability_bins(pred, labels, n_bins=n_bins, edges=edges, min_count=min_count)
+    data = reliability_bins(
+        pred, labels, n_bins=n_bins, edges=edges, min_count=min_count
+    )
     gaps = [
         abs(b["observed_fraction"] - b["mean_predicted"])
         for b in data["bins"]
@@ -268,8 +273,12 @@ def decision_region_ece(
     mask = (pred >= lo) & (pred <= hi)
     n = int(mask.sum())
     if n < MIN_BIN_COUNT:
-        return {"ece": float("nan"), "n_rows": n, "positive_fraction": float("nan"),
-                "region": [lo, hi]}
+        return {
+            "ece": float("nan"),
+            "n_rows": n,
+            "positive_fraction": float("nan"),
+            "region": [lo, hi],
+        }
 
     edges = logit_bin_edges(n_bins, p_min=lo, p_max=hi)
     return {
@@ -335,17 +344,24 @@ def soft_reliability_bins(
             lo, hi = max(0.0, mean_t - half), min(1.0, mean_t + half)
             mean_p = float(pred[mask].mean())
         else:
-            mean_t, mean_p, lo, hi = 0.0, float(0.5 * (edges[b] + edges[b + 1])), 0.0, 1.0
-        bins.append({
-            "bin_lo": float(edges[b]),
-            "bin_hi": float(edges[b + 1]),
-            "mean_predicted": mean_p,
-            "mean_target": mean_t,
-            "count": n,
-            "ci_lower": lo,
-            "ci_upper": hi,
-            "sparse": n < min_count,
-        })
+            mean_t, mean_p, lo, hi = (
+                0.0,
+                float(0.5 * (edges[b] + edges[b + 1])),
+                0.0,
+                1.0,
+            )
+        bins.append(
+            {
+                "bin_lo": float(edges[b]),
+                "bin_hi": float(edges[b + 1]),
+                "mean_predicted": mean_p,
+                "mean_target": mean_t,
+                "count": n,
+                "ci_lower": lo,
+                "ci_upper": hi,
+                "sparse": n < min_count,
+            }
+        )
 
     return {"bins": bins, "edges": [float(e) for e in edges]}
 

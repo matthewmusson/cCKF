@@ -1,4 +1,5 @@
 """Tests for the streaming feature cache."""
+
 from __future__ import annotations
 
 import json

@@ -218,9 +218,7 @@ def analyze(
                     "n_events": int(base["n_events"][i, j]),
                 }
             )
-    pd.DataFrame(contingency).to_csv(
-        out_dir / f"contingency_{tag}.csv", index=False
-    )
+    pd.DataFrame(contingency).to_csv(out_dir / f"contingency_{tag}.csv", index=False)
 
     # Fits per occupancy quintile: log-odds vs chi2
     centers = base["chi2_centers"]
@@ -294,9 +292,7 @@ def analyze(
                     )
         ax.set_xlabel(r"$\chi^2$")
         ax.set_ylabel(r"$\log[p/(1-p)]$")
-        ax.set_title(
-            f"Log-odds vs χ² by {occ_col} (dotted: slope −1/2 anchors)"
-        )
+        ax.set_title(f"Log-odds vs χ² by {occ_col} (dotted: slope −1/2 anchors)")
         ax.legend(fontsize=7, frameon=False, ncol=2)
         fig.tight_layout()
         fig.savefig(out_dir / f"logodds_vs_chi2_{tag}.png", dpi=150)
@@ -388,14 +384,9 @@ def summarize(results: dict[str, Any]) -> str:
         f"[{sep['ci95'][0]:.3f}, {sep['ci95'][1]:.3f}]"
     )
     lines.append(
-        f"Fitted slopes per geom quintile: "
-        + ", ".join(f"{s:.3f}" for s in slopes)
+        f"Fitted slopes per geom quintile: " + ", ".join(f"{s:.3f}" for s in slopes)
     )
-    parallel = (
-        max(slopes) - min(slopes) < 0.15
-        if len(slopes) >= 2
-        else False
-    )
+    parallel = max(slopes) - min(slopes) < 0.15 if len(slopes) >= 2 else False
     slope_ok = all(abs(s + 0.5) < 0.15 for s in slopes) if slopes else False
     sep_sig = abs(sep["mean"]) > 2 * sep["std"] if sep["std"] > 0 else False
     lines.append(f"Lines separate (sep ≳ 2σ): {sep_sig}")
@@ -408,7 +399,9 @@ def summarize(results: dict[str, Any]) -> str:
         s = rep["headline_logodds_sep_Q1_minus_Q5"]
         layer_seps.append((lk, s["mean"], s["std"]))
     if layer_seps:
-        n_same = sum(1 for _, m, s in layer_seps if abs(m) > 2 * s and m * sep["mean"] > 0)
+        n_same = sum(
+            1 for _, m, s in layer_seps if abs(m) > 2 * s and m * sep["mean"] > 0
+        )
         lines.append(
             f"Layer strata with same-sign sep ≳ 2σ: {n_same}/{len(layer_seps)}"
         )

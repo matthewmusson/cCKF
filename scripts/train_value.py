@@ -7,6 +7,7 @@ Usage
         --val-cache /data/cache/value/val \\
         --out-dir /data/models/value_v0 --wandb-project cckf-value
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,10 +46,16 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     parser.add_argument("--wandb-project", default="")
-    parser.add_argument("--oversample-marginal", type=float, default=0.0,
-                        help="spec §3.5: extra copies of states with V in [0.2, 0.8]")
+    parser.add_argument(
+        "--oversample-marginal",
+        type=float,
+        default=0.0,
+        help="spec §3.5: extra copies of states with V in [0.2, 0.8]",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -105,8 +112,11 @@ def main() -> None:
         "train_bce": result["history"]["train_loss"][-1],
         "val_bce": result["best_val_loss"],
         "val_mse": mse,
-        "auc_roc": float(roc_auc_score(y_binary, val_logits))
-        if y_binary.min() != y_binary.max() else None,
+        "auc_roc": (
+            float(roc_auc_score(y_binary, val_logits))
+            if y_binary.min() != y_binary.max()
+            else None
+        ),
         "mean_target": float(y_val.mean()),
         "marginal_fraction": float(np.mean((y_val >= 0.3) & (y_val <= 0.7))),
         # Tier-gap diagnostic (see value_target.py on why Tier 3 is absent).
@@ -116,9 +126,16 @@ def main() -> None:
     }
     warnings = []
     if metrics_out["val_bce"] > RED_FLAGS["val_bce"]:
-        warnings.append(f"val BCE {metrics_out['val_bce']:.4f} > {RED_FLAGS['val_bce']}")
-    if metrics_out["auc_roc"] is not None and metrics_out["auc_roc"] < RED_FLAGS["auc_roc_min"]:
-        warnings.append(f"AUC-ROC {metrics_out['auc_roc']:.4f} < {RED_FLAGS['auc_roc_min']}")
+        warnings.append(
+            f"val BCE {metrics_out['val_bce']:.4f} > {RED_FLAGS['val_bce']}"
+        )
+    if (
+        metrics_out["auc_roc"] is not None
+        and metrics_out["auc_roc"] < RED_FLAGS["auc_roc_min"]
+    ):
+        warnings.append(
+            f"AUC-ROC {metrics_out['auc_roc']:.4f} < {RED_FLAGS['auc_roc_min']}"
+        )
     metrics_out["red_flags"] = warnings
 
     torch.save(
@@ -134,10 +151,17 @@ def main() -> None:
         out_dir / "value_model.pt",
     )
     (out_dir / "value_metrics.json").write_text(json.dumps(metrics_out, indent=2))
-    np.savez(out_dir / "value_val_predictions.npz", pred=val_pred, target=y_val, aux=va["aux"])
+    np.savez(
+        out_dir / "value_val_predictions.npz",
+        pred=val_pred,
+        target=y_val,
+        aux=va["aux"],
+    )
 
-    print(f"val BCE {metrics_out['val_bce']:.4f}  MSE {mse:.4f}  "
-          f"tier gap {metrics_out['tier1_minus_tier2_mean']:.4f}")
+    print(
+        f"val BCE {metrics_out['val_bce']:.4f}  MSE {mse:.4f}  "
+        f"tier gap {metrics_out['tier1_minus_tier2_mean']:.4f}"
+    )
     for w in warnings:
         print(f"RED FLAG: {w}")
     if wandb_run is not None:

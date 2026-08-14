@@ -29,6 +29,7 @@ Approach C — hard-negative enrichment
     only the affine part; whether the residual non-affine bias matters is an
     empirical question that the §4.2 stratified reliability diagrams answer.
 """
+
 from __future__ import annotations
 
 import math

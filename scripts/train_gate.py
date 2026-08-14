@@ -12,6 +12,7 @@ Sampler choices (spec §2.5): A = large batch, no subsampling; B = uniform
 negative subsampling to 1:5; C = 1/χ²-weighted hard-negative subsampling to 1:5.
 Batch size defaults to the spec value for the chosen sampler.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +26,12 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from cckf import cache, features, models, samplers, train
 
 #: spec §2.7 red-flag thresholds
-RED_FLAGS = {"train_bce": 0.15, "val_bce": 0.15, "auc_roc_min": 0.95, "auc_pr_min": 0.80}
+RED_FLAGS = {
+    "train_bce": 0.15,
+    "val_bce": 0.15,
+    "auc_roc_min": 0.95,
+    "auc_pr_min": 0.80,
+}
 
 
 def main() -> None:
@@ -39,14 +45,22 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     parser.add_argument("--wandb-project", default="")
     parser.add_argument("--run-name", default="")
-    parser.add_argument("--drop-ambiguous", action="store_true",
-                        help="A8b ablation: exclude merged-cluster rows")
-    parser.add_argument("--feature-groups", default="",
-                        help="A4a/A4b ablation: comma-separated subset of "
-                             "kalman,cluster_raw,cluster_norm,occupancy,context,sensor,history")
+    parser.add_argument(
+        "--drop-ambiguous",
+        action="store_true",
+        help="A8b ablation: exclude merged-cluster rows",
+    )
+    parser.add_argument(
+        "--feature-groups",
+        default="",
+        help="A4a/A4b ablation: comma-separated subset of "
+        "kalman,cluster_raw,cluster_norm,occupancy,context,sensor,history",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -139,7 +153,9 @@ def main() -> None:
             },
         )
 
-    model = models.GateMLP(n_features=len(keep_names), width=args.width, depth=args.depth)
+    model = models.GateMLP(
+        n_features=len(keep_names), width=args.width, depth=args.depth
+    )
     print(f"parameters: {models.count_parameters(model):,}")
     result = train.train_model(model, X_train, y_train, X_val, y_val, config, wandb_run)
 
@@ -161,13 +177,21 @@ def main() -> None:
 
     warnings = []
     if metrics_out["train_bce"] > RED_FLAGS["train_bce"]:
-        warnings.append(f"train BCE {metrics_out['train_bce']:.4f} > {RED_FLAGS['train_bce']}")
+        warnings.append(
+            f"train BCE {metrics_out['train_bce']:.4f} > {RED_FLAGS['train_bce']}"
+        )
     if metrics_out["val_bce"] > RED_FLAGS["val_bce"]:
-        warnings.append(f"val BCE {metrics_out['val_bce']:.4f} > {RED_FLAGS['val_bce']}")
+        warnings.append(
+            f"val BCE {metrics_out['val_bce']:.4f} > {RED_FLAGS['val_bce']}"
+        )
     if metrics_out["auc_roc"] < RED_FLAGS["auc_roc_min"]:
-        warnings.append(f"AUC-ROC {metrics_out['auc_roc']:.4f} < {RED_FLAGS['auc_roc_min']}")
+        warnings.append(
+            f"AUC-ROC {metrics_out['auc_roc']:.4f} < {RED_FLAGS['auc_roc_min']}"
+        )
     if metrics_out["auc_pr"] < RED_FLAGS["auc_pr_min"]:
-        warnings.append(f"AUC-PR {metrics_out['auc_pr']:.4f} < {RED_FLAGS['auc_pr_min']}")
+        warnings.append(
+            f"AUC-PR {metrics_out['auc_pr']:.4f} < {RED_FLAGS['auc_pr_min']}"
+        )
     metrics_out["red_flags"] = warnings
 
     torch.save(
@@ -185,13 +209,19 @@ def main() -> None:
     )
     (out_dir / "gate_metrics.json").write_text(json.dumps(metrics_out, indent=2))
 
-    print(f"val BCE {metrics_out['val_bce']:.4f}  "
-          f"AUC-ROC {metrics_out['auc_roc']:.4f}  AUC-PR {metrics_out['auc_pr']:.4f}")
+    print(
+        f"val BCE {metrics_out['val_bce']:.4f}  "
+        f"AUC-ROC {metrics_out['auc_roc']:.4f}  AUC-PR {metrics_out['auc_pr']:.4f}"
+    )
     for w in warnings:
         print(f"RED FLAG: {w}")
     if wandb_run is not None:
         wandb_run.summary.update(
-            {k: v for k, v in metrics_out.items() if k not in ("history", "feature_names")}
+            {
+                k: v
+                for k, v in metrics_out.items()
+                if k not in ("history", "feature_names")
+            }
         )
         wandb_run.finish()
 

@@ -2,6 +2,7 @@
 
 Usage: python tests/make_fake_split.py <out_dir> <event_id> [<event_id> ...]
 """
+
 from __future__ import annotations
 
 import sys

@@ -1,4 +1,5 @@
 """Tests for the three §2.5 sampling strategies."""
+
 from __future__ import annotations
 
 import math
@@ -28,13 +29,19 @@ def test_large_batch_covers_every_row_exactly_once_per_epoch():
 
 
 def test_large_batch_shuffles_between_epochs():
-    a = np.concatenate(list(samplers.large_batch_indices(1000, 256, np.random.default_rng(0))))
-    b = np.concatenate(list(samplers.large_batch_indices(1000, 256, np.random.default_rng(1))))
+    a = np.concatenate(
+        list(samplers.large_batch_indices(1000, 256, np.random.default_rng(0)))
+    )
+    b = np.concatenate(
+        list(samplers.large_batch_indices(1000, 256, np.random.default_rng(1)))
+    )
     assert not np.array_equal(a, b)
 
 
 def test_uniform_subsample_hits_target_ratio(imbalanced_labels):
-    idx = samplers.uniform_subsample(imbalanced_labels, neg_per_pos=5, rng=np.random.default_rng(0))
+    idx = samplers.uniform_subsample(
+        imbalanced_labels, neg_per_pos=5, rng=np.random.default_rng(0)
+    )
     y = imbalanced_labels[idx]
     assert y.sum() == 10  # all positives kept
     assert (y == 0).sum() == 50
@@ -105,7 +112,9 @@ def test_hard_negative_subsample_handles_positive_infinity_chi2(imbalanced_label
     assert not np.any(np.isinf(chi2[chosen_neg]))
 
 
-def test_hard_negative_subsample_all_infinite_chi2_falls_back_to_uniform(imbalanced_labels):
+def test_hard_negative_subsample_all_infinite_chi2_falls_back_to_uniform(
+    imbalanced_labels,
+):
     """If every negative's chi2 is +inf (all weights collapse to 0), the
     function must not raise or divide 0/0 -- it should fall back to a
     uniform draw and still hit the exact target count.

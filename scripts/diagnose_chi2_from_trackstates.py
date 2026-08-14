@@ -71,7 +71,7 @@ def rho_from_pulls(chi2_true: float, a: float, b: float) -> float:
     if disc < 0:
         disc = 0.0
     sqrt_d = np.sqrt(disc)
-    cands = [( -B + sqrt_d) / (2 * A), (-B - sqrt_d) / (2 * A)]
+    cands = [(-B + sqrt_d) / (2 * A), (-B - sqrt_d) / (2 * A)]
     valid = [r for r in cands if -1.0 <= r <= 1.0]
     if not valid:
         return float(np.clip(cands[0], -1, 1))
@@ -86,7 +86,12 @@ def rho_from_pulls(chi2_true: float, a: float, b: float) -> float:
 def summarize(x: np.ndarray) -> dict[str, float]:
     x = x[np.isfinite(x)]
     if len(x) == 0:
-        return {"n": 0, "median": float("nan"), "p05": float("nan"), "p95": float("nan")}
+        return {
+            "n": 0,
+            "median": float("nan"),
+            "p05": float("nan"),
+            "p95": float("nan"),
+        }
     return {
         "n": int(len(x)),
         "median": float(np.median(x)),
@@ -108,9 +113,7 @@ def collect_event(
     rows: list[dict[str, Any]] = []
     with uproot.open(trackstates) as f:
         keys = list(f.keys())
-        tree_key = next(
-            (k for k in keys if "trackstate" in k.lower()), keys[0]
-        )
+        tree_key = next((k for k in keys if "trackstate" in k.lower()), keys[0])
         tree = f[tree_key]
         n_tracks = int(tree.num_entries)
         rng = np.random.default_rng(sample_seed + event_id)
@@ -181,7 +184,11 @@ def collect_event(
                         "chi2_true": chi2_true,
                         "chi2_diag": chi2_diag,
                         "delta": chi2_true - chi2_diag,
-                        "ratio": chi2_true / chi2_diag if abs(chi2_diag) > 1e-12 else float("nan"),
+                        "ratio": (
+                            chi2_true / chi2_diag
+                            if abs(chi2_diag) > 1e-12
+                            else float("nan")
+                        ),
                         "rho": rho,
                         "geometric_density": n_geom,
                     }
@@ -262,7 +269,10 @@ def analyze(df: pd.DataFrame) -> dict[str, Any]:
         np.isfinite(spread)
         and spread < 0.1
         and rho_med_abs < 0.2
-        and (not np.isfinite(corr_d["spearman_delta_vs_geom"]) or abs(corr_d["spearman_delta_vs_geom"]) < 0.05)
+        and (
+            not np.isfinite(corr_d["spearman_delta_vs_geom"])
+            or abs(corr_d["spearman_delta_vs_geom"]) < 0.05
+        )
     )
     report["verdict"] = {
         "mean_delta_spread_across_geom_quintiles": spread,
@@ -307,9 +317,7 @@ def main() -> None:
         ts = ed / "trackstates_ckf.root"
         meas = next(ed.glob("event*-measurements.csv"))
         print(f"event {eid}: {ts}", flush=True)
-        frames.append(
-            collect_event(eid, ts, meas, max_tracks=args.max_tracks)
-        )
+        frames.append(collect_event(eid, ts, meas, max_tracks=args.max_tracks))
     df = pd.concat(frames, ignore_index=True)
     report = analyze(df)
     args.out.parent.mkdir(parents=True, exist_ok=True)

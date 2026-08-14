@@ -42,6 +42,7 @@ Usage
         --csv-dir /data/results/train32/csv \\
         --out-dir /data/cache/value/train
 """
+
 from __future__ import annotations
 
 import argparse
@@ -57,11 +58,24 @@ from cckf import labels as lab
 from cckf import splits, value_target
 
 _NEEDED = (
-    "seed_id", "branch_id", "step_k", "cand_hit_id", "is_ckf_selected",
-    "contrib_pids", "branch_majority_pid", "majority_undefined",
+    "seed_id",
+    "branch_id",
+    "step_k",
+    "cand_hit_id",
+    "is_ckf_selected",
+    "contrib_pids",
+    "branch_majority_pid",
+    "majority_undefined",
     "majority_true_hit_on_surface",
-    "state_theta", "state_qop", "cov_00", "cov_06",
-    "n_hits", "n_holes", "n_seq_holes", "chi2_inc", "pathInX0_interval",
+    "state_theta",
+    "state_qop",
+    "cov_00",
+    "cov_06",
+    "n_hits",
+    "n_holes",
+    "n_seq_holes",
+    "chi2_inc",
+    "pathInX0_interval",
 )
 
 #: chi2_log_odds clips Λ at 1e-6, i.e. -2*ln(1e-6) ≈ 27.63; round down to 27.6
@@ -94,16 +108,22 @@ def _state_features(df: pd.DataFrame) -> pd.DataFrame:
         pathInX0_interval=("pathInX0_interval", "first"),
         step_logodds=("sel_logodds", "max"),
     )
-    per_state = per_state.sort_values(["seed_id", "branch_id", "step_k"]).reset_index(drop=True)
+    per_state = per_state.sort_values(["seed_id", "branch_id", "step_k"]).reset_index(
+        drop=True
+    )
 
     grp = per_state.groupby(["seed_id", "branch_id"], sort=False)
     filled = per_state["step_logodds"].fillna(0.0)
-    per_state["sum_gate_logodds"] = filled.groupby(
-        [per_state["seed_id"], per_state["branch_id"]]
-    ).cumsum().to_numpy()
-    grouped_min = per_state["step_logodds"].groupby(
-        [per_state["seed_id"], per_state["branch_id"]]
-    ).cummin()
+    per_state["sum_gate_logodds"] = (
+        filled.groupby([per_state["seed_id"], per_state["branch_id"]])
+        .cumsum()
+        .to_numpy()
+    )
+    grouped_min = (
+        per_state["step_logodds"]
+        .groupby([per_state["seed_id"], per_state["branch_id"]])
+        .cummin()
+    )
     # Forward-fill WITHIN each branch so a hole step reports the running worst
     # accepted score rather than resetting it. cummin leaves the NaN row's own
     # output NaN; filling before the ffill (as `.fillna(0.0)` alone does) would
@@ -112,12 +132,15 @@ def _state_features(df: pd.DataFrame) -> pd.DataFrame:
     # judge. The trailing fillna(0.0) then covers only leading holes, before any
     # hit has been accepted and a minimum is genuinely undefined.
     per_state["min_gate_logodds"] = (
-        grouped_min.groupby(
-            [per_state["seed_id"], per_state["branch_id"]]
-        ).ffill().fillna(0.0).to_numpy()
+        grouped_min.groupby([per_state["seed_id"], per_state["branch_id"]])
+        .ffill()
+        .fillna(0.0)
+        .to_numpy()
     )
     per_state["x0_accumulated"] = grp["pathInX0_interval"].cumsum().to_numpy()
-    per_state["eta"] = feat.eta_from_theta(per_state["state_theta"].to_numpy(dtype=np.float64))
+    per_state["eta"] = feat.eta_from_theta(
+        per_state["state_theta"].to_numpy(dtype=np.float64)
+    )
     return per_state
 
 
@@ -197,7 +220,14 @@ def process_event(
     state_feats = _state_features(df)
     merged = state_feats.merge(
         targets[
-            ["seed_id", "branch_id", "step_k", "vstar_t2", "vstar_t1", "tier_invariant_violated"]
+            [
+                "seed_id",
+                "branch_id",
+                "step_k",
+                "vstar_t2",
+                "vstar_t1",
+                "tier_invariant_violated",
+            ]
         ],
         on=["seed_id", "branch_id", "step_k"],
         how="inner",
@@ -219,11 +249,13 @@ def process_event(
     )
     np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     y = merged["vstar_t2"].to_numpy(dtype=np.float32)
-    aux = np.column_stack([
-        merged["vstar_t1"].to_numpy(dtype=np.float64),
-        merged["step_k"].to_numpy(dtype=np.float64),
-        merged["eta"].to_numpy(dtype=np.float64),
-    ]).astype(np.float32)
+    aux = np.column_stack(
+        [
+            merged["vstar_t1"].to_numpy(dtype=np.float64),
+            merged["step_k"].to_numpy(dtype=np.float64),
+            merged["eta"].to_numpy(dtype=np.float64),
+        ]
+    ).astype(np.float32)
     return X.astype(np.float32), y, aux, event_meta
 
 
@@ -272,7 +304,9 @@ def main() -> None:
         total_tier_dropped / total_valid_target if total_valid_target > 0 else 0.0
     )
     max_accepted_chi2_report = (
-        None if max_accepted_chi2_overall == float("-inf") else max_accepted_chi2_overall
+        None
+        if max_accepted_chi2_overall == float("-inf")
+        else max_accepted_chi2_overall
     )
 
     # Prominent, not buried in the JSON: this fraction is currently
@@ -291,7 +325,11 @@ def main() -> None:
             f"{max_accepted_chi2_overall:.3f}"
         )
     else:
-        shown = f"{max_accepted_chi2_overall:.3f}" if max_accepted_chi2_report is not None else "n/a"
+        shown = (
+            f"{max_accepted_chi2_overall:.3f}"
+            if max_accepted_chi2_report is not None
+            else "n/a"
+        )
         print(
             f"chi2 log-odds saturation check: no accepted hits exceed "
             f"chi2={_CHI2_SATURATION_THRESHOLD} (max accepted chi2 = {shown})"
@@ -329,9 +367,12 @@ def main() -> None:
         for j, name in enumerate(feat.VALUE_FEATURES):
             if name in feat.NO_STANDARDIZE:
                 mu[j], sigma[j] = 0.0, 1.0
-        np.savez(out_dir / "norm_stats.npz", mu=mu.astype(np.float32),
-                 sigma=sigma.astype(np.float32),
-                 feature_names=np.array(feat.VALUE_FEATURES))
+        np.savez(
+            out_dir / "norm_stats.npz",
+            mu=mu.astype(np.float32),
+            sigma=sigma.astype(np.float32),
+            feature_names=np.array(feat.VALUE_FEATURES),
+        )
         print("wrote norm_stats.npz")
 
 

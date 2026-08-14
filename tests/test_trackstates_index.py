@@ -8,6 +8,7 @@ index``) lives in ``modal_train.py`` and is not importable here since the
 ``modal`` package is not installed in this environment; that function is
 exercised only by inspection (see task-15-report.md), not by these tests.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,7 +23,10 @@ from cckf.trackstates_index import (
 def test_exact_match_returns_the_mapped_path():
     index = TrackstatesIndex(
         n_candidates=2,
-        matched={0: "/data/results/batch0/trackstates_ckf.root", 1: "/data/results/batch0/trackstates_ckf.root"},
+        matched={
+            0: "/data/results/batch0/trackstates_ckf.root",
+            1: "/data/results/batch0/trackstates_ckf.root",
+        },
     )
     assert find_trackstates(0, index) == "/data/results/batch0/trackstates_ckf.root"
     assert find_trackstates(1, index) == "/data/results/batch0/trackstates_ckf.root"
@@ -32,7 +36,9 @@ def test_sole_no_event_nr_candidate_is_used_as_fallback():
     """The unambiguous case: exactly one candidate file total, and it has no
     event_nr branch -- the genuine "older pipeline, single-event file"
     scenario expansion.load_trackstates documents."""
-    index = TrackstatesIndex(n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"])
+    index = TrackstatesIndex(
+        n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"]
+    )
     assert find_trackstates(7, index) == "/data/results/legacy/trackstates_ckf.root"
 
 
@@ -71,7 +77,9 @@ def test_one_no_event_nr_candidate_alongside_other_matches_raises():
 
 
 def test_no_candidates_at_all_raises_all_readable_form():
-    index = TrackstatesIndex(n_candidates=3, matched={0: "/data/results/x/trackstates_ckf.root"})
+    index = TrackstatesIndex(
+        n_candidates=3, matched={0: "/data/results/x/trackstates_ckf.root"}
+    )
     with pytest.raises(FileNotFoundError) as excinfo:
         find_trackstates(9, index)
     message = str(excinfo.value)
@@ -108,7 +116,9 @@ def test_unreadable_candidates_are_named_in_the_error():
 def test_single_requested_event_with_sole_no_event_nr_candidate_is_permitted():
     """One event, one no-event_nr file: the genuine single-event-file case --
     must not raise, and find_trackstates must still resolve it afterwards."""
-    index = TrackstatesIndex(n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"])
+    index = TrackstatesIndex(
+        n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"]
+    )
     check_no_event_nr_fallback_is_safe(index, [7])  # must not raise
     assert find_trackstates(7, index) == "/data/results/legacy/trackstates_ckf.root"
 
@@ -120,7 +130,9 @@ def test_multiple_requested_events_with_sole_no_event_nr_candidate_raises():
     must be caught here, at index-build time, before any event is resolved
     (find_trackstates alone -- see the module docstring's reproduction --
     would let every one of these calls through with no exception)."""
-    index = TrackstatesIndex(n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"])
+    index = TrackstatesIndex(
+        n_candidates=1, no_event_nr=["/data/results/legacy/trackstates_ckf.root"]
+    )
     with pytest.raises(FileNotFoundError) as excinfo:
         check_no_event_nr_fallback_is_safe(index, [5, 6])
     message = str(excinfo.value)
@@ -132,5 +144,7 @@ def test_check_is_a_noop_when_fallback_would_not_be_used():
     """The guard only concerns the sole-no-event_nr-file configuration; any
     index with an exact match available, or with no no-event_nr file at all,
     must never raise here regardless of how many events are requested."""
-    index = TrackstatesIndex(n_candidates=1, matched={0: "/data/results/x/trackstates_ckf.root"})
+    index = TrackstatesIndex(
+        n_candidates=1, matched={0: "/data/results/x/trackstates_ckf.root"}
+    )
     check_no_event_nr_fallback_is_safe(index, [0, 1, 2, 3])  # must not raise

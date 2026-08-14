@@ -1,4 +1,5 @@
 """Tests for feature derivations."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -26,6 +27,13 @@ def test_source_columns_all_exist_in_schema():
     from cckf.splits import SCHEMA_76
 
     for col in features.GATE_SOURCE_COLUMNS:
+        assert col in SCHEMA_76, col
+
+
+def test_value_source_columns_all_exist_in_schema():
+    from cckf.splits import SCHEMA_76
+
+    for col in features.VALUE_SOURCE_COLUMNS:
         assert col in SCHEMA_76, col
 
 
@@ -111,14 +119,18 @@ def test_build_gate_features_is_finite_on_hole_rows(synthetic_df):
     assert np.all(np.isfinite(X)), "non-finite feature emitted"
 
 
-def test_kappa_grows_with_incidence_angle():
+def test_kappa_shrinks_with_incidence_angle():
     """A steeper track crosses more channels, so expected size grows and
     kappa (observed / expected) shrinks for a fixed observed cluster."""
     import pandas as pd
 
-    df = pd.DataFrame({
-        "clus_s_u": [4.0, 4.0], "alpha_u": [0.0, 1.2],
-        "pitch_u": [0.05, 0.05], "thickness": [0.2, 0.2],
-    })
+    df = pd.DataFrame(
+        {
+            "clus_s_u": [4.0, 4.0],
+            "alpha_u": [0.0, 1.2],
+            "pitch_u": [0.05, 0.05],
+            "thickness": [0.2, 0.2],
+        }
+    )
     kappa = features.kappa_u(df)
     assert kappa[1] < kappa[0]
