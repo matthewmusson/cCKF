@@ -241,10 +241,15 @@ All three arms set `headline_beats_chi2`.
   0.2861). B and C carry deliberate distribution-shift bias in their logits
   which Platt removes; BCE penalises them for something the deployed model
   does not do. Compare AUC (monotone-invariant) and post-Platt ECE only.
-- **The AUC-PR red flag (<0.80) was miscalibrated and is retired.** It was
-  set before the real base rate was known. Arm A — no subsampling, no shift —
-  also lands below it at 0.7987, so the threshold, not the model, was wrong.
-  At a 0.57% base rate a no-skill classifier scores 0.0057.
+- **AUC-PR came in under the spec's expected range.** Spec §9.5 expects
+  0.85–0.95; arm A reaches 0.7987 and arm B 0.7710. This is the spec's number,
+  not a threshold introduced here, so it is a missed expectation rather than a
+  locally miscalibrated flag. It is not a debug-before-proceeding gate either —
+  §9.5's only hard warning is AUC-ROC < 0.95, which every arm clears (A
+  0.9931). Arm A carries no subsampling and no distribution shift, so the
+  shortfall is a property of the feature set and architecture rather than of
+  the sampling strategy. For scale, a no-skill classifier scores 0.0057 at
+  this base rate, so 0.7987 is ~140× baseline.
 - **MCE is reported but not gated.** Arm C sets every pass-criterion true
   while carrying a ≥100-row bin (`MIN_BIN_COUNT`, so not sampling noise) that
   is maximally miscalibrated. The pass logic was deliberately left unchanged
@@ -293,3 +298,107 @@ accept these two.
 
 **Gate results are unaffected** — the gate cache reads `EXPANDED_DIR` and
 never needs `is_ckf_selected`.
+
+## 2026-08-17 — Gate figure set, widened decision region, val-split audit
+
+Figures for the S1 ablation, plus two methodology changes. **No retraining** —
+inference only, from the frozen `gate_{A,B,C}/gate_model.pt` checkpoints.
+
+- **Decision region widened** to `[0.01, 0.99]` (`metrics.DECISION_REGION`),
+  symmetric in log-odds. Rationale: spec §10.1 consumes the gate as a branch
+  score `sum_k log(g/(1-g))`, which integrates over both halves of the axis, so
+  auditing only `[0.01, 0.5]` covered exactly the negative half. The old range
+  is retained as `metrics.THRESHOLD_REGION` and still reported.
+  **Provenance correction:** the plan attributed `[0.01, 0.5]` to a "spec §2.8 τ
+  sweep range". No such section or range exists in the spec — τ there denotes
+  the partial track state `τ_{0:k}` and the gate threshold is `g_min`. That
+  bound was introduced by the plan, not locked by the spec.
+- **Audited on the val split**, not cal. Platt is still fitted on cal only, so
+  the fit and its evaluation are now on disjoint data, and the "before" AUCs are
+  directly comparable to the training-time numbers.
+- **Artifacts:** `results/curves/gate_{A,B,C}.{npz,json}` (~250 KB per arm),
+  `figures/gate/F{1..6}*.{png,pdf}`.
+
+### Results (val split, 24,108,662 rows, 0.5683% positive)
+
+| arm | estimator | AUC-ROC | AUC-PR | ECE | DR-ECE [.01,.99] | ECE [.01,.5] | MCE |
+|---|---|---|---|---|---|---|---|
+| A | raw | 0.9931 | 0.7987 | 1.99e-04 | **3.39e-03** | 3.35e-03 | **0.0163** |
+| A | + Platt-2 | 0.9931 | 0.7987 | 3.87e-04 | 9.89e-03 | 8.50e-03 | 0.0495 |
+| A | + Platt-4 | 0.9931 | 0.7988 | 3.81e-04 | 9.75e-03 | 8.32e-03 | 0.0483 |
+| B | raw | 0.9928 | 0.7710 | 2.37e-02 | 1.33e-01 | 8.42e-02 | 0.7218 |
+| B | + Platt-2 | 0.9928 | 0.7710 | 4.65e-04 | 1.29e-02 | 1.17e-02 | 0.0708 |
+| B | + Platt-4 | 0.9928 | 0.7709 | 4.52e-04 | 1.23e-02 | 1.09e-02 | 0.0705 |
+| C | raw | 0.9671 | 0.2922 | 1.36e-01 | 2.89e-01 | 1.23e-01 | 0.9597 |
+| C | + Platt-2 | 0.9671 | 0.2922 | 2.80e-03 | 2.48e-02 | 2.52e-02 | 0.9999 |
+| C | + Platt-4 | 0.9598 | 0.3959 | 1.86e-03 | 1.50e-02 | 1.03e-02 | 0.9993 |
+| — | χ²_λ | 0.8369 | 0.0315 | 5.50e-02 | 2.34e-01 | 1.22e-01 | 0.9692 |
+
+Platt fits (on cal): A `a=0.9776 b=-0.1492`; B `a=0.9133 b=-3.7459`;
+C `a=0.5789 b=-5.0436`. Final cal NLL, 2-param → 4-param: A 0.006395 →
+0.006394; B 0.006847 → 0.006845; C 0.016871 → 0.014682.
+
+### Key findings
+
+1. **Arm A's raw gate is the best-calibrated estimator in the set** — DR-ECE
+   3.39e-03 and MCE 0.0163 with *no calibrator at all*, 69× better than χ² on
+   DR-ECE. Platt-2 makes arm A ~3× worse. The reliability curves show raw and
+   Platt-2 essentially coincident along the diagonal, so this is a small
+   localised difference, not a systematic shift. Strengthens finding 2 of the
+   training entry: unweighted BCE on the natural distribution is self-calibrating,
+   and for the deployed arm the Platt stage is optional at best.
+2. **Platt is essential for B and useless for A**, which is exactly the
+   distribution-shift account: B carries a +3.6988 logit shift for Platt to
+   remove (DR-ECE 1.33e-01 → 1.29e-02, 10×), A carries none.
+3. **χ²_λ is a p-value, not a posterior, and its reliability curve shows it.**
+   `χ²_λ = exp(-χ²/2)` is exactly the χ²₂ survival function, i.e. P(residual
+   this bad | hit is correct). The posterior needs the prior (0.57%) and the
+   wrong-hit residual density, neither of which a p-value contains — and a valid
+   p-value is Uniform(0,1) under H₀, so it *cannot* encode a base rate. Predicted
+   consequence: flat near the base rate rather than diagonal. Confirmed across
+   five decades in all three panels of F5, at AUC-ROC 0.8369 — a competent
+   *ranker* being read as a probability.
+4. **Arm C's reliability curve is non-monotone.** It rises above the diagonal,
+   peaks near observed 0.70 at predicted ~0.35, then collapses toward p→1 (MCE
+   0.9999). Hard-negative mining did not merely miscalibrate C, it *inverted*
+   its confidence at the top end.
+5. **Platt-4 measurably reorders arm C** (AUC-ROC 0.9671 → 0.9598, AUC-PR 0.2922
+   → 0.3959, a 35% AUC-PR gain). This is *not* slope inversion — see below — but
+   plain row-dependence: `a(x)`/`b(x)` vary with occupancy, so rows at different
+   occupancy get different affine maps and legitimately swap order. Worth stating
+   as a conceptual caveat on spec §10.3: an occupancy-conditional calibrator is
+   not rank-preserving, so it is doing some *classification*, not only calibration.
+6. **AUC invariance under 2-param Platt confirmed on real data.** Arm A raw and
+   Platt-2 agree to 6 decimals on both AUCs (0.993063 / 0.798707). Residual
+   differences of ~2e-6 (arm B's AUC-PR) come from float saturation creating
+   ties at the extremes, not from the ordering changing; the invariance check
+   tolerance is 1e-4 for that reason.
+
+### Corrections to earlier claims in this log and session
+
+- **Widening the region does not do the work claimed for it.** The wide/narrow
+  DR-ECE ratio is 1.01–2.34 across estimators, and for arm C's calibrated gate
+  it is **0.99** — no change at all. ECE is mass-weighted and almost no rows sit
+  above p=0.5, so the upper half contributes negligibly however wrong it is. The
+  conceptual argument for log-odds symmetry stands and the change is kept, but
+  **MCE is what detects the top-end failure**, and MCE was always full-range.
+  This reinforces rather than replaces the "MCE is not gated" gap.
+- **A base-rate transport explanation for arm A's Platt degradation was
+  proposed and does not hold.** cal is 0.3698% positive vs val 0.5683%, which
+  predicts a −0.432 logit offset; the fitted intercept is −0.149, about a third
+  of that, and the reliability curves show no uniform vertical offset. Direction
+  right, magnitude over-predicted threefold. Likely because the gate's features
+  already carry most of the occupancy/event information driving the base-rate
+  difference, leaving little as a pure prior shift.
+
+### The 4-param slope-inversion hazard: measured, and empty here
+
+`a(x) = a0 + a1·log n_window` multiplies the logit, so `a1 < 0` makes `a(x)`
+cross zero at `n_window = exp(-a0/a1)` and *invert* the model's ranking above
+that occupancy. Arm C fits `a1 = -0.1408, a0 = 0.7007`, crossing at
+**n_window = 144.95**.
+
+Measured on all 24.1M val rows: **max n_window = 69**, `min_slope = 0.1045`,
+**0 rows affected**. The hazard is real and does not trigger on this data, with
+a 2.1× margin — thin enough that higher pileup or a looser window could cross
+it. `calibration.platt_occupancy_slope_violations` now reports this every run.
