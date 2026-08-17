@@ -310,6 +310,18 @@ def figure_reliability_linear(data: dict, out_dir: Path, n_bins: int = 20) -> Pa
     Bin midpoints are never substituted for the mean prediction: the first bin's
     rows average ~0.001 against a midpoint of 0.025.
     """
+    missing = [
+        arm
+        for arm in ARMS
+        if "chi2_lambda__hist_count" not in data[arm]["arrays"].files
+    ]
+    if missing:
+        print(
+            f"skipping F5b: bundles for {', '.join(missing)} predate the "
+            "prob_histogram statistics; re-run export_curves to add them"
+        )
+        return None
+
     fig, axes = plt.subplots(1, 3, figsize=(16, 5.6), sharex=True, sharey=True)
     for ax, arm in zip(axes, ARMS):
         entry, sc = data[arm], data[arm]["scalars"]
