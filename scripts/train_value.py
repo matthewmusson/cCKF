@@ -26,13 +26,21 @@ RED_FLAGS = {"train_bce": 0.20, "val_bce": 0.25, "auc_roc_min": 0.90}
 
 
 def _load(cache_dir: str) -> dict:
+    """Open a value cache, memmapping the two matrices rather than reading them.
+
+    ``X`` and ``aux`` are memmapped, not loaded: the training loop and
+    ``predict_logits`` only ever touch one batch at a time, so paging rows in
+    on demand costs a batch of RAM instead of the whole split. ``y`` is a
+    single float32 column and is read eagerly -- the samplers and the marginal
+    oversampler both need to scan all of it to build row indices anyway.
+    """
     d = Path(cache_dir)
     meta = json.loads((d / "meta.json").read_text())
     n, f = meta["n_rows"], meta["n_features"]
     return {
-        "X": np.fromfile(d / "X.f32", dtype=np.float32).reshape(n, f),
+        "X": np.memmap(d / "X.f32", dtype=np.float32, mode="r", shape=(n, f)),
         "y": np.fromfile(d / "y.f32", dtype=np.float32),
-        "aux": np.fromfile(d / "aux.f32", dtype=np.float32).reshape(n, 3),
+        "aux": np.memmap(d / "aux.f32", dtype=np.float32, mode="r", shape=(n, 3)),
         "meta": meta,
     }
 
@@ -65,20 +73,27 @@ def main() -> None:
     stats = np.load(Path(args.train_cache) / "norm_stats.npz", allow_pickle=True)
     mu, sigma = stats["mu"], stats["sigma"]
 
-    X_train = train.standardize(tr["X"], mu, sigma)
-    y_train = tr["y"]
-
     # Labels are bimodal: most branches clearly succeed or clearly fail. The
     # marginal band is where the decision actually matters, so it can be
-    # oversampled to keep it from being drowned out.
+    # oversampled to keep it from being drowned out. Oversampling is expressed
+    # as repeated *row indices* rather than a gathered copy of the matrix --
+    # StandardizedView resolves them per batch, so duplicating a row costs one
+    # int64 rather than one feature vector.
+    train_rows = np.arange(len(tr["y"]))
     if args.oversample_marginal > 0:
-        marginal = np.flatnonzero((y_train >= 0.2) & (y_train <= 0.8))
+        marginal = np.flatnonzero((tr["y"] >= 0.2) & (tr["y"] <= 0.8))
         extra = np.repeat(marginal, int(args.oversample_marginal))
-        keep = np.concatenate([np.arange(len(y_train)), extra])
-        X_train, y_train = X_train[keep], y_train[keep]
-        print(f"oversampled {len(marginal):,} marginal states → {len(y_train):,} rows")
+        train_rows = np.concatenate([train_rows, extra])
+        print(
+            f"oversampled {len(marginal):,} marginal states → {len(train_rows):,} rows"
+        )
+    y_train = tr["y"][train_rows]
 
-    X_val = train.standardize(va["X"], mu, sigma)
+    all_cols = np.arange(tr["X"].shape[1])
+    X_train = train.StandardizedView(tr["X"], train_rows, mu, sigma, all_cols)
+    X_val = train.StandardizedView(
+        va["X"], np.arange(len(va["y"])), mu, sigma, all_cols
+    )
     y_val = va["y"]
 
     config = train.TrainConfig(
@@ -155,7 +170,7 @@ def main() -> None:
         out_dir / "value_val_predictions.npz",
         pred=val_pred,
         target=y_val,
-        aux=va["aux"],
+        aux=np.asarray(va["aux"]),
     )
 
     print(
