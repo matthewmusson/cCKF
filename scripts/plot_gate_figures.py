@@ -301,27 +301,53 @@ def figure_before_after(data: dict, out_dir: Path) -> Path:
         ("dr_ece", f"DR-ECE [{lo}, {hi}]"),
         ("mce", "MCE"),
     ]
-    fig, axes = plt.subplots(1, len(keys), figsize=(18, 4.6))
+    fig, axes = plt.subplots(1, len(keys), figsize=(18, 5.4))
     width = 0.26
+    handles: list = []
     for ax, (key, title) in zip(axes, keys):
+        is_log = key in ("ece", "dr_ece", "mce")
         for i, est in enumerate(("gate_raw", "gate_platt2", "gate_platt4")):
             vals = [data[arm]["scalars"]["metrics"][est][key] for arm in ARMS]
-            ax.bar(
+            bars = ax.bar(
                 np.arange(len(ARMS)) + (i - 1) * width,
                 vals,
                 width,
                 label=EST_LABEL[est],
                 color=["#bbbbbb", "#4a90d9", "#1b5e9c"][i],
             )
+            if ax is axes[0]:
+                handles.append(bars)
+            # Value labels, because the axis range cannot serve both the AUC
+            # panels (all within 0.96-0.99, differences invisible at 0-1 scale)
+            # and the chi2 reference line an order of magnitude away.
+            for rect, v in zip(bars, vals):
+                ax.annotate(
+                    f"{v:.2e}" if is_log else f"{v:.4f}",
+                    (rect.get_x() + rect.get_width() / 2, rect.get_height()),
+                    textcoords="offset points",
+                    xytext=(0, 2),
+                    ha="center",
+                    fontsize=5.5,
+                    rotation=90,
+                )
         chi2 = data["A"]["scalars"]["metrics"]["chi2_lambda"][key]
-        ax.axhline(chi2, color="0.35", ls="-.", lw=1.2, label="χ²_λ")
-        if key in ("ece", "dr_ece", "mce"):
+        line = ax.axhline(chi2, color="0.35", ls="-.", lw=1.2, label="χ²_λ")
+        if ax is axes[0]:
+            handles.append(line)
+        if is_log:
             ax.set_yscale("log")
+        ax.margins(y=0.22)  # headroom for the rotated value labels
         ax.set_xticks(np.arange(len(ARMS)))
         ax.set_xticklabels(ARMS)
         ax.set_title(title, fontsize=10)
         ax.grid(alpha=0.3, axis="y", which="both")
-    axes[0].legend(fontsize=7)
+    fig.legend(
+        handles=[h for h in handles],
+        loc="lower center",
+        ncol=4,
+        fontsize=8,
+        frameon=False,
+    )
     fig.suptitle(
         "F6  Before/after calibration on the val split. AUC-ROC and AUC-PR are "
         "IDENTICAL for raw and Platt-2 by\nconstruction (a > 0 is monotone, and "
@@ -330,6 +356,9 @@ def figure_before_after(data: dict, out_dir: Path) -> Path:
         "monotone map.",
         fontsize=9,
     )
+    # Explicit rect: the 3-line suptitle and the bottom legend both need space
+    # the default layout gives to the axes, which collides the panel titles.
+    fig.tight_layout(rect=(0, 0.07, 1, 0.93))
     return _save(fig, out_dir, "F6_before_after")
 
 
