@@ -292,14 +292,20 @@ def build_all_caches(
     splits_to_build: str = "train,val,cal",
     only_events: str = "",
     skip_value: bool = False,
+    skip_gate: bool = False,
 ) -> dict:
     """Build gate and value caches, sequentially.
 
     Parameters
     ----------
     csv_dir : str
-        Value caches are only built when this is non-empty (existing
-        behaviour, unchanged).
+        Overrides the per-event simhits directory for the *value* cache step.
+        Empty (default) lets ``build_value_cache.py`` resolve each event's
+        directory from ``cckf.stage1_map``, which is the correct behaviour:
+        Stage 1 wrote each event's CSVs into its own batch directory, so no
+        single directory holds them all. Pass a path only to override the map
+        with one directory for every event. This no longer gates whether
+        value caches are built -- use ``skip_value`` for that.
     gate_parquet_dir : str
         Directory the *gate* cache step reads expanded Parquet from.
         Defaults to ``EXPANDED_DIR`` -- unlike the value cache, the gate
@@ -314,14 +320,18 @@ def build_all_caches(
         gate (and, unless ``skip_value``, value) caches for. Default is all
         three -- unchanged behaviour when omitted.
     only_events : str
-        Forwarded verbatim to ``--only-events`` on the *gate* cache step
-        (e.g. ``"0,1"`` for a staged run over two events). Empty (default)
-        omits the flag, so the gate step builds every event in each
-        requested split -- unchanged behaviour. Not forwarded to the value
-        step, which is unaffected by this parameter.
+        Forwarded verbatim to ``--only-events`` on *both* cache steps (e.g.
+        ``"0,1"`` for a staged run over two events). Empty (default) omits
+        the flag, so each step builds every event in each requested split.
+        A staged run routes both caches to sibling ``*_staged`` roots so it
+        cannot overwrite a completed full build.
     skip_value : bool
-        If True, skip the value-cache half entirely, regardless of
-        ``csv_dir``. Default False -- unchanged behaviour when omitted.
+        If True, skip the value-cache half entirely. Default False.
+    skip_gate : bool
+        If True, skip the gate-cache half entirely. Default False. Useful
+        once the gate caches are already built, so a value-cache run does
+        not spend hours re-streaming 174M rows it would only overwrite with
+        identical output.
     """
     import sys
 
@@ -338,8 +348,11 @@ def build_all_caches(
     # a staged run physically unable to overwrite a completed full cache, in
     # either direction, regardless of run order.
     gate_cache_root = f"{CACHE_DIR}/gate_staged" if only_events else f"{CACHE_DIR}/gate"
+    value_cache_root = (
+        f"{CACHE_DIR}/value_staged" if only_events else f"{CACHE_DIR}/value"
+    )
 
-    for split in splits:
+    for split in [] if skip_gate else splits:
         cmd = [
             sys.executable,
             "/root/scripts/build_gate_cache.py",
@@ -356,7 +369,7 @@ def build_all_caches(
         data_vol.commit()
         results[f"gate_{split}"] = "ok"
 
-    if csv_dir and not skip_value:
+    if not skip_value:
         for split in splits:
             cmd = [
                 sys.executable,
@@ -365,11 +378,17 @@ def build_all_caches(
                 split,
                 "--parquet-dir",
                 SELECTED_DIR,
-                "--csv-dir",
-                csv_dir,
                 "--out-dir",
-                f"{CACHE_DIR}/value/{split}",
+                f"{value_cache_root}/{split}",
             ]
+            # Omitted, not passed empty: an empty --csv-dir is what tells
+            # build_value_cache.py to resolve each event's directory from
+            # cckf.stage1_map, and passing "" explicitly would work only
+            # because argparse's default happens to match.
+            if csv_dir:
+                cmd += ["--csv-dir", csv_dir]
+            if only_events:
+                cmd += ["--only-events", only_events]
             _run_script(cmd)
             data_vol.commit()
             results[f"value_{split}"] = "ok"
@@ -485,6 +504,32 @@ def build_gate_cache_staged(only_events: str, split: str = "train") -> None:
             splits_to_build=split,
             only_events=only_events,
             skip_value=True,
+        )
+    )
+
+
+@app.local_entrypoint()
+def build_value_cache_staged(only_events: str, split: str = "train") -> None:
+    """Staged value-only cache build over a small event subset.
+
+    The value cache, unlike the gate cache, reads ``SELECTED_DIR`` -- it needs
+    ``is_ckf_selected``, so ``patch_selected`` must have run for these events
+    first. Skips the gate half, which is already built.
+
+    Writes to ``{CACHE_DIR}/value_staged/{split}``, never
+    ``{CACHE_DIR}/value/{split}``, so it cannot collide with a full build.
+    ``meta.json`` carries ``partial_split: true``.
+
+    Usage
+    -----
+        modal run modal_train.py::build_value_cache_staged \\
+            --only-events 0,1 --split train
+    """
+    print(
+        build_all_caches.remote(
+            splits_to_build=split,
+            only_events=only_events,
+            skip_gate=True,
         )
     )
 

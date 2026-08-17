@@ -56,6 +56,7 @@ import pyarrow.parquet as pq
 from cckf import features as feat
 from cckf import labels as lab
 from cckf import splits, stage1_map, value_target
+from cckf.event_selection import resolve_requested_events
 
 _NEEDED = (
     "seed_id",
@@ -277,10 +278,38 @@ def main() -> None:
         ),
     )
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument(
+        "--only-events",
+        default="",
+        help=(
+            "Comma-separated event id subset (e.g. '0,1') to build the cache "
+            "from, instead of every event assigned to --split. Validated "
+            "against --split's own events, so an id from a different split "
+            "or the sealed test range raises. Omit for the full split "
+            "(default, unchanged behaviour)."
+        ),
+    )
     args = parser.parse_args()
 
-    events = splits.events_for(args.split)
+    # Validate against this split's own events, not the train+val+cal union:
+    # otherwise '--split train --only-events 4' would succeed on a validation
+    # event and silently mix splits. Same reasoning as
+    # build_gate_cache.resolve_split_events.
+    split_events = splits.events_for(args.split)
+    events = resolve_requested_events(args.only_events, split_events)
     splits.assert_not_test(events)
+    is_staged = bool(args.only_events.strip())
+
+    if is_staged and args.split == "train":
+        # norm_stats.npz fit on a subset is not what a full run would produce,
+        # and no downstream consumer can tell from the file alone -- hence the
+        # meta.json flag below as well.
+        print(
+            "WARNING: --only-events was given with --split train. "
+            f"norm_stats.npz will be fit on {len(events)}/{len(split_events)} "
+            f"train events ({list(events)}), NOT the full train split. This is "
+            "a STAGED cache -- do not use it as a real training run's output."
+        )
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -373,6 +402,12 @@ def main() -> None:
         "chi2_saturation_threshold": _CHI2_SATURATION_THRESHOLD,
         "events": list(events),
     }
+    if is_staged:
+        # Mark a subset build as partial so no consumer -- or human reading a
+        # directory listing -- can mistake it for a full-split cache. Same
+        # reasoning as build_gate_cache.py.
+        meta["partial_split"] = True
+        meta["events_used"] = list(events)
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
     print(json.dumps(meta, indent=2))
 
