@@ -7,9 +7,12 @@ Usage
         --out-dir /data/cache/gate/train
 
     # Staged run: build from a 2-event subset of the train split only.
+    # --out-dir must be a path outside /data/cache/gate/ -- see
+    # modal_train.py's gate_staged/ convention -- so a staged cache can
+    # never collide with a full split's cache.
     python scripts/build_gate_cache.py --split train \\
         --parquet-dir /data/results/train32/expanded \\
-        --out-dir /data/cache/gate/train_staged \\
+        --out-dir /data/cache/gate_staged/train \\
         --only-events 0,1
 """
 

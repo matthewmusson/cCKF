@@ -18,12 +18,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import torch
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-from cckf import cache, features, models, samplers, train
+from cckf import cache, features, models, samplers, splits, train
 
 #: spec §2.7 red-flag thresholds
 RED_FLAGS = {
@@ -32,6 +33,62 @@ RED_FLAGS = {
     "auc_roc_min": 0.95,
     "auc_pr_min": 0.80,
 }
+
+
+def _refuse_partial_cache(
+    cache_dir: str, full_events: Sequence[int], allow_partial: bool
+) -> None:
+    """Refuse to silently train on a staged/partial-split cache.
+
+    ``modal_train.py::build_gate_cache_staged`` builds a gate cache from a
+    small event subset (e.g. 2 of 24 train events) for smoke-testing the
+    training wiring, and ``scripts/build_gate_cache.py`` marks the result
+    ``partial_split: true`` with ``events_used`` in ``meta.json``. Nothing
+    else reads that flag: a staged cache looks byte-for-byte like a real one
+    to every other consumer. Left unchecked, a staged run that happens to
+    follow a full build would silently degrade training data from 24 events
+    to 2 while ``train_gate.py`` runs to completion without complaint -- a
+    silent-quality failure, not a crash. This check makes that impossible by
+    default; ``--allow-partial-cache`` is the deliberate opt-in for the
+    smoke-test case the staged cache exists for.
+
+    Reads ``meta.json`` directly (not via :func:`cckf.cache.load_cache`) so
+    the check can run, and be tested, without the cache's ``X.f32``/``y.u8``
+    arrays existing at all.
+
+    Parameters
+    ----------
+    cache_dir : str
+        Cache directory to check.
+    full_events : Sequence[int]
+        The full event tuple for the split this cache is expected to cover
+        (e.g. ``splits.TRAIN_EVENTS``), used only to report "N of M events"
+        in the error message.
+    allow_partial : bool
+        If True, skip the check entirely (``--allow-partial-cache``).
+
+    Raises
+    ------
+    SystemExit
+        If ``meta.json`` has ``partial_split: true`` and ``allow_partial``
+        is False.
+    """
+    if allow_partial:
+        return
+    meta = json.loads((Path(cache_dir) / "meta.json").read_text())
+    if not meta.get("partial_split"):
+        return
+    events_used = meta.get("events_used", [])
+    raise SystemExit(
+        f"refusing to train on {cache_dir}: it is a PARTIAL cache "
+        f"(meta.json has partial_split=true), built from "
+        f"{len(events_used)}/{len(full_events)} events {events_used}. "
+        "This is almost certainly a staged smoke-test cache "
+        "(modal_train.py::build_gate_cache_staged), not a real split. "
+        "Rebuild the cache without --only-events for the full split, or "
+        "pass --allow-partial-cache to use it anyway (e.g. to smoke-test "
+        "the training wiring)."
+    )
 
 
 def main() -> None:
@@ -61,10 +118,23 @@ def main() -> None:
         help="A4a/A4b ablation: comma-separated subset of "
         "kalman,cluster_raw,cluster_norm,occupancy,context,sensor,history",
     )
+    parser.add_argument(
+        "--allow-partial-cache",
+        action="store_true",
+        help="Allow training on a partial/staged cache (meta.json "
+        "partial_split=true), e.g. one built by "
+        "modal_train.py::build_gate_cache_staged. Off by default so a "
+        "smoke-test cache can never be silently used for a real run.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    _refuse_partial_cache(
+        args.train_cache, splits.TRAIN_EVENTS, args.allow_partial_cache
+    )
+    _refuse_partial_cache(args.val_cache, splits.VAL_EVENTS, args.allow_partial_cache)
 
     tr = cache.load_cache(args.train_cache)
     va = cache.load_cache(args.val_cache)

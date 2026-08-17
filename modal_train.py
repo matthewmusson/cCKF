@@ -263,6 +263,17 @@ def build_all_caches(
     results = {}
     splits = [s.strip() for s in splits_to_build.split(",") if s.strip()]
 
+    # A staged (``--only-events``) build must never write to the same
+    # directory a full build does. ``partial_split``/``events_used`` in
+    # meta.json are the only distinguisher between a 2-event smoke-test cache
+    # and a real 24-event cache, and no consumer reads them (train_gate.py
+    # now refuses a partial cache by default -- see its --allow-partial-cache
+    # flag -- but that check exists precisely because nothing else would
+    # notice). Routing staged output to a sibling ``gate_staged/`` root makes
+    # a staged run physically unable to overwrite a completed full cache, in
+    # either direction, regardless of run order.
+    gate_cache_root = f"{CACHE_DIR}/gate_staged" if only_events else f"{CACHE_DIR}/gate"
+
     for split in splits:
         cmd = [
             sys.executable,
@@ -272,7 +283,7 @@ def build_all_caches(
             "--parquet-dir",
             gate_parquet_dir,
             "--out-dir",
-            f"{CACHE_DIR}/gate/{split}",
+            f"{gate_cache_root}/{split}",
         ]
         if only_events:
             cmd += ["--only-events", only_events]
@@ -389,6 +400,14 @@ def build_gate_cache_staged(only_events: str, split: str = "train") -> None:
     and always skips the value half (which does need the patch). ``split``
     is a single split name (not a list: Modal local entrypoints only accept
     CLI-friendly scalars), default ``"train"``.
+
+    Writes to ``{CACHE_DIR}/gate_staged/{split}``, never
+    ``{CACHE_DIR}/gate/{split}`` -- a separate root from the full build
+    (``build_caches``), so the two can never collide regardless of which
+    runs first. ``scripts/train_gate.py`` additionally refuses to train on
+    the resulting cache (``meta.json`` has ``partial_split: true``) unless
+    given ``--allow-partial-cache``; it exists for smoke-testing the
+    training wiring, not for real training runs.
 
     Usage
     -----
