@@ -30,7 +30,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from cckf import metrics
+from cckf import curves, metrics
 
 ARMS = ("A", "B", "C")
 ARM_LABEL = {
@@ -291,6 +291,92 @@ def figure_reliability(data: dict, out_dir: Path) -> Path:
     return _save(fig, out_dir, "F5_reliability")
 
 
+def figure_reliability_linear(data: dict, out_dir: Path, n_bins: int = 20) -> Path:
+    """F5b: the textbook reliability diagram -- linear axes, equal-width bins.
+
+    Equal-width bins over [0, 1] on linear axes is the conventional form, and
+    for chi2_lambda it is the *right* form: being a p-value, chi2_lambda is
+    roughly uniform on [0, 1] under the correct-hit hypothesis, so equal-width
+    bins are well populated across the whole range.
+
+    For the gate it is the less informative view, and the figure should be read
+    knowing why: at a 0.57% base rate the gate concentrates ~99.5% of its mass
+    below 0.01, so the first bin swallows nearly every row and the upper bins go
+    thin. That is a property of the data, not a defect of the model -- the
+    log-odds view (F5) is where the gate's decision region is resolved.
+
+    Bins come from summing the fine 1000-bin sufficient statistics shipped in
+    the bundle, so both the counts and the *mean prediction* per bin are exact.
+    Bin midpoints are never substituted for the mean prediction: the first bin's
+    rows average ~0.001 against a midpoint of 0.025.
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5.6), sharex=True, sharey=True)
+    for ax, arm in zip(axes, ARMS):
+        entry, sc = data[arm], data[arm]["scalars"]
+        for est, color, marker in (
+            ("chi2_lambda", "0.35", "s"),
+            ("gate_raw", "#e08a1e", "^"),
+            ("gate_platt2", ARM_COLOR[arm], "o"),
+        ):
+            hist = {
+                "count": entry["arrays"][f"{est}__hist_count"],
+                "sum_prob": entry["arrays"][f"{est}__hist_sum_prob"],
+                "sum_label": entry["arrays"][f"{est}__hist_sum_label"],
+            }
+            bins = curves.rebin_equal_width(
+                hist, n_bins=n_bins, min_count=metrics.MIN_BIN_COUNT
+            )["bins"]
+            solid = [b for b in bins if b["count"] > 0 and not b["sparse"]]
+            thin = [b for b in bins if 0 < b["count"] < metrics.MIN_BIN_COUNT]
+            if solid:
+                ax.plot(
+                    [b["mean_predicted"] for b in solid],
+                    [b["observed_fraction"] for b in solid],
+                    marker=marker,
+                    ms=5,
+                    lw=1.4,
+                    color=color,
+                    label=f"{EST_LABEL[est]}  ECE {sc['metrics'][est]['ece']:.2e}",
+                )
+            if thin:
+                ax.plot(
+                    [b["mean_predicted"] for b in thin],
+                    [b["observed_fraction"] for b in thin],
+                    marker=marker,
+                    ms=4,
+                    lw=0,
+                    mfc="none",
+                    color=color,
+                    alpha=0.6,
+                    label=f"{EST_LABEL[est]} (sparse bins)",
+                )
+        ax.plot([0, 1], [0, 1], color="0.7", lw=0.9, ls=":", label="perfect")
+        ax.axhline(
+            sc["metrics"]["gate_platt2"]["base_rate"],
+            color="0.55",
+            lw=0.8,
+            ls="--",
+        )
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(-0.02, 1.02)
+        ax.set_aspect("equal")
+        ax.set_xlabel("mean predicted probability")
+        ax.set_title(ARM_LABEL[arm], fontsize=9)
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=6.5, loc="upper left")
+    axes[0].set_ylabel("observed positive fraction")
+    fig.suptitle(
+        f"F5b  Reliability on the val split — linear axes, {n_bins} equal-width "
+        "bins. Open markers are sparse bins (<100 rows).\nDashed horizontal line "
+        "is the base rate. χ²_λ = exp(-χ²/2) is a *p-value* under the "
+        "correct-hit hypothesis, not a\nposterior, so it carries no prior and "
+        "sits flat near the base rate rather than on the diagonal.",
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    return _save(fig, out_dir, "F5b_reliability_linear")
+
+
 def figure_before_after(data: dict, out_dir: Path) -> Path:
     """F6: metric deltas from calibration, grouped bars."""
     lo, hi = metrics.DECISION_REGION
@@ -376,21 +462,31 @@ def main() -> None:
         figure_pr,
         figure_calibration_nll,
         figure_reliability,
+        figure_reliability_linear,
         figure_before_after,
     ):
         fn(data, out_dir)
 
     # AUC invariance under 2-param Platt is arithmetic, not an empirical
     # finding; verify it held on real data rather than trusting the figure.
+    #
+    # The tolerance is 1e-4, not 0, and the reason is float saturation rather
+    # than sloppiness. a*z + b maps a different set of extreme logits to
+    # exactly 0.0 or 1.0 in float64 than z does, so recalibration creates and
+    # destroys *ties* at the saturated ends even though it preserves the strict
+    # ordering everywhere else. Average precision is tie-sensitive, so it
+    # shifts in the 6th decimal. A genuine sign error would instead send AUC
+    # toward 1 - AUC, which 1e-4 catches with room to spare.
     for arm in ARMS:
         m = data[arm]["scalars"]["metrics"]
         for key in ("auc_roc", "auc_pr"):
             delta = abs(m["gate_raw"][key] - m["gate_platt2"][key])
-            if delta > 1e-9:
+            if delta > 1e-4:
                 print(
                     f"WARNING arm {arm}: {key} moved by {delta:.3e} under 2-param "
-                    "Platt, which a strictly increasing map cannot do — check "
-                    "the fitted slope's sign"
+                    "Platt, which a strictly increasing map cannot do beyond "
+                    "tie effects at float saturation — check the fitted slope's "
+                    f"sign (a = {data[arm]['scalars']['platt_2param']['a']:.4f})"
                 )
 
     for arm in ARMS:

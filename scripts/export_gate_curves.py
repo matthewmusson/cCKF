@@ -174,6 +174,12 @@ def main() -> None:
         scalars["reliability"][name] = metrics.reliability_bins(
             prob, val_labels, edges=rel_edges
         )
+        # Sufficient statistics for equal-width (linear-axis) reliability at any
+        # coarser bin count, so that view never needs another inference pass.
+        h = curves.prob_histogram(prob, val_labels)
+        arrays[f"{name}__hist_count"] = h["count"]
+        arrays[f"{name}__hist_sum_prob"] = h["sum_prob"]
+        arrays[f"{name}__hist_sum_label"] = h["sum_label"]
         m = scalars["metrics"][name]
         print(
             f"{arm} {name}: AUC-ROC {m['auc_roc']:.6f} AUC-PR {m['auc_pr']:.6f} "
