@@ -338,9 +338,29 @@ def match_selected(
 
 
 def patch_event(
-    parquet_path: str, root_path: str, event_id: int, out_path: str
+    parquet_path: str,
+    root_path: str,
+    event_id: int,
+    out_path: str,
+    min_frac_matched: float = 0.95,
 ) -> dict:
     """Add ``is_ckf_selected`` to one event's Parquet and write it out.
+
+    Parameters
+    ----------
+    min_frac_matched : float
+        Refuse to write if fewer than this fraction of the ROOT file's states
+        matched a candidate. The check lives *here*, before the write, not in
+        :func:`main` -- it used to sit in ``main`` only, which meant every
+        caller that imports ``patch_event`` directly (``modal_train.
+        patch_selected_all``, i.e. the only path that actually runs at scale)
+        silently skipped it. That is not a hypothetical: the first real
+        2-event run wrote ``is_ckf_selected`` all-False with
+        ``frac_states_matched == 0.0`` and exited 0, because a residual-join
+        failure is invisible in the output schema -- the column exists and is
+        the right dtype, it is just uniformly wrong, which would train the
+        value function on a target that says "the CKF never accepted any
+        hit". Set to ``0.0`` to disable (diagnostics only).
 
     Returns
     -------
@@ -348,6 +368,13 @@ def patch_event(
         ``event_id``, ``n_rows``, ``n_selected``, ``n_states``,
         ``frac_states_matched`` — the last is the key health metric and should
         be close to 1.0 for states that have a selected hit.
+
+    Raises
+    ------
+    ValueError
+        If ``frac_states_matched < min_frac_matched``. Raised *before* the
+        Parquet is written, so a failed run leaves no output to mistake for
+        a good one.
     """
     assert_not_test([event_id])
 
@@ -358,20 +385,33 @@ def patch_event(
     root_res = load_root_residuals(root_path, event_id)
     selected = match_selected(df, root_res)
 
-    table = pq.read_table(parquet_path)
-    table = table.append_column("is_ckf_selected", pa.array(selected, pa.bool_()))
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, out_path, compression="snappy")
-
     n_states = len(root_res)
     n_selected = int(selected.sum())
-    return {
+    frac = (n_selected / n_states) if n_states else 0.0
+    report = {
         "event_id": event_id,
         "n_rows": len(df),
         "n_selected": n_selected,
         "n_states": n_states,
-        "frac_states_matched": (n_selected / n_states) if n_states else 0.0,
+        "frac_states_matched": frac,
     }
+    if frac < min_frac_matched:
+        raise ValueError(
+            f"event {event_id}: only {frac:.2%} of {n_states:,} ROOT states "
+            f"matched a candidate within the residual tolerance "
+            f"(need >= {min_frac_matched:.0%}); refusing to write "
+            f"{out_path}. is_ckf_selected would be almost entirely False, "
+            "which is indistinguishable from a valid column downstream. "
+            f"Diagnose with modal_train.py::diagnose_join --event-id "
+            f"{event_id} (checks key overlap, residual sign convention and "
+            f"tolerance). Report: {report}"
+        )
+
+    table = pq.read_table(parquet_path)
+    table = table.append_column("is_ckf_selected", pa.array(selected, pa.bool_()))
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, out_path, compression="snappy")
+    return report
 
 
 def main() -> None:
@@ -382,13 +422,13 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    report = patch_event(args.parquet, args.root, args.event_id, args.out)
+    # patch_event itself enforces the match-fraction floor before writing, so
+    # this wrapper only has to translate the failure into an exit status.
+    try:
+        report = patch_event(args.parquet, args.root, args.event_id, args.out)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     print(report)
-    if report["frac_states_matched"] < 0.95:
-        raise SystemExit(
-            f"only {report['frac_states_matched']:.1%} of states matched a "
-            f"candidate; investigate before trusting the value target"
-        )
 
 
 if __name__ == "__main__":

@@ -39,14 +39,24 @@ as ``results/train32/expanded`` -- uses ``pilot_1786547065`` for events
 ``expand_all_events``, not ``check_pilot_dirs``, if the two ever disagree
 again.
 
-Consequence of getting this wrong: a bad pairing does not corrupt data
-silently. ``expansion.load_trackstates`` / the patch step's
-``frac_states_matched >= 0.95`` gate compares the trackstates file's hits
-against the expanded Parquet's own hits and refuses a low match fraction, so
-a wrong pairing fails loudly at that gate rather than training on a subtly
-mismatched join. That gate is a safety net, not a substitute for using the
-right map -- it catches gross mismatches, not a config that happens to
-overlap enough hits to clear 95%.
+Consequence of getting this wrong: the patch step's
+``frac_states_matched >= 0.95`` floor
+(``scripts.patch_is_selected.patch_event``) compares the trackstates file's
+states against the expanded Parquet's own candidates and refuses to write
+below that fraction, so a gross mispairing fails loudly instead of training
+on a mismatched join.
+
+Do not lean on that floor as a substitute for using the right map. Two
+reasons. First, it catches gross mismatches, not a config that happens to
+overlap enough states to clear 95%. Second, it was for a while not enforced
+at all on the path that actually runs: the check lived only in
+``patch_is_selected.main()``, while ``modal_train.patch_selected_all``
+imports ``patch_event`` directly, so the first real 2-event run wrote
+``is_ckf_selected`` all-False and exited 0. The floor now lives inside
+``patch_event``, before the write, and is covered by
+``tests/test_patch_event_write_guard.py`` -- but the general lesson stands:
+a guard is only worth citing if it sits on the code path you are citing it
+for.
 """
 
 from __future__ import annotations

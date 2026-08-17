@@ -72,6 +72,145 @@ def _run_script(cmd: list[str]) -> None:
 
 
 @app.function(
+    image=image, volumes={DATA_PATH: data_vol}, cpu=8, memory=131072, timeout=7200
+)
+def diagnose_selected_join(event_id: int = 0) -> dict:
+    """Read-only diagnosis of why ``match_selected`` matched nothing.
+
+    Deliberately writes nothing and never calls ``data_vol.commit()``, so it
+    is safe to run beside a training job (this volume's only corruption
+    incident came from concurrent commits, experiments/LOG.md).
+
+    ``match_selected`` joins on ``(seed_id, step_k)`` and then requires both
+    residual components to agree within ``DEFAULT_TOL`` (1e-4 mm). A zero
+    match rate has three candidate causes, and they are distinguishable:
+
+    1. **Key mismatch** -- the ``(seed_id, step_k)`` sets barely intersect, so
+       the merge yields NaN residuals. Diagnosed by the overlap counts.
+    2. **Sign convention** -- the Parquet's ``residual_l0 = local0 - pred_l0``
+       (expansion.py:755) versus ACTS's ``res_eLOC0_prt``. If the conventions
+       are opposite, ``|r - res|`` is large everywhere while ``|r + res|`` is
+       tiny. Diagnosed by comparing the two.
+    3. **Tolerance too tight** -- both are the same quantity, but the Parquet
+       recomputed the prediction, so they differ by more than 1e-4. Diagnosed
+       by the quantiles of the best per-state difference.
+    """
+    import sys
+
+    sys.path.insert(0, "/root")
+    import numpy as np
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    from cckf import stage1_map
+    from scripts.patch_is_selected import load_root_residuals
+
+    parquet_path = f"{EXPANDED_DIR}/expanded_event{event_id:09d}.parquet"
+    root_path = stage1_map.trackstates_path_for(event_id)
+    print(f"parquet: {parquet_path}\nroot:    {root_path}")
+
+    cand = pq.read_table(
+        parquet_path,
+        columns=["seed_id", "step_k", "cand_hit_id", "residual_l0", "residual_l1"],
+    ).to_pandas()
+    root_res = load_root_residuals(root_path, event_id)
+
+    cand_keys = set(
+        map(tuple, cand[["seed_id", "step_k"]].drop_duplicates().to_numpy())
+    )
+    root_keys = set(map(tuple, root_res[["seed_id", "step_k"]].to_numpy()))
+    overlap = cand_keys & root_keys
+
+    out = {
+        "event_id": event_id,
+        "n_cand_rows": int(len(cand)),
+        "n_cand_states": len(cand_keys),
+        "n_root_states": len(root_keys),
+        "n_overlapping_states": len(overlap),
+        "frac_root_states_covered": (
+            len(overlap) / len(root_keys) if root_keys else 0.0
+        ),
+        "cand_seed_id_range": [int(cand["seed_id"].min()), int(cand["seed_id"].max())],
+        "root_seed_id_range": [
+            int(root_res["seed_id"].min()),
+            int(root_res["seed_id"].max()),
+        ],
+        "cand_step_k_range": [int(cand["step_k"].min()), int(cand["step_k"].max())],
+        "root_step_k_range": [
+            int(root_res["step_k"].min()),
+            int(root_res["step_k"].max()),
+        ],
+    }
+
+    # Scale check before anything else: a units mismatch (mm vs cm) shows up
+    # as an order-of-magnitude gap in the residual distributions themselves.
+    for name, series in (
+        ("parquet_residual_l0", cand["residual_l0"].dropna()),
+        ("parquet_residual_l1", cand["residual_l1"].dropna()),
+        ("root_res_l0", root_res["res_l0"]),
+        ("root_res_l1", root_res["res_l1"]),
+    ):
+        arr = np.abs(series.to_numpy(dtype=np.float64))
+        arr = arr[np.isfinite(arr)]
+        out[f"abs_{name}_quantiles"] = (
+            [float(q) for q in np.quantile(arr, [0.5, 0.9, 0.99])] if len(arr) else None
+        )
+
+    if not overlap:
+        out["verdict"] = "KEY MISMATCH: no (seed_id, step_k) in common"
+        print(out)
+        return out
+
+    merged = cand.merge(root_res, on=["seed_id", "step_k"], how="inner")
+    d_minus0 = (merged["residual_l0"] - merged["res_l0"]).abs()
+    d_plus0 = (merged["residual_l0"] + merged["res_l0"]).abs()
+    d_minus1 = (merged["residual_l1"] - merged["res_l1"]).abs()
+    d_plus1 = (merged["residual_l1"] + merged["res_l1"]).abs()
+
+    # Per state, the *best* candidate is the one that should be the selected
+    # hit; the aggregate over all candidates would be dominated by the
+    # non-selected ones, which are supposed to disagree.
+    grp = merged.assign(d_minus=d_minus0, d_plus=d_plus0).groupby(["seed_id", "step_k"])
+    best_minus = grp["d_minus"].min().to_numpy()
+    best_plus = grp["d_plus"].min().to_numpy()
+
+    for name, arr in (
+        ("best_abs_diff_same_sign", best_minus),
+        ("best_abs_diff_opposite_sign", best_plus),
+    ):
+        arr = arr[np.isfinite(arr)]
+        out[f"{name}_quantiles"] = (
+            [float(q) for q in np.quantile(arr, [0.01, 0.5, 0.9])] if len(arr) else None
+        )
+        for tol in (1e-4, 1e-3, 1e-2, 1e-1):
+            out[f"{name}_frac_within_{tol:g}"] = (
+                float(np.mean(arr <= tol)) if len(arr) else None
+            )
+
+    out["l1_check_frac_within_1e-4_same_sign"] = float(
+        np.mean(d_minus1.to_numpy() <= 1e-4)
+    )
+    out["l1_check_frac_within_1e-4_opposite_sign"] = float(
+        np.mean(d_plus1.to_numpy() <= 1e-4)
+    )
+
+    with pd.option_context("display.width", 200, "display.max_columns", 20):
+        print("\nfirst 12 overlapping-state candidate rows:")
+        print(merged.head(12).to_string())
+
+    print(out)
+    return out
+
+
+@app.local_entrypoint()
+def diagnose_join(event_id: int = 0) -> None:
+    """Usage: modal run modal_train.py::diagnose_join --event-id 0"""
+    import json
+
+    print(json.dumps(diagnose_selected_join.remote(event_id=event_id), indent=2))
+
+
+@app.function(
     image=image, volumes={DATA_PATH: data_vol}, cpu=8, memory=131072, timeout=86400
 )
 def patch_selected_all(only_events: str = "") -> list[dict]:
