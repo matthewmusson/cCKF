@@ -190,8 +190,16 @@ def rebin_equal_width(hist: dict, n_bins: int, min_count: int) -> dict:
     -------
     dict
         ``bins`` -- a list of dicts with ``bin_lo``, ``bin_hi``,
-        ``mean_predicted``, ``observed_fraction``, ``count``, ``sparse`` -- and
-        ``edges``.
+        ``mean_predicted``, ``observed_fraction``, ``count``, ``n_positive``,
+        ``ci_lower``, ``ci_upper``, ``sparse`` -- and ``edges``.
+
+        ``ci_lower``/``ci_upper`` are Wilson score intervals on the observed
+        fraction, matching what :func:`cckf.metrics.reliability_bins` reports so
+        the linear and log-odds reliability views quote the same uncertainty.
+        Wilson rather than the normal approximation because bin occupancy here
+        spans five orders of magnitude and the observed fraction is often near 0
+        or 1, where the normal interval misbehaves badly (it can even leave
+        [0, 1]).
 
     Raises
     ------
@@ -215,6 +223,10 @@ def rebin_equal_width(hist: dict, n_bins: int, min_count: int) -> dict:
     bins = []
     for b in range(n_bins):
         n = int(count[b])
+        # sum_label accumulates float weights from a boolean, so it is an exact
+        # integer up to float representation; round rather than truncate.
+        k = int(round(float(sum_label[b])))
+        lo_ci, hi_ci = metrics.wilson_ci(k, n) if n else (0.0, 0.0)
         bins.append(
             {
                 "bin_lo": float(edges[b]),
@@ -228,6 +240,9 @@ def rebin_equal_width(hist: dict, n_bins: int, min_count: int) -> dict:
                 ),
                 "observed_fraction": (float(sum_label[b] / n) if n else 0.0),
                 "count": n,
+                "n_positive": k,
+                "ci_lower": lo_ci,
+                "ci_upper": hi_ci,
                 "sparse": n < min_count,
             }
         )

@@ -341,26 +341,50 @@ def figure_reliability_linear(data: dict, out_dir: Path, n_bins: int = 20) -> Pa
             solid = [b for b in bins if b["count"] > 0 and not b["sparse"]]
             thin = [b for b in bins if 0 < b["count"] < metrics.MIN_BIN_COUNT]
             if solid:
-                ax.plot(
+                # Wilson error bars, asymmetric by construction: the interval on
+                # a proportion near 0 or 1 is not symmetric about the estimate,
+                # and bin occupancy here spans five orders of magnitude, so the
+                # bars are what tell a real deviation from a thinly-populated
+                # one. Most are smaller than the marker -- that is the honest
+                # signal that these deviations are not sampling noise.
+                obs = np.array([b["observed_fraction"] for b in solid])
+                ax.errorbar(
                     [b["mean_predicted"] for b in solid],
-                    [b["observed_fraction"] for b in solid],
+                    obs,
+                    yerr=np.vstack(
+                        [
+                            obs - np.array([b["ci_lower"] for b in solid]),
+                            np.array([b["ci_upper"] for b in solid]) - obs,
+                        ]
+                    ),
                     marker=marker,
                     ms=5,
                     lw=1.4,
+                    elinewidth=1.1,
+                    capsize=2.5,
                     color=color,
                     label=f"{EST_LABEL[est]}  ECE {sc['metrics'][est]['ece']:.2e}",
                 )
             if thin:
-                ax.plot(
+                obs_t = np.array([b["observed_fraction"] for b in thin])
+                ax.errorbar(
                     [b["mean_predicted"] for b in thin],
-                    [b["observed_fraction"] for b in thin],
+                    obs_t,
+                    yerr=np.vstack(
+                        [
+                            obs_t - np.array([b["ci_lower"] for b in thin]),
+                            np.array([b["ci_upper"] for b in thin]) - obs_t,
+                        ]
+                    ),
                     marker=marker,
                     ms=4,
                     lw=0,
+                    elinewidth=0.9,
+                    capsize=2,
                     mfc="none",
                     color=color,
                     alpha=0.6,
-                    label=f"{EST_LABEL[est]} (sparse bins)",
+                    label=f"{EST_LABEL[est]} (sparse, <100 rows)",
                 )
         ax.plot([0, 1], [0, 1], color="0.7", lw=0.9, ls=":", label="perfect")
         ax.axhline(
@@ -379,10 +403,10 @@ def figure_reliability_linear(data: dict, out_dir: Path, n_bins: int = 20) -> Pa
     axes[0].set_ylabel("observed positive fraction")
     fig.suptitle(
         f"F5b  Reliability on the val split — linear axes, {n_bins} equal-width "
-        "bins. Open markers are sparse bins (<100 rows).\nDashed horizontal line "
-        "is the base rate. χ²_λ = exp(-χ²/2) is a *p-value* under the "
-        "correct-hit hypothesis, not a\nposterior, so it carries no prior and "
-        "sits flat near the base rate rather than on the diagonal.",
+        "bins. Error bars are 95% Wilson intervals\n(asymmetric near 0 and 1); "
+        "open markers are sparse bins (<100 rows). Dashed line is the base rate. "
+        "χ²_λ = exp(-χ²/2)\nis a *p-value* under the correct-hit hypothesis, not "
+        "a posterior, so it carries no prior and sits flat near that rate.",
         fontsize=9,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.90))

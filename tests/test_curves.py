@@ -197,3 +197,59 @@ def test_rebin_flags_sparse_bins_without_dropping_them():
     assert not coarse["bins"][0]["sparse"]
     thin = [b for b in coarse["bins"] if 0 < b["count"] < 100]
     assert thin and all(b["sparse"] for b in thin)
+
+
+def test_rebin_reports_wilson_intervals_bracketing_the_observed_fraction():
+    z, labels = _synthetic()
+    coarse = curves.rebin_equal_width(
+        curves.prob_histogram(expit(z), labels), n_bins=20, min_count=100
+    )
+    checked = 0
+    for b in coarse["bins"]:
+        if not b["count"]:
+            continue
+        assert b["ci_lower"] <= b["observed_fraction"] <= b["ci_upper"]
+        assert 0.0 <= b["ci_lower"] <= 1.0
+        assert 0.0 <= b["ci_upper"] <= 1.0
+        checked += 1
+    assert checked > 5
+
+
+def test_rebin_intervals_match_metrics_wilson_ci():
+    """The linear and log-odds reliability views must quote the same
+    uncertainty, so both must go through metrics.wilson_ci."""
+    from cckf import metrics
+
+    z, labels = _synthetic()
+    coarse = curves.rebin_equal_width(
+        curves.prob_histogram(expit(z), labels), n_bins=20, min_count=100
+    )
+    for b in coarse["bins"]:
+        if not b["count"]:
+            continue
+        lo, hi = metrics.wilson_ci(b["n_positive"], b["count"])
+        assert b["ci_lower"] == pytest.approx(lo, abs=1e-12)
+        assert b["ci_upper"] == pytest.approx(hi, abs=1e-12)
+
+
+def test_rebin_interval_narrows_as_the_bin_fills():
+    """A thin bin must carry a visibly wider interval than a well-filled one --
+    the whole point of drawing them on a plot whose bin occupancy spans five
+    orders of magnitude."""
+    thin = curves.rebin_equal_width(
+        curves.prob_histogram(np.full(50, 0.52), np.array([True] * 25 + [False] * 25)),
+        n_bins=20,
+        min_count=100,
+    )["bins"][10]
+    fat = curves.rebin_equal_width(
+        curves.prob_histogram(
+            np.full(50_000, 0.52), np.array([True] * 25_000 + [False] * 25_000)
+        ),
+        n_bins=20,
+        min_count=100,
+    )["bins"][10]
+
+    assert thin["count"] == 50 and fat["count"] == 50_000
+    assert (thin["ci_upper"] - thin["ci_lower"]) > 10 * (
+        fat["ci_upper"] - fat["ci_lower"]
+    )
