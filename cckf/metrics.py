@@ -87,9 +87,19 @@ P_MAX: float = 1.0 - 1e-5
 #: (forward η at high occupancy) and for the ~10^5-row value cache.
 MIN_BIN_COUNT: int = 100
 
-#: The τ sweep range from spec §2.8 — the region where calibration must hold for
-#: the gate to be deployable at any operating point.
-DECISION_REGION: tuple[float, float] = (0.01, 0.5)
+#: Region where calibration must hold, in probability units. Symmetric in
+#: log-odds -- [0.01, 0.99] is z in [-4.595, +4.595] -- because spec §10.1
+#: consumes the gate as an accumulated branch score sum_k log(g/(1-g)), not
+#: only as an accept/reject threshold. A hit at g=0.99 contributes +4.60 to
+#: that sum; if it is really 0.90 it should contribute +2.20, a 2.4x error in
+#: one hit's weight, compounding over ~10 layers. An upper bound of 0.5 audits
+#: exactly the negative half of the axis that score integrates over.
+DECISION_REGION: tuple[float, float] = (0.01, 0.99)
+
+#: The narrower accept/reject-threshold view: the range a g_min sweep would
+#: plausibly cover for a loose, high-recall gate. Retained and still reported
+#: so the numbers logged on 2026-08-17 stay reproducible and comparable.
+THRESHOLD_REGION: tuple[float, float] = (0.01, 0.5)
 
 
 def logit_bin_edges(

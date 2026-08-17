@@ -140,15 +140,42 @@ def test_max_calibration_error_catches_a_localised_failure_that_ece_hides():
     assert mce > 0.2, mce  # the localised failure is visible
 
 
-def test_decision_region_ece_restricts_to_the_tau_range():
+def test_decision_region_ece_restricts_to_the_region():
+    """Rows outside the region are excluded at *both* ends.
+
+    Three groups: below the lower bound, inside, and above the upper bound.
+    Only the middle group may be counted, and the returned ``region`` must
+    echo the bounds actually used rather than a hardcoded pair -- so this
+    test keeps working when the default region changes, while still failing
+    if either bound stops being applied.
+    """
     rng = np.random.default_rng(0)
+    lo, hi = metrics.DECISION_REGION
     p = np.concatenate(
-        [rng.uniform(1e-5, 0.01, 100_000), rng.uniform(0.01, 0.5, 20_000)]
+        [
+            rng.uniform(1e-5, lo, 100_000),  # below: excluded
+            rng.uniform(lo, hi, 20_000),  # inside: counted
+            rng.uniform(hi, 1.0 - 1e-7, 5_000),  # above: excluded
+        ]
     )
     y = (rng.uniform(size=p.size) < p).astype(np.uint8)
+
     out = metrics.decision_region_ece(p, y)
+
     assert out["n_rows"] == 20_000
     assert 0.0 <= out["ece"] <= 1.0
+    assert out["region"] == [lo, hi]
+
+
+def test_decision_region_ece_honours_an_explicit_narrower_region():
+    """The narrower threshold view must still be requestable."""
+    rng = np.random.default_rng(0)
+    p = np.concatenate([rng.uniform(0.01, 0.5, 20_000), rng.uniform(0.6, 0.98, 7_000)])
+    y = (rng.uniform(size=p.size) < p).astype(np.uint8)
+
+    out = metrics.decision_region_ece(p, y, region=metrics.THRESHOLD_REGION)
+
+    assert out["n_rows"] == 20_000  # the 0.6-0.98 group is above 0.5
     assert out["region"] == [0.01, 0.5]
 
 
@@ -281,3 +308,46 @@ def test_quintile_strata_splits_into_five_roughly_equal_groups():
     assert len(strata) == 5
     counts = [int(m.sum()) for m in strata.values()]
     assert all(150 <= c <= 250 for c in counts), counts
+
+
+def test_decision_region_is_symmetric_in_log_odds():
+    """The region must be symmetric in log-odds, not in probability.
+
+    Spec §10.1's branch score sums log(g/(1-g)), so the audited region should
+    cover equal magnitudes of that sum on both sides of zero. This pins the
+    *rationale*, so narrowing the upper bound back to 0.5 fails here rather
+    than silently halving the audited range.
+    """
+    lo, hi = metrics.DECISION_REGION
+    z_lo = np.log(lo / (1.0 - lo))
+    z_hi = np.log(hi / (1.0 - hi))
+    assert z_lo == pytest.approx(-z_hi)
+    assert (lo, hi) == (0.01, 0.99)
+
+
+def test_threshold_region_is_retained_for_continuity():
+    assert metrics.THRESHOLD_REGION == (0.01, 0.5)
+
+
+def test_wider_region_catches_high_confidence_miscalibration():
+    """A confidently-wrong top-end bin is invisible to the narrow region.
+
+    10,000 rows predicted 0.98 whose true rate is 0.5 (gap 0.48), plus 10,000
+    rows predicted 0.02 whose true rate is 0.0 (gap 0.02). The narrow region
+    sees only the second group; the wide region sees both, so its
+    mass-weighted ECE is (0.48 + 0.02)/2 = 0.25.
+    """
+    rng = np.random.default_rng(0)
+    pred = np.concatenate([np.full(10_000, 0.98), np.full(10_000, 0.02)])
+    top_labels = rng.permutation(
+        np.concatenate([np.ones(5_000), np.zeros(5_000)])
+    ).astype(bool)
+    labels = np.concatenate([top_labels, np.zeros(10_000, dtype=bool)])
+
+    wide = metrics.decision_region_ece(pred, labels)
+    narrow = metrics.decision_region_ece(pred, labels, region=metrics.THRESHOLD_REGION)
+
+    assert wide["n_rows"] == 20_000
+    assert narrow["n_rows"] == 10_000
+    assert wide["ece"] == pytest.approx(0.25, abs=0.02)
+    assert narrow["ece"] == pytest.approx(0.02, abs=0.01)
