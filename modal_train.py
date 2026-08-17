@@ -221,28 +221,67 @@ def _build_trackstates_index(requested_events):
 @app.function(
     image=image, volumes={DATA_PATH: data_vol}, cpu=16, memory=262144, timeout=86400
 )
-def build_all_caches(csv_dir: str = "") -> dict:
-    """Build gate and value caches for train/val/cal, sequentially."""
+def build_all_caches(
+    csv_dir: str = "",
+    gate_parquet_dir: str = EXPANDED_DIR,
+    splits_to_build: str = "train,val,cal",
+    only_events: str = "",
+    skip_value: bool = False,
+) -> dict:
+    """Build gate and value caches, sequentially.
+
+    Parameters
+    ----------
+    csv_dir : str
+        Value caches are only built when this is non-empty (existing
+        behaviour, unchanged).
+    gate_parquet_dir : str
+        Directory the *gate* cache step reads expanded Parquet from.
+        Defaults to ``EXPANDED_DIR`` -- unlike the value cache, the gate
+        cache does not need the ``is_ckf_selected`` patch (verified:
+        ``GATE_SOURCE_COLUMNS | LABEL_COLUMNS`` is a subset of the unpatched
+        76-column schema, and ``is_ckf_selected`` is not among those 29
+        columns), so it can read directly from the already-existing expanded
+        Parquets instead of waiting on the patch step. Pass ``SELECTED_DIR``
+        explicitly to read patched output instead.
+    splits_to_build : str
+        Comma-separated split names (subset of ``"train,val,cal"``) to build
+        gate (and, unless ``skip_value``, value) caches for. Default is all
+        three -- unchanged behaviour when omitted.
+    only_events : str
+        Forwarded verbatim to ``--only-events`` on the *gate* cache step
+        (e.g. ``"0,1"`` for a staged run over two events). Empty (default)
+        omits the flag, so the gate step builds every event in each
+        requested split -- unchanged behaviour. Not forwarded to the value
+        step, which is unaffected by this parameter.
+    skip_value : bool
+        If True, skip the value-cache half entirely, regardless of
+        ``csv_dir``. Default False -- unchanged behaviour when omitted.
+    """
     import sys
 
     results = {}
-    for split in ("train", "val", "cal"):
+    splits = [s.strip() for s in splits_to_build.split(",") if s.strip()]
+
+    for split in splits:
         cmd = [
             sys.executable,
             "/root/scripts/build_gate_cache.py",
             "--split",
             split,
             "--parquet-dir",
-            SELECTED_DIR,
+            gate_parquet_dir,
             "--out-dir",
             f"{CACHE_DIR}/gate/{split}",
         ]
+        if only_events:
+            cmd += ["--only-events", only_events]
         _run_script(cmd)
         data_vol.commit()
         results[f"gate_{split}"] = "ok"
 
-    if csv_dir:
-        for split in ("train", "val", "cal"):
+    if csv_dir and not skip_value:
+        for split in splits:
             cmd = [
                 sys.executable,
                 "/root/scripts/build_value_cache.py",
@@ -337,6 +376,33 @@ def patch_selected(only_events: str = "") -> None:
 @app.local_entrypoint()
 def build_caches(csv_dir: str = "") -> None:
     print(build_all_caches.remote(csv_dir=csv_dir))
+
+
+@app.local_entrypoint()
+def build_gate_cache_staged(only_events: str, split: str = "train") -> None:
+    """Staged gate-only cache build over a small event subset.
+
+    For the first real-data run: build the gate cache for a couple of events
+    (e.g. ``--only-events 0,1``) before committing to a full 24/4/4-event
+    build. Reads from ``EXPANDED_DIR`` -- the gate cache does not need the
+    ``is_ckf_selected`` patch, so this does not wait on ``patch_selected`` --
+    and always skips the value half (which does need the patch). ``split``
+    is a single split name (not a list: Modal local entrypoints only accept
+    CLI-friendly scalars), default ``"train"``.
+
+    Usage
+    -----
+        modal run modal_train.py::build_gate_cache_staged \\
+            --only-events 0,1 --split train
+    """
+    print(
+        build_all_caches.remote(
+            gate_parquet_dir=EXPANDED_DIR,
+            splits_to_build=split,
+            only_events=only_events,
+            skip_value=True,
+        )
+    )
 
 
 @app.local_entrypoint()
