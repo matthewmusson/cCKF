@@ -602,6 +602,53 @@ def run_audit(model_dir: str, value_predictions: str = "") -> dict:
         return json.load(fh)
 
 
+@app.function(
+    image=image,
+    volumes={DATA_PATH: data_vol},
+    gpu="A10G",
+    cpu=8,
+    memory=131072,
+    timeout=14400,
+)
+def export_gate_curves(arms: str = "A,B,C") -> list[str]:
+    """Export plot-data bundles for each gate arm, sequentially.
+
+    Sequential by construction, with a single ``data_vol.commit()`` after all
+    arms: concurrent commits corrupted 11 Parquets on this volume once already
+    (experiments/LOG.md, 2026-08-12), and these writes all target the same
+    directory.
+
+    Reads only frozen ``gate_model.pt`` checkpoints -- this never retrains.
+    """
+    import sys
+
+    written = []
+    for arm in [a.strip() for a in arms.split(",") if a.strip()]:
+        _run_script(
+            [
+                sys.executable,
+                "/root/scripts/export_gate_curves.py",
+                "--model-dir",
+                f"{MODEL_DIR}/gate_{arm}",
+                "--val-cache",
+                f"{CACHE_DIR}/gate/val",
+                "--cal-cache",
+                f"{CACHE_DIR}/gate/cal",
+                "--out-dir",
+                f"{DATA_PATH}/results/curves",
+            ]
+        )
+        written.append(f"{DATA_PATH}/results/curves/gate_{arm}.npz")
+    data_vol.commit()
+    return written
+
+
+@app.local_entrypoint()
+def export_curves(arms: str = "A,B,C") -> None:
+    """Usage: modal run modal_train.py::export_curves --arms A,B,C"""
+    print(export_gate_curves.remote(arms=arms))
+
+
 @app.local_entrypoint()
 def patch_selected(only_events: str = "") -> None:
     print(patch_selected_all.remote(only_events=only_events))
