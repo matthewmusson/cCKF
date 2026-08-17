@@ -439,6 +439,138 @@ def figure_reliability_linear(data: dict, out_dir: Path, n_bins: int = 20) -> Pa
     return _save(fig, out_dir, "F5b_reliability_linear")
 
 
+def _stratified_figure(
+    data: dict,
+    out_dir: Path,
+    tag: str,
+    strata_key: str,
+    estimator: str,
+    name: str,
+    title: str,
+    cmap: str,
+    n_bins: int = 20,
+) -> Path | None:
+    """One panel per arm; one curve per stratum, single estimator.
+
+    Shared machinery for the occupancy- and |eta|-stratified reliability views.
+    Only one estimator is drawn: with 4-7 strata per panel, adding the χ² and
+    raw curves as well would put 12-21 lines in one axes.
+
+    The point of stratifying is that a model can be well calibrated *on average*
+    while being badly wrong inside a stratum, and the average hides exactly the
+    failure the learned gate exists to fix. Reading it: curves that lie on the
+    diagonal together mean calibration is stratum-independent; curves that fan
+    apart mean the estimator's meaning depends on a variable it should have
+    already accounted for.
+    """
+    probe = f"{estimator}__{tag}0_count"
+    missing = [arm for arm in ARMS if probe not in data[arm]["arrays"].files]
+    if missing:
+        print(
+            f"skipping {name}: bundles for {', '.join(missing)} lack {tag} strata; "
+            "re-run export_curves"
+        )
+        return None
+
+    labels = [s["label"] for s in data["A"]["scalars"][strata_key]]
+    colors = plt.get_cmap(cmap)(np.linspace(0.15, 0.95, len(labels)))
+
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.8), sharex=True, sharey=True)
+    for ax, arm in zip(axes, ARMS):
+        entry = data[arm]
+        for s, (label, color) in enumerate(zip(labels, colors)):
+            hist = {
+                "count": entry["arrays"][f"{estimator}__{tag}{s}_count"],
+                "sum_prob": entry["arrays"][f"{estimator}__{tag}{s}_sum_prob"],
+                "sum_label": entry["arrays"][f"{estimator}__{tag}{s}_sum_label"],
+            }
+            n_rows = int(hist["count"].sum())
+            if not n_rows:
+                continue
+            bins = curves.rebin_equal_width(
+                hist, n_bins=n_bins, min_count=metrics.MIN_BIN_COUNT
+            )["bins"]
+            solid = [b for b in bins if b["count"] > 0 and not b["sparse"]]
+            if not solid:
+                continue
+            obs = np.array([b["observed_fraction"] for b in solid])
+            ax.errorbar(
+                [b["mean_predicted"] for b in solid],
+                obs,
+                yerr=np.vstack(
+                    [
+                        obs - np.array([b["ci_lower"] for b in solid]),
+                        np.array([b["ci_upper"] for b in solid]) - obs,
+                    ]
+                ),
+                marker="o",
+                ms=4,
+                lw=1.4,
+                elinewidth=1.0,
+                capsize=2,
+                color=color,
+                label=f"{label}  (n={n_rows:,})",
+            )
+        ax.plot([0, 1], [0, 1], color="0.3", lw=1.0, ls="--")
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(-0.02, 1.02)
+        ax.set_aspect("equal")
+        ax.set_xlabel("mean predicted probability")
+        ax.set_title(ARM_LABEL[arm], fontsize=9)
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=6.5, loc="upper left")
+    axes[0].set_ylabel("observed positive fraction")
+    fig.suptitle(title, fontsize=9)
+    fig.tight_layout(rect=(0, 0, 1, 0.89))
+    return _save(fig, out_dir, name)
+
+
+def figure_reliability_by_occupancy(
+    data: dict, out_dir: Path, estimator: str = "gate_platt2"
+) -> Path | None:
+    """F7: reliability stratified by search-window occupancy."""
+    return _stratified_figure(
+        data,
+        out_dir,
+        tag="occ",
+        strata_key="occupancy_strata",
+        estimator=estimator,
+        name="F7_reliability_by_occupancy",
+        title=(
+            f"F7  Reliability by search-window occupancy — {EST_LABEL[estimator]}, "
+            "val split, 20 equal-width bins,\n95% Wilson intervals. Occupancy is "
+            "the count of candidates competing at that step, so n=1 has no "
+            "ambiguity\nto resolve while n=7+ is a jet core. Curves fanning apart "
+            "mean calibration depends on occupancy; curves\nlying together on the "
+            "dashed diagonal mean it does not.",
+        ),
+        cmap="viridis",
+    )
+
+
+def figure_reliability_by_abs_eta(
+    data: dict, out_dir: Path, estimator: str = "gate_platt2"
+) -> Path | None:
+    """F8: reliability stratified by |eta|."""
+    return _stratified_figure(
+        data,
+        out_dir,
+        tag="abseta",
+        strata_key="abs_eta_strata",
+        estimator=estimator,
+        name="F8_reliability_by_abs_eta",
+        title=(
+            f"F8  Reliability by |η| — {EST_LABEL[estimator]}, val split, 20 "
+            "equal-width bins, 95% Wilson intervals.\n|η| rather than signed η "
+            "because the detector is forward-backward symmetric, so folding "
+            "doubles the\nstatistics per bin. Forward bins traverse more material "
+            "and sit at higher occupancy, which is where\nthe χ² gate is expected "
+            "to be worst.",
+        ),
+        cmap="coolwarm",
+    )
+
+
 def figure_before_after(data: dict, out_dir: Path) -> Path:
     """F6: metric deltas from calibration, grouped bars."""
     lo, hi = metrics.DECISION_REGION
@@ -523,6 +655,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-dir", default="results/curves")
     parser.add_argument("--out-dir", default="figures/gate")
+    parser.add_argument(
+        "--stratified-estimator",
+        default="gate_platt2",
+        choices=sorted(EST_LABEL),
+        help=(
+            "Which single estimator the stratified figures (F7, F8) draw. "
+            "Default gate_platt2, the calibrator the audit recommends. Use "
+            "gate_platt4 to ask whether the occupancy-conditional form removed "
+            "the residual occupancy dependence F7 shows."
+        ),
+    )
     args = parser.parse_args()
 
     data = _load(Path(args.bundle_dir))
@@ -537,6 +680,8 @@ def main() -> None:
         figure_before_after,
     ):
         fn(data, out_dir)
+    figure_reliability_by_occupancy(data, out_dir, args.stratified_estimator)
+    figure_reliability_by_abs_eta(data, out_dir, args.stratified_estimator)
 
     # AUC invariance under 2-param Platt is arithmetic, not an empirical
     # finding; verify it held on real data rather than trusting the figure.

@@ -159,6 +159,28 @@ def main() -> None:
     }
 
     rel_edges = metrics.logit_bin_edges(30)
+
+    # Strata are computed once from val aux and reused for every estimator, so
+    # each stratum contains identically the same rows across all four curves --
+    # otherwise a cross-estimator comparison within a stratum is meaningless.
+    occ_masks = metrics.occupancy_strata(val_nw)
+    eta_masks = metrics.abs_eta_strata(
+        np.asarray(val["aux"][:, AUX_ETA], dtype=np.float64)
+    )
+    scalars["occupancy_strata"] = [
+        {"label": k, "n_rows": int(m.sum())} for k, m in occ_masks.items()
+    ]
+    scalars["abs_eta_strata"] = [
+        {"label": k, "n_rows": int(m.sum())} for k, m in eta_masks.items()
+    ]
+    print(
+        f"{arm}: occupancy strata "
+        + str([d["n_rows"] for d in scalars["occupancy_strata"]])
+    )
+    print(
+        f"{arm}: |eta| strata " + str([d["n_rows"] for d in scalars["abs_eta_strata"]])
+    )
+
     for name, prob in estimators.items():
         p = np.clip(prob, _P_EPS, 1.0 - _P_EPS)
         c = curves.grid_curves(logit(p), val_labels)
@@ -180,6 +202,17 @@ def main() -> None:
         arrays[f"{name}__hist_count"] = h["count"]
         arrays[f"{name}__hist_sum_prob"] = h["sum_prob"]
         arrays[f"{name}__hist_sum_label"] = h["sum_label"]
+
+        # The same statistics per stratum, so occupancy- and |eta|-resolved
+        # reliability is also free of further inference. Stored by *index* with
+        # the labels in the JSON, since the labels contain characters awkward in
+        # npz keys.
+        for tag, strata in (("occ", occ_masks), ("abseta", eta_masks)):
+            for s, mask in enumerate(strata.values()):
+                hs = curves.prob_histogram(prob[mask], val_labels[mask])
+                arrays[f"{name}__{tag}{s}_count"] = hs["count"]
+                arrays[f"{name}__{tag}{s}_sum_prob"] = hs["sum_prob"]
+                arrays[f"{name}__{tag}{s}_sum_label"] = hs["sum_label"]
         m = scalars["metrics"][name]
         print(
             f"{arm} {name}: AUC-ROC {m['auc_roc']:.6f} AUC-PR {m['auc_pr']:.6f} "

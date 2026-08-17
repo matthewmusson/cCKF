@@ -76,6 +76,25 @@ from scipy.stats import norm
 #: η stratum edges (spec §4.2: 5 bins from −3 to 3).
 ETA_EDGES: tuple[float, ...] = (-3.0, -1.8, -0.6, 0.6, 1.8, 3.0)
 
+#: Occupancy strata as integer candidate counts, matching the convention used
+#: in the existing χ² calibration figures: isolated / light / moderate / dense.
+#: Integer bins rather than quantiles because ``n_window`` is a small integer
+#: whose *physical* meaning is discrete -- "n=1" is a genuinely different
+#: situation (no ambiguity to resolve) rather than merely the lowest quintile.
+#: The upper bin is open: the measured maximum on the val split is 69.
+OCCUPANCY_STRATA: tuple[tuple[str, int, int], ...] = (
+    ("n=1 (isolated)", 1, 1),
+    ("n=2-3", 2, 3),
+    ("n=4-6", 4, 6),
+    ("n=7+", 7, 2**31 - 1),
+)
+
+#: |η| strata: 0.5-wide through the barrel and into the endcap, then one wider
+#: forward bin. Absolute value because the detector is forward-backward
+#: symmetric, so ±η carry the same material and occupancy conditions and
+#: splitting them only halves the statistics in every bin.
+ABS_ETA_EDGES: tuple[float, ...] = (0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0)
+
 #: Probability range spanned by the log-odds-uniform bins. The lower end is set
 #: by the gate's useful dynamic range: below ~1e-5 a candidate is not a
 #: contender under any threshold, and Platt's own clipping sits at 1e-6.
@@ -416,6 +435,53 @@ def eta_strata(eta: np.ndarray) -> dict[str, np.ndarray]:
         upper_inclusive = i == len(ETA_EDGES) - 2
         mask = (eta >= lo) & ((eta <= hi) if upper_inclusive else (eta < hi))
         out[f"eta[{lo:+.1f},{hi:+.1f}]"] = mask
+    return out
+
+
+def occupancy_strata(n_window: np.ndarray) -> dict[str, np.ndarray]:
+    """Integer occupancy strata from :data:`OCCUPANCY_STRATA`.
+
+    Unlike :func:`quintile_strata` these edges are fixed and physical, so the
+    same stratum label means the same thing across arms, splits and runs --
+    quantile edges shift with the data and would put different rows under the
+    same label.
+
+    Parameters
+    ----------
+    n_window : numpy.ndarray
+        Per-row candidate count in the search window.
+
+    Returns
+    -------
+    dict of str to numpy.ndarray
+        Stratum label → boolean mask. Rows with ``n_window < 1`` fall in no
+        stratum; the strata otherwise partition every row.
+    """
+    n = np.asarray(n_window)
+    return {label: (n >= lo) & (n <= hi) for label, lo, hi in OCCUPANCY_STRATA}
+
+
+def abs_eta_strata(eta: np.ndarray) -> dict[str, np.ndarray]:
+    """|η| strata from :data:`ABS_ETA_EDGES`.
+
+    Parameters
+    ----------
+    eta : numpy.ndarray
+        Signed pseudorapidity; the absolute value is taken here.
+
+    Returns
+    -------
+    dict of str to numpy.ndarray
+        Stratum label → boolean mask. Rows beyond the last edge fall in no
+        stratum, which is intended: they are outside tracker acceptance.
+    """
+    a = np.abs(np.asarray(eta, dtype=np.float64))
+    out: dict[str, np.ndarray] = {}
+    for i in range(len(ABS_ETA_EDGES) - 1):
+        lo, hi = ABS_ETA_EDGES[i], ABS_ETA_EDGES[i + 1]
+        last = i == len(ABS_ETA_EDGES) - 2
+        mask = (a >= lo) & ((a <= hi) if last else (a < hi))
+        out[f"|eta|[{lo:.1f},{hi:.1f})"] = mask
     return out
 
 

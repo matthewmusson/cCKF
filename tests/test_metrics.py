@@ -351,3 +351,42 @@ def test_wider_region_catches_high_confidence_miscalibration():
     assert narrow["n_rows"] == 10_000
     assert wide["ece"] == pytest.approx(0.25, abs=0.02)
     assert narrow["ece"] == pytest.approx(0.02, abs=0.01)
+
+
+def test_occupancy_strata_partition_and_are_physical():
+    n = np.array([1, 1, 2, 3, 4, 5, 6, 7, 20, 69])
+    strata = metrics.occupancy_strata(n)
+
+    assert list(strata) == ["n=1 (isolated)", "n=2-3", "n=4-6", "n=7+"]
+    # Every row lands in exactly one stratum.
+    stacked = np.vstack(list(strata.values()))
+    assert np.all(stacked.sum(axis=0) == 1)
+    assert strata["n=1 (isolated)"].sum() == 2
+    assert strata["n=2-3"].sum() == 2
+    assert strata["n=4-6"].sum() == 3
+    assert strata["n=7+"].sum() == 3
+
+
+def test_occupancy_strata_edges_are_fixed_not_data_dependent():
+    """Fixed edges mean a label means the same thing across arms and runs;
+    quantile edges would shift with the data."""
+    a = metrics.occupancy_strata(np.array([1, 1, 1, 2]))
+    b = metrics.occupancy_strata(np.array([50, 60, 69]))
+    assert a["n=1 (isolated)"].sum() == 3 and a["n=7+"].sum() == 0
+    assert b["n=1 (isolated)"].sum() == 0 and b["n=7+"].sum() == 3
+
+
+def test_abs_eta_strata_fold_the_sign():
+    """±η see the same material and occupancy, so folding doubles statistics."""
+    eta = np.array([-2.7, 2.7, 0.1, -0.1, 3.5])
+    strata = metrics.abs_eta_strata(eta)
+
+    assert strata["|eta|[2.5,3.0)"].sum() == 2  # -2.7 and +2.7 together
+    assert strata["|eta|[0.0,0.5)"].sum() == 2
+    assert strata["|eta|[3.0,4.0)"].sum() == 1
+    assert len(strata) == len(metrics.ABS_ETA_EDGES) - 1
+
+
+def test_abs_eta_strata_exclude_out_of_acceptance():
+    strata = metrics.abs_eta_strata(np.array([5.0, 4.5]))
+    assert sum(int(m.sum()) for m in strata.values()) == 0
