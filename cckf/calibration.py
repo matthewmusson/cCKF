@@ -63,25 +63,59 @@ def _nll_grad(design: np.ndarray, params: np.ndarray, y: np.ndarray) -> np.ndarr
     return design.T @ (expit(t) - y) / len(y)
 
 
-def _fit_logistic(design: np.ndarray, y: np.ndarray, x0: np.ndarray) -> np.ndarray:
-    """Fit a logistic model by L-BFGS on the convex NLL."""
+def _fit_logistic(
+    design: np.ndarray,
+    y: np.ndarray,
+    x0: np.ndarray,
+    trace: list[float] | None = None,
+) -> np.ndarray:
+    """Fit a logistic model by L-BFGS on the convex NLL.
+
+    Parameters
+    ----------
+    trace : list of float, optional
+        If given, appended in place with the NLL at the initial guess, then
+        once per L-BFGS-B iteration, then at the returned optimum. The final
+        entry may duplicate the last iterate's value; that is harmless and
+        keeps the invariant that ``trace[-1]`` is the NLL of the parameters
+        actually returned. Tracing costs one extra NLL evaluation per
+        iteration and does not affect the optimisation path.
+    """
     y = np.asarray(y, dtype=np.float64)
     if not (np.any(y > 0.5) and np.any(y <= 0.5)):
         raise ValueError(
             "calibration split must contain both classes; cannot fit Platt on "
             "a single-class sample"
         )
+
+    callback = None
+    if trace is not None:
+        trace.append(_nll(design, x0, y))
+
+        def callback(xk: np.ndarray) -> None:
+            trace.append(_nll(design, xk, y))
+
     result = minimize(
         lambda p: _nll(design, p, y),
         x0,
         jac=lambda p: _nll_grad(design, p, y),
         method="L-BFGS-B",
+        callback=callback,
     )
+    if trace is not None:
+        trace.append(_nll(design, result.x, y))
     return result.x
 
 
-def fit_platt(logits: np.ndarray, labels: np.ndarray) -> tuple[float, float]:
+def fit_platt(
+    logits: np.ndarray, labels: np.ndarray, trace: list[float] | None = None
+) -> tuple[float, float]:
     """Fit two-parameter Platt scaling on the calibration split.
+
+    Parameters
+    ----------
+    trace : list of float, optional
+        Appended in place with the per-iteration NLL; see ``_fit_logistic``.
 
     Returns
     -------
@@ -90,7 +124,7 @@ def fit_platt(logits: np.ndarray, labels: np.ndarray) -> tuple[float, float]:
     """
     z = np.asarray(logits, dtype=np.float64)
     design = np.column_stack([z, np.ones_like(z)])
-    a, b = _fit_logistic(design, labels, np.array([1.0, 0.0]))
+    a, b = _fit_logistic(design, labels, np.array([1.0, 0.0]), trace=trace)
     return float(a), float(b)
 
 
@@ -100,9 +134,17 @@ def apply_platt(logits: np.ndarray, a: float, b: float) -> np.ndarray:
 
 
 def fit_platt_occupancy(
-    logits: np.ndarray, labels: np.ndarray, n_window: np.ndarray
+    logits: np.ndarray,
+    labels: np.ndarray,
+    n_window: np.ndarray,
+    trace: list[float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Fit four-parameter occupancy-conditional Platt scaling.
+
+    Parameters
+    ----------
+    trace : list of float, optional
+        Appended in place with the per-iteration NLL; see ``_fit_logistic``.
 
     Returns
     -------
@@ -113,7 +155,9 @@ def fit_platt_occupancy(
     z = np.asarray(logits, dtype=np.float64)
     log_nw = np.log(np.maximum(np.asarray(n_window, dtype=np.float64), _N_WINDOW_FLOOR))
     design = np.column_stack([z, z * log_nw, np.ones_like(z), log_nw])
-    a0, a1, b0, b1 = _fit_logistic(design, labels, np.array([1.0, 0.0, 0.0, 0.0]))
+    a0, a1, b0, b1 = _fit_logistic(
+        design, labels, np.array([1.0, 0.0, 0.0, 0.0]), trace=trace
+    )
     return float(a0), float(a1), float(b0), float(b1)
 
 
@@ -127,3 +171,49 @@ def apply_platt_occupancy(
     z = np.asarray(logits, dtype=np.float64)
     log_nw = np.log(np.maximum(np.asarray(n_window, dtype=np.float64), _N_WINDOW_FLOOR))
     return expit((a0 + a1 * log_nw) * z + (b0 + b1 * log_nw))
+
+
+def platt_occupancy_slope_violations(
+    n_window: np.ndarray, params: tuple[float, float, float, float]
+) -> dict:
+    """Report rows where the 4-param calibrator's slope is non-positive.
+
+    The occupancy-conditional form multiplies the logit by
+    ``a(x) = a0 + a1·log n_window``. When ``a(x) <= 0`` the map is
+    *decreasing* in the logit: a more confident model output becomes a lower
+    calibrated probability, so the calibrator inverts the model's ranking for
+    those rows. Two-parameter Platt cannot do this -- ``a`` is one fitted
+    scalar and its sign is checkable once -- but the four-parameter form can,
+    because ``a1 < 0`` makes ``a(x)`` cross zero at ``n_window =
+    exp(-a0/a1)``.
+
+    This is not hypothetical: the 2026-08-17 arm C fit gave
+    ``a0 = 0.7007, a1 = -0.1408``, crossing at ``n_window ~= 145``.
+
+    Parameters
+    ----------
+    n_window : numpy.ndarray
+        Per-row occupancy, on the same rows the calibrator will be applied to.
+    params : tuple of float
+        ``(a0, a1, b0, b1)`` from :func:`fit_platt_occupancy`.
+
+    Returns
+    -------
+    dict
+        ``n_window_at_slope_zero`` (``inf`` when ``a1 == 0``; a value below 1
+        means the slope never inverts for physical occupancies),
+        ``n_rows_slope_nonpositive``, ``frac_rows_slope_nonpositive``,
+        ``min_slope``, ``max_n_window``.
+    """
+    a0, a1, _, _ = params
+    log_nw = np.log(np.maximum(np.asarray(n_window, dtype=np.float64), _N_WINDOW_FLOOR))
+    slope = a0 + a1 * log_nw
+    n_bad = int((slope <= 0.0).sum())
+    crossing = float(np.exp(-a0 / a1)) if a1 != 0.0 else float("inf")
+    return {
+        "n_window_at_slope_zero": crossing,
+        "n_rows_slope_nonpositive": n_bad,
+        "frac_rows_slope_nonpositive": n_bad / max(len(log_nw), 1),
+        "min_slope": float(slope.min()) if len(slope) else float("nan"),
+        "max_n_window": float(np.exp(log_nw.max())) if len(log_nw) else float("nan"),
+    }
