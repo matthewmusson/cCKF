@@ -92,7 +92,6 @@ def patch_selected_all(only_events: str = "") -> list[dict]:
     sys.path.insert(0, "/root")
     from cckf import splits
     from cckf.event_selection import resolve_requested_events
-    from cckf.trackstates_index import find_trackstates
     from scripts.patch_is_selected import patch_event
 
     reports = []
@@ -100,7 +99,7 @@ def patch_selected_all(only_events: str = "") -> list[dict]:
     events = resolve_requested_events(only_events, assigned)
     splits.assert_not_test(events)  # guard applies to the resolved set too
 
-    index = _build_trackstates_index(events)  # one scan, not one per event
+    trackstates = _resolve_trackstates_paths(events)
 
     for event_id in sorted(events):
         src = f"{EXPANDED_DIR}/expanded_event{event_id:09d}.parquet"
@@ -122,12 +121,78 @@ def patch_selected_all(only_events: str = "") -> list[dict]:
             else:
                 print(f"event {event_id}: already patched, skipping")
                 continue
-        root = find_trackstates(event_id, index)
-        report = patch_event(src, root, event_id, out)
+        report = patch_event(src, trackstates[event_id], event_id, out)
         print(report)
         reports.append(report)
         data_vol.commit()  # one commit per event, never concurrent
     return reports
+
+
+def _resolve_trackstates_paths(requested_events):
+    """Map each requested event to its ``trackstates_ckf.root``.
+
+    Returns ``{event_id: path}`` covering every event in
+    ``requested_events``, or raises rather than returning a partial map.
+
+    The explicit provenance map (``cckf.stage1_map``) is authoritative and is
+    tried first; the directory scan (:func:`_build_trackstates_index` +
+    ``find_trackstates``) is only a fallback for events the map cannot serve.
+    That ordering is the whole point, and it is not an optimisation --
+    scanning cannot answer this question correctly. ``/data/results`` holds
+    over a thousand result directories, many containing a
+    ``trackstates_ckf.root`` for the *same* event id produced by a
+    *different* CKF configuration during the parameter scans. Nothing in the
+    filename or the ``event_nr`` branch marks which one produced the training
+    Parquets, so the scan resolves ties by sort order: on the first real run
+    it picked ``calib_medium_1785797665`` (the Medium operating point) over
+    the correct pilot file, which would have joined the envelope-config
+    Parquets against Medium-config trackstates. The map records the actual
+    provenance -- which Modal run wrote which output -- and so is the only
+    source that can distinguish them.
+
+    The scan is therefore built lazily, over the *unmapped* events only. That
+    also narrows ``check_no_event_nr_fallback_is_safe`` to exactly the events
+    that would actually rely on the no-``event_nr`` fallback, instead of
+    tripping it over events the map already resolved unambiguously.
+    """
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, "/root")
+    from cckf import stage1_map
+
+    resolved, unmapped = {}, []
+    for event_id in sorted(requested_events):
+        try:
+            path = stage1_map.trackstates_path_for(event_id)
+        except KeyError as exc:
+            print(
+                f"event {event_id}: not covered by cckf.stage1_map "
+                f"({exc}); falling back to a directory scan"
+            )
+            unmapped.append(event_id)
+            continue
+        # Verify rather than trust: a map entry naming a path that is not on
+        # this volume is a stale map, and silently scanning past it would
+        # reintroduce the wrong-config join the map exists to prevent. Say so.
+        if Path(path).exists():
+            resolved[event_id] = path
+        else:
+            print(
+                f"event {event_id}: cckf.stage1_map names {path}, which does "
+                "not exist on this volume; falling back to a directory scan "
+                "(check the map against modal_build_acts.py::expand_all_events)"
+            )
+            unmapped.append(event_id)
+
+    if unmapped:
+        from cckf.trackstates_index import find_trackstates
+
+        print(f"scanning /data/results for {len(unmapped)} unmapped event(s)")
+        index = _build_trackstates_index(unmapped)
+        for event_id in unmapped:
+            resolved[event_id] = find_trackstates(event_id, index)
+    return resolved
 
 
 def _build_trackstates_index(requested_events):

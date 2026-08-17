@@ -55,7 +55,7 @@ import pyarrow.parquet as pq
 
 from cckf import features as feat
 from cckf import labels as lab
-from cckf import splits, value_target
+from cckf import splits, stage1_map, value_target
 
 _NEEDED = (
     "seed_id",
@@ -263,7 +263,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", required=True, choices=["train", "val", "cal"])
     parser.add_argument("--parquet-dir", required=True)
-    parser.add_argument("--csv-dir", required=True)
+    parser.add_argument(
+        "--csv-dir",
+        default="",
+        help=(
+            "Directory holding event{id:09d}-simhits.csv. Optional: when "
+            "omitted, each event's directory is looked up per event in "
+            "cckf.stage1_map, which is correct for the 32-event training set "
+            "because Stage 1 wrote its CSVs into 16 separate per-batch pilot "
+            "directories -- no single directory holds them all. Pass this "
+            "only to override the map with one directory for every event "
+            "(e.g. a hand-assembled scratch dir)."
+        ),
+    )
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
 
@@ -279,7 +291,11 @@ def main() -> None:
     max_accepted_chi2_overall = float("-inf")
     for event_id in events:
         path = Path(args.parquet_dir) / f"expanded_event{event_id:09d}.parquet"
-        X, y, aux, event_meta = process_event(path, args.csv_dir, event_id)
+        # Per-event, not once: Stage 1 split the 32 events across 16 batch
+        # directories, so each event's simhits CSV sits beside the ROOT file
+        # of the batch that produced it. An explicit --csv-dir overrides.
+        csv_dir = args.csv_dir or stage1_map.csv_dir_for(event_id)
+        X, y, aux, event_meta = process_event(path, csv_dir, event_id)
         print(f"event {event_id}: {len(y):,} states")
         xs.append(X)
         ys.append(y)
