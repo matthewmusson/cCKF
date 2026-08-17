@@ -180,10 +180,17 @@ def main() -> None:
         )
         picked = row_idx[sub]
 
-    # Materialise the selected rows once; standardise, then subset columns.
-    X_train = train.standardize(np.asarray(tr["X"])[picked], mu, sigma)[:, col_idx]
+    # Lazy views over the memmapped caches: row-gather, standardisation and
+    # column-subsetting all happen per batch inside train.train_model, not
+    # here. The eager equivalent -- materialising standardize(X[picked],
+    # mu, sigma)[:, col_idx] up front -- costs three transient full-size
+    # copies; for sampler A, where `picked` covers all ~174M train rows at
+    # 26 float32 features (~18 GB memmapped), that is 36-54 GB peak RAM to
+    # produce a matrix train_model only ever reads one batch of at a time.
+    # See cckf.train.StandardizedView.
+    X_train = train.StandardizedView(tr["X"], picked, mu, sigma, col_idx)
     y_train = y_train_full[picked].astype(np.float32)
-    X_val = train.standardize(np.asarray(va["X"]), mu, sigma)[:, col_idx]
+    X_val = train.StandardizedView(va["X"], np.arange(len(va["y"])), mu, sigma, col_idx)
     y_val = np.asarray(va["y"]).astype(np.float32)
 
     n_pos_orig = int(y_train_full[row_idx].sum())

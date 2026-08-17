@@ -70,6 +70,100 @@ def standardize(X: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
     return ((np.asarray(X, dtype=np.float32) - mu) / sigma).astype(np.float32)
 
 
+class StandardizedView:
+    """A lazy, standardised, column-subset view over a (memmapped) feature matrix.
+
+    Materialising ``standardize(np.asarray(X)[picked], mu, sigma)[:, col_idx]``
+    eagerly forces the *entire* selection into RAM at once -- three copies of
+    it, transiently -- even though every consumer in this module
+    (``train_model``, ``_evaluate``, ``predict_logits``) only ever touches one
+    batch at a time via ``X[idx]`` or ``X[start:start+batch_size]``. When
+    ``picked`` covers all ~174M rows of the real train cache that is tens of
+    gigabytes for no reason: the memmap backing ``X`` already lets the OS page
+    in only what's read.
+
+    This class defers both the row gather and the standardisation to
+    ``__getitem__``, so indexing it costs only a batch's worth of memory
+    rather than the dataset's. It supports exactly the two access patterns
+    ``cckf.train`` uses -- integer-array fancy indexing and slicing -- via a
+    single code path, because ``numpy`` indexing (``self.row_idx[key]``)
+    already dispatches correctly for both.
+
+    Parameters
+    ----------
+    source : numpy.ndarray or numpy.memmap
+        The full, unstandardised feature matrix, shape ``(n_source_rows,
+        n_source_features)``. Never copied; only the rows/columns actually
+        requested are read from it.
+    row_idx : numpy.ndarray
+        Indices into ``source`` selecting (and ordering) the rows this view
+        exposes as its own rows ``0..len(row_idx)-1``. May be a strict subset
+        (e.g. a sampler's subsample) or ``np.arange(len(source))`` to expose
+        every row.
+    mu, sigma : numpy.ndarray
+        Per-*source*-feature standardisation stats, shape
+        ``(n_source_features,)`` -- i.e. indexed the same way as ``source``'s
+        columns, before ``col_idx`` narrows them. Features exempt from
+        standardisation (``cckf.features.NO_STANDARDIZE``) are expected to
+        already carry ``(mu, sigma) = (0, 1)`` here, per
+        ``cckf.cache.compute_norm_stats``; this class does not special-case
+        them.
+    col_idx : numpy.ndarray
+        Indices into ``source``'s columns to keep, e.g. a feature-group
+        ablation subset. Use ``np.arange(source.shape[1])`` to keep all of
+        them.
+
+    Notes
+    -----
+    Standardisation is a per-column elementwise map: ``(x - mu) / sigma`` at
+    column ``c`` never depends on any other column. So subsetting columns
+    before or after standardising is not just numerically close, it performs
+    the exact same float32 subtraction and division for every surviving
+    element -- the two orderings are bit-for-bit identical, not merely equal
+    within round-off. This class subsets columns first (on ``mu``/``sigma``
+    in ``__init__`` and on the gathered block in ``__getitem__``) purely so
+    the standardisation arithmetic itself runs on fewer columns; that
+    reordering does not change any output value.
+    """
+
+    def __init__(
+        self,
+        source: np.ndarray,
+        row_idx: np.ndarray,
+        mu: np.ndarray,
+        sigma: np.ndarray,
+        col_idx: np.ndarray,
+    ) -> None:
+        self.source = source
+        self.row_idx = np.asarray(row_idx)
+        self.col_idx = np.asarray(col_idx)
+        # Column-subset mu/sigma once, up front -- not per batch -- since
+        # they're tiny (n_features,) and every batch needs the same slice.
+        self.mu = np.asarray(mu, dtype=np.float32)[self.col_idx]
+        self.sigma = np.asarray(sigma, dtype=np.float32)[self.col_idx]
+
+    def __len__(self) -> int:
+        return len(self.row_idx)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (len(self.row_idx), len(self.col_idx))
+
+    def __getitem__(self, key: Any) -> np.ndarray:
+        # ``key`` is either a slice (from _evaluate/predict_logits batching)
+        # or a sorted integer array (from train_model's per-batch fancy
+        # index). ``self.row_idx[key]`` maps either kind straight through to
+        # the corresponding rows of ``source`` -- only ``len(key)`` rows'
+        # worth of indices, never the full dataset.
+        rows = self.row_idx[key]
+        # This is the only line that touches disk/RAM for the source data:
+        # a memmap fancy-index gather of just the requested rows, which
+        # numpy must materialise as a real array (it can't stay a view).
+        # Peak memory from here on is O(batch_size), not O(n_rows).
+        block = np.asarray(self.source[rows], dtype=np.float32)[:, self.col_idx]
+        return ((block - self.mu) / self.sigma).astype(np.float32)
+
+
 def _evaluate(
     model: torch.nn.Module, X: np.ndarray, y: np.ndarray, batch_size: int, device: str
 ) -> float:
