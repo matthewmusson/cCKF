@@ -179,3 +179,117 @@ Stage-1 generation batches (16 batches of 2), so no val event shares a batch
 with a cal event. Frozen in `cckf/splits.py`; VAL and CAL must never change —
 early-stopping and calibration numbers are only comparable across experiments
 if the splits are identical. Enforced by `tests/test_splits.py`.
+
+## 2026-08-17 — Gate g_ψ training, S1 sampling ablation (Modal)
+
+First real-data gate training. Three sampling strategies (spec §2.5), one
+variable each, trained then calibrated+audited **sequentially** — never in
+parallel, per the concurrent-commit incident above.
+
+- **Cache:** streaming Parquet → float32 memmap, read from `EXPANDED_DIR`
+  (the gate needs no `is_ckf_selected` patch). Train 174,234,476 rows /
+  858,316 pos (0.4926%); val 24,108,662 / 136,999 (0.5683%); cal
+  44,372,735 / 164,094 (0.3698%). Total rows 1.77× the spec's ~137M estimate;
+  positive fraction agrees with the health analysis (0.4926% vs 0.52%).
+- **Model:** 26-dim gate features, 36,609 parameters, unweighted BCE.
+- **Calibration:** cal split only. Reliability bins are **log-odds-uniform**
+  (30 bins, p ∈ [1e-5, 0.99999]), not quantile — measured: quantile bins put
+  *zero* populated bins in the decision region at a 0.4% base rate.
+- **Runs:** W&B project `cckf-gate`, runs `gate_{B,C,A}_seed0`.
+
+### Results (cal split, 44,372,735 rows; decision region p ∈ [0.01, 0.5])
+
+| arm | sampler | AUC-ROC | AUC-PR | ECE | DR-ECE | MCE | worst stratum | wall |
+|-----|---------|---------|--------|-----|--------|-----|---------------|------|
+| A | none (batch 40,960) | 0.9931 | 0.7987 | 7.2e-05 | **0.00146** | 0.0126 | 0.00066 | ~76 min |
+| B | uniform 1:5 (batch 4,096) | 0.9928 | 0.7710 | 1.0e-04 | 0.00240 | 0.0266 | 0.00081 | ~11 min |
+| C | hard-neg ∝1/χ² (batch 4,096) | 0.9671 | 0.2922 | 2.1e-03 | 0.01589 | 0.99997 | 0.01310 | ~8 min |
+| — | χ²_λ baseline | — | — | 0.0487 | 0.1246 | 0.9770 | — | — |
+
+**Headline (figure G3):** arm A's calibrated gate reaches DR-ECE 0.00146
+against χ²'s 0.1246 — **85× better** in the only region a τ sweep can reach.
+All three arms set `headline_beats_chi2`.
+
+### Key findings
+
+1. **A > B >> C, matching the theory.** Uniform negative subsampling biases
+   the logit by the constant `log(1/r)`: arm B's fitted Platt intercept is
+   −3.7459 against the predicted −3.6988 (1.3% — not exact because a=0.913≠1
+   makes slope and intercept trade off). Weighted sampling instead biases it
+   by `log(w(x)/E[w])`, a *function of the covariate weighted on* — so C's
+   intercept misses by 36% (−5.0436) with slope collapsed to 0.579, and
+   Platt, being affine in the logit, cannot repair a χ²-dependent bias. C's
+   DR-ECE is 6.6× B's and its MCE (0.99997) is worse than raw χ².
+   Hard-negative mining is not viable as a primary.
+2. **Unweighted BCE on the natural distribution is nearly calibrated out of
+   the box.** Arm A *before* any Platt fit: ECE 1.8e-04, DR-ECE 0.0054, MCE
+   0.031; Platt buys a further 3.7× only. Direct empirical support for spec
+   §9.2's decision not to reweight.
+3. **4-param Platt is not worth taking here.** It gains arm A nothing
+   (0.00153 vs 0.00146) and arm B 6% — but gains arm C 2.3×, itself evidence
+   for the covariate-bias account, since the 4-param form has occupancy-
+   dependent slope/intercept to spend and C is the arm with covariate bias.
+   Spec §10.3 locks 4-param as primary; the data prefers 2-param for the arms
+   we would actually deploy. `recommend_4param_platt` is false for all three.
+
+### Known limitations
+
+- **Arm A is not demonstrably converged.** It ran all 50 epochs without
+  early stopping firing (`stopped_epoch == max_epochs == 50`), so its numbers
+  may be pessimistic and "A is the ceiling" is a weaker claim than it looks.
+- **Raw `val BCE` is not comparable across arms** (A 0.0089, B 0.0399, C
+  0.2861). B and C carry deliberate distribution-shift bias in their logits
+  which Platt removes; BCE penalises them for something the deployed model
+  does not do. Compare AUC (monotone-invariant) and post-Platt ECE only.
+- **The AUC-PR red flag (<0.80) was miscalibrated and is retired.** It was
+  set before the real base rate was known. Arm A — no subsampling, no shift —
+  also lands below it at 0.7987, so the threshold, not the model, was wrong.
+  At a 0.57% base rate a no-skill classifier scores 0.0057.
+- **MCE is reported but not gated.** Arm C sets every pass-criterion true
+  while carrying a ≥100-row bin (`MIN_BIN_COUNT`, so not sampling noise) that
+  is maximally miscalibrated. The pass logic was deliberately left unchanged
+  mid-ablation (one variable per experiment); it should include MCE before
+  the ablation table is final.
+
+## 2026-08-17 — Incident: `is_ckf_selected` patch wrote an all-False column
+
+The first real patch run (events 0, 1) reported `frac_states_matched = 0.0`,
+`n_selected = 0`, and **exited 0**, writing two Parquets whose
+`is_ckf_selected` is uniformly False.
+
+**Two independent defects.**
+
+1. **The guard was off the executed path.** The `frac_states_matched >= 0.95`
+   floor lived in `scripts/patch_is_selected.py::main()`, but
+   `modal_train.patch_selected_all` imports `patch_event` directly, so the
+   check never ran at scale — and `patch_event` had no tests of its own. A
+   residual-join failure is invisible in the output schema (the column exists
+   with the right name and dtype and is merely uniformly wrong), so a loud
+   refusal is the only available detection mechanism. Fixed: the floor is
+   enforced inside `patch_event`, *before* the write, covered by
+   `tests/test_patch_event_write_guard.py`.
+2. **The documented join key is wrong.** This log records
+   `(seed_id, step_k) = (track_nr, state_idx)`. `seed_id` aligns exactly
+   (both span [0, 979275]) but `step_k` does not — the expanded Parquet
+   reaches 38, the ROOT trackstates only 17. Only 574,910 / 5,671,978 ROOT
+   states (10.1%) share a key at all, and on the keys that *do* overlap the
+   Parquet says hole (`cand_hit_id = -1`, NaN residual) where ROOT reports a
+   finite measurement. Ruled out: **units** (median |residual| 3.63 mm
+   Parquet vs 1.55 mm ROOT — same scale) and **sign convention**
+   (opposite-sign agreement is better, 0.47% vs 0.009% within 1e-4, but
+   nowhere near enough to explain total failure).
+
+**Status:** value-function pipeline blocked pending resolution of what
+`step_k` means on each side. Diagnose with
+`modal run modal_train.py::diagnose_join --event-id 0` (read-only, never
+commits). Do not "fix" this by widening `DEFAULT_TOL` or flipping a sign —
+that manufactures agreement without establishing that the rows correspond.
+
+**Cleanup still required:** delete
+`results/train32/selected/expanded_event{000000000,000000001}.parquet`.
+`patch_selected_all` skips events whose output already exists and its
+integrity check validates only the Parquet footer, so it would silently
+accept these two.
+
+**Gate results are unaffected** — the gate cache reads `EXPANDED_DIR` and
+never needs `is_ckf_selected`.
