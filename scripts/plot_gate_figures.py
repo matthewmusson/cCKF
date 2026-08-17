@@ -57,6 +57,32 @@ def _save(fig, out_dir: Path, name: str) -> Path:
     return out_dir / f"{name}.png"
 
 
+def _metric(m: dict, key: str) -> float:
+    """Fetch a metric, computing the derived ones.
+
+    ``ece_inflation`` is ``dr_ece / ece``: how much the count-weighted ECE
+    understates the error where decisions are actually made. It is a
+    *diagnostic of ECE*, not a quality score -- see :func:`figure_before_after`.
+    """
+    if key == "ece_inflation":
+        return m["dr_ece"] / m["ece"] if m["ece"] else float("nan")
+    return m[key]
+
+
+def _ece_label(m: dict) -> str:
+    """Legend text carrying overall ECE, decision-region ECE and their ratio.
+
+    Both numbers belong on the figure because they answer different questions
+    and differ by 2-28x here. Overall ECE is mass-weighted, and ~99.5% of rows
+    are easy negatives near p=0 where any competent model is almost exactly
+    right -- so overall ECE mostly measures performance on the part of the
+    problem nobody cares about.
+    """
+    e, dr = m["ece"], m["dr_ece"]
+    ratio = (dr / e) if e else float("nan")
+    return f"ECE {e:.2e} · DR {dr:.2e} ({ratio:.0f}×)"
+
+
 def _load(bundle_dir: Path) -> dict:
     return {
         arm: {
@@ -247,7 +273,7 @@ def figure_reliability(data: dict, out_dir: Path) -> Path:
                     lw=1.3,
                     color=color,
                     label=(
-                        f"{EST_LABEL[est]}  ECE {sc['metrics'][est]['ece']:.2e}, "
+                        f"{EST_LABEL[est]}  {_ece_label(sc['metrics'][est])}, "
                         f"MCE {sc['metrics'][est]['mce']:.3f}"
                     ),
                 )
@@ -363,7 +389,7 @@ def figure_reliability_linear(data: dict, out_dir: Path, n_bins: int = 20) -> Pa
                     elinewidth=1.1,
                     capsize=2.5,
                     color=color,
-                    label=f"{EST_LABEL[est]}  ECE {sc['metrics'][est]['ece']:.2e}",
+                    label=f"{EST_LABEL[est]}  {_ece_label(sc['metrics'][est])}",
                 )
             if thin:
                 obs_t = np.array([b["observed_fraction"] for b in thin])
@@ -419,17 +445,18 @@ def figure_before_after(data: dict, out_dir: Path) -> Path:
     keys = [
         ("auc_roc", "AUC-ROC"),
         ("auc_pr", "AUC-PR"),
-        ("ece", "ECE"),
+        ("ece", "ECE (all rows)"),
         ("dr_ece", f"DR-ECE [{lo}, {hi}]"),
+        ("ece_inflation", "DR-ECE / ECE"),
         ("mce", "MCE"),
     ]
-    fig, axes = plt.subplots(1, len(keys), figsize=(18, 5.4))
+    fig, axes = plt.subplots(1, len(keys), figsize=(20, 5.4))
     width = 0.26
     handles: list = []
     for ax, (key, title) in zip(axes, keys):
         is_log = key in ("ece", "dr_ece", "mce")
         for i, est in enumerate(("gate_raw", "gate_platt2", "gate_platt4")):
-            vals = [data[arm]["scalars"]["metrics"][est][key] for arm in ARMS]
+            vals = [_metric(data[arm]["scalars"]["metrics"][est], key) for arm in ARMS]
             bars = ax.bar(
                 np.arange(len(ARMS)) + (i - 1) * width,
                 vals,
@@ -444,7 +471,11 @@ def figure_before_after(data: dict, out_dir: Path) -> Path:
             # and the chi2 reference line an order of magnitude away.
             for rect, v in zip(bars, vals):
                 ax.annotate(
-                    f"{v:.2e}" if is_log else f"{v:.4f}",
+                    (
+                        f"{v:.2e}"
+                        if is_log
+                        else (f"{v:.1f}×" if key == "ece_inflation" else f"{v:.4f}")
+                    ),
                     (rect.get_x() + rect.get_width() / 2, rect.get_height()),
                     textcoords="offset points",
                     xytext=(0, 2),
@@ -452,7 +483,7 @@ def figure_before_after(data: dict, out_dir: Path) -> Path:
                     fontsize=5.5,
                     rotation=90,
                 )
-        chi2 = data["A"]["scalars"]["metrics"]["chi2_lambda"][key]
+        chi2 = _metric(data["A"]["scalars"]["metrics"]["chi2_lambda"], key)
         line = ax.axhline(chi2, color="0.35", ls="-.", lw=1.2, label="χ²_λ")
         if ax is axes[0]:
             handles.append(line)
@@ -472,10 +503,14 @@ def figure_before_after(data: dict, out_dir: Path) -> Path:
     )
     fig.suptitle(
         "F6  Before/after calibration on the val split. AUC-ROC and AUC-PR are "
-        "IDENTICAL for raw and Platt-2 by\nconstruction (a > 0 is monotone, and "
-        "AUC sees only ranking); they move only under Platt-4, whose slope\n"
-        "a(x) = a0 + a1·log n_window is row-dependent and so is not a single "
-        "monotone map.",
+        "IDENTICAL for raw and Platt-2 by construction\n(a > 0 is monotone, and AUC "
+        "sees only ranking); they move only under Platt-4, whose slope a(x) = a0 + "
+        "a1·log n_window is\nrow-dependent. DR-ECE/ECE is how much the "
+        "count-weighted ECE understates error where decisions happen — it is a "
+        "diagnostic\nOF ECE, not a quality score: a HIGH ratio means the model is "
+        "near-perfect on the 99.5% easy-negative bulk that dominates ECE,\nwhile a "
+        "LOW ratio (χ²_λ 4×, arm C raw 2×) means the estimator is bad everywhere, "
+        "so the bulk flatters it less.",
         fontsize=9,
     )
     # Explicit rect: the 3-line suptitle and the bottom legend both need space
