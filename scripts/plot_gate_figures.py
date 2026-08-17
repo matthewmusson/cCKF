@@ -475,7 +475,7 @@ def _stratified_figure(
     labels = [s["label"] for s in data["A"]["scalars"][strata_key]]
     colors = plt.get_cmap(cmap)(np.linspace(0.15, 0.95, len(labels)))
 
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.8), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(14, 5.6), sharex=True, sharey=True)
     for ax, arm in zip(axes, ARMS):
         entry = data[arm]
         for s, (label, color) in enumerate(zip(labels, colors)):
@@ -542,7 +542,7 @@ def figure_reliability_by_occupancy(
             "the count of candidates competing at that step, so n=1 has no "
             "ambiguity\nto resolve while n=7+ is a jet core. Curves fanning apart "
             "mean calibration depends on occupancy; curves\nlying together on the "
-            "dashed diagonal mean it does not.",
+            "dashed diagonal mean it does not."
         ),
         cmap="viridis",
     )
@@ -565,7 +565,7 @@ def figure_reliability_by_abs_eta(
             "because the detector is forward-backward symmetric, so folding "
             "doubles the\nstatistics per bin. Forward bins traverse more material "
             "and sit at higher occupancy, which is where\nthe χ² gate is expected "
-            "to be worst.",
+            "to be worst."
         ),
         cmap="coolwarm",
     )

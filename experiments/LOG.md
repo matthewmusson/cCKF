@@ -402,3 +402,58 @@ Measured on all 24.1M val rows: **max n_window = 69**, `min_slope = 0.1045`,
 **0 rows affected**. The hazard is real and does not trigger on this data, with
 a 2.1× margin — thin enough that higher pileup or a looser window could cross
 it. `calibration.platt_occupancy_slope_violations` now reports this every run.
+
+### Stratified reliability (F7 occupancy, F8 |η|) — added 2026-08-17
+
+Strata are fixed and physical (`metrics.occupancy_strata`,
+`metrics.abs_eta_strata`), computed once from val aux so every estimator sees
+identically the same rows per stratum. Val-split row counts:
+
+| occupancy | rows | | |η| | rows |
+|---|---|---|---|---|
+| n=1 (isolated) | 177,158 | | [0.0,0.5) | 644,469 |
+| n=2-3 | 564,518 | | [0.5,1.0) | 1,017,635 |
+| n=4-6 | 1,079,096 | | [1.0,1.5) | 4,568,547 |
+| n=7+ | 22,287,890 | | [1.5,2.0) | 14,092,842 |
+| | | | [2.0,2.5) | 2,690,558 |
+| | | | [2.5,3.0) | 1,091,957 |
+| | | | [3.0,4.0) | 2,654 |
+
+**Arms A and B are stratum-independent.** All four occupancy curves and all
+seven |η| curves lie together on the diagonal (A) or just above it (B). The
+gate's probability means the same thing in a quiet barrel region as in a dense
+forward one — which is the property the χ² gate lacks and the project's reason
+for existing.
+
+**Arm C fans apart across the full range of the axis**, in both occupancy and
+|η|. At `n=1` the observed fraction reaches ~1.0 while predicted is 0.2–0.6; at
+`n=7+` it runs flat near zero. This is the covariate-dependent-bias account made
+visible: weighting negatives by 1/χ² induces a logit bias of `log(w(x)/E[w])`
+which varies with χ², and χ² correlates with occupancy — so the miscalibration is
+occupancy-dependent, and a 2-param Platt (one global slope, one global intercept)
+has no functional form that could fix it.
+
+**This also explains why arm C's aggregate DR-ECE (2.48e-02) looked merely
+mediocre**: `n=7+` holds 22.3M of 24.1M val rows (92%), so the aggregate is
+dominated by a single stratum and averages the fan away. Another instance of the
+same lesson as the ECE/DR-ECE gap — aggregates hide localised failure.
+
+**Platt-4 does not fix arm C's stratum dependence.** Generated for comparison
+(`figures/gate_platt4/`): `n=1` is somewhat better behaved at low predicted
+values but `n=7+` is still flat near zero, `n=4-6` still collapses, and the fan
+is essentially as wide. So the possibility that F7 would justify the 4-param's
+extra parameters is **not** borne out, and the audit's
+`recommend_4param_platt: false` stands. Consistent with the mechanism: the bias
+depends on χ² directly, while the 4-param's slope and intercept are linear in
+`log n_window` only — occupancy correlates with χ² but does not substitute for
+it. Note this coexists with Platt-4 improving arm C's *aggregate* DR-ECE
+(2.48e-02 → 1.50e-02) and AUC-PR (0.2922 → 0.3959): it absorbs some
+occupancy-correlated bias, improving the average, without making the strata
+agree. Aggregate improvement and stratum-independence are different properties,
+and only the second one means the calibrator is working.
+
+**Bug fixed en route:** `metrics.wilson_ci` could return an interval excluding
+its own point estimate by ~4e-19 at `k=0` (exact arithmetic gives the lower
+bound as 0; float gives 4.3e-19 at n=500). Harmless in a JSON dump, fatal to
+`matplotlib.errorbar`, which rejects the negative bar length. Now clamped to
+bracket `k/n`, with parametrized regression tests.

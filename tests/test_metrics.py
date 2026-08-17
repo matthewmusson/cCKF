@@ -390,3 +390,28 @@ def test_abs_eta_strata_fold_the_sign():
 def test_abs_eta_strata_exclude_out_of_acceptance():
     strata = metrics.abs_eta_strata(np.array([5.0, 4.5]))
     assert sum(int(m.sum()) for m in strata.values()) == 0
+
+
+@pytest.mark.parametrize("n", [100, 500, 1000, 24_000_000])
+@pytest.mark.parametrize("frac", [0.0, 1.0])
+def test_wilson_ci_brackets_the_estimate_at_the_extremes(n: int, frac: float):
+    """A bin with zero or all positives must still get a usable error bar.
+
+    Wilson's bounds equal 0 and 1 exactly at k=0 and k=n in exact arithmetic,
+    but not in float -- k=0, n=500 gives a lower bound of 4e-19. An interval
+    that excludes its own point estimate makes matplotlib's errorbar raise on
+    the negative bar length, so this is a plotting-correctness requirement, not
+    a statistical nicety.
+    """
+    k = int(frac * n)
+    lo, hi = metrics.wilson_ci(k, n)
+    p_hat = k / n
+    assert lo <= p_hat <= hi
+    assert p_hat - lo >= 0.0
+    assert hi - p_hat >= 0.0
+
+
+def test_wilson_ci_brackets_across_the_whole_range():
+    for k in range(0, 51):
+        lo, hi = metrics.wilson_ci(k, 50)
+        assert lo <= k / 50 <= hi

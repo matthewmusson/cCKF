@@ -143,10 +143,21 @@ def wilson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
     tails have proportions near 0 or 1, where the Wald interval can extend
     outside [0, 1] and understates uncertainty.
 
+    The returned interval is guaranteed to contain ``k / n``. In exact
+    arithmetic Wilson already does at every ``k``: the only boundary cases are
+    ``k = 0`` and ``k = n``, where ``center ∓ margin`` equals 0 and 1 exactly.
+    In float they do not -- at ``k = 0, n = 500`` the lower bound comes out as
+    4e-19 rather than 0 -- which leaves the interval excluding the point it
+    describes by a rounding error. That is harmless in a JSON dump and fatal to
+    a plot: matplotlib's ``errorbar`` computes ``p_hat - lower`` as the bar
+    length and rejects the resulting negative value. Clamping costs nothing
+    statistically, since the discrepancy is only ever float-sized.
+
     Returns
     -------
     tuple of float
-        ``(lower, upper)``. ``(0.0, 1.0)`` when ``n == 0``.
+        ``(lower, upper)``, always with ``lower <= k/n <= upper``.
+        ``(0.0, 1.0)`` when ``n == 0``.
     """
     if n <= 0:
         return 0.0, 1.0
@@ -155,7 +166,9 @@ def wilson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
     denom = 1.0 + z * z / n
     center = (p_hat + z * z / (2.0 * n)) / denom
     margin = z * np.sqrt(p_hat * (1.0 - p_hat) / n + z * z / (4.0 * n * n)) / denom
-    return max(0.0, center - margin), min(1.0, float(center + margin))
+    lower = min(max(0.0, center - margin), p_hat)
+    upper = max(min(1.0, float(center + margin)), p_hat)
+    return lower, upper
 
 
 def reliability_bins(
