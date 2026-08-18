@@ -1,0 +1,33 @@
+% Requires: \usepackage{booktabs, siunitx}
+% Numbers: val split (events 4, 12, 20, 28), 24,108,662 candidate rows,
+% base rate 0.5683%. Generated 2026-08-17 from results/curves/gate_{A,B,C}.json.
+\begin{table}[htbp]
+  \centering
+  \caption[Overall versus decision-region calibration error]{%
+    Overall expected calibration error against decision-region ECE
+    ($p \in [0.01, 0.99]$) for the three gate sampling arms and the
+    $\chi^2$ baseline, on the validation split. Rows are ordered by overall
+    ECE. Overall ECE is mass-weighted and ${\sim}99.5\%$ of candidates sit
+    at $p \approx 0$, where any competent estimator is nearly exact; it
+    therefore understates the error where decisions are actually made by
+    \numrange{2}{28} times. The ratio is a diagnostic \emph{of} ECE rather
+    than a quality score: it is largest for the best estimators, which are
+    near-perfect on the easy-negative bulk that dominates ECE, and smallest
+    for $\chi^2_\lambda$ and arm~C raw, which are poorly calibrated
+    everywhere and so are flattered less.}
+  \label{tab:gate-ece-vs-dr-ece}
+  \sisetup{table-format = 1.2e-1, table-number-alignment = center}
+  \begin{tabular}{l S S S S[table-format=2.1]}
+    \toprule
+    Estimator & {ECE} & {DR-ECE} & {Difference} & {Ratio} \\
+    \midrule
+    A, raw           & 1.99e-4 & 3.39e-3 & 3.19e-3 & 17.0 \\
+    A, + Platt-2     & 3.87e-4 & 9.89e-3 & 9.51e-3 & 25.6 \\
+    B, + Platt-2     & 4.65e-4 & 1.29e-2 & 1.24e-2 & 27.6 \\
+    C, + Platt-2     & 2.80e-3 & 2.48e-2 & 2.20e-2 & 8.9 \\
+    B, raw           & 2.37e-2 & 1.33e-1 & 1.09e-1 & 5.6 \\
+    $\chi^2_\lambda$ & 5.50e-2 & 2.34e-1 & 1.79e-1 & 4.3 \\
+    C, raw           & 1.36e-1 & 2.89e-1 & 1.53e-1 & 2.1 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
