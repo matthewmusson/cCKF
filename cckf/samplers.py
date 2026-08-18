@@ -70,17 +70,27 @@ def uniform_subsample(
     rng : numpy.random.Generator
         Seeded generator; the returned indices are reproducible from it.
 
+    Sampling is **with replacement**, so a negative may appear more than once.
+    Uniform sampling does not require this -- with or without replacement the
+    marginal inclusion probability is uniform either way -- but B and C must
+    use the *same* scheme or the S1 ablation differs in two variables
+    (weighting and replacement) rather than one. C genuinely requires
+    replacement (see :func:`hard_negative_subsample`), so B follows.
+
     Returns
     -------
     numpy.ndarray
-        Sorted int64 indices into ``y``. If fewer negatives exist than
-        requested, all are kept (the ratio is a target, not a guarantee).
+        Sorted int64 indices into ``y``, with duplicates possible among the
+        negatives. Exactly ``neg_per_pos * n_pos`` negatives are drawn, capped
+        only by there being at least one negative to draw from.
     """
     y = np.asarray(y)
     pos = np.flatnonzero(y == 1)
     neg = np.flatnonzero(y == 0)
-    n_take = min(len(neg), neg_per_pos * len(pos))
-    picked = rng.choice(neg, size=n_take, replace=False) if n_take else neg[:0]
+    # With replacement the target is always reachable as long as the pool is
+    # non-empty, so n_take no longer has to be clipped to len(neg).
+    n_take = neg_per_pos * len(pos) if len(neg) else 0
+    picked = rng.choice(neg, size=n_take, replace=True) if n_take else neg[:0]
     return np.sort(np.concatenate([pos, picked]))
 
 
@@ -102,17 +112,42 @@ def hard_negative_subsample(
     rng : numpy.random.Generator
         Seeded generator.
 
+    Sampling is **with replacement**, and for this sampler that is a
+    correctness requirement rather than a preference. Weighted sampling
+    *without* replacement does not give inclusion probabilities proportional
+    to the weights: for i.i.d. draws with replacement ``P(draw = i)`` is
+    exactly ``w_i / sum(w)``, whereas without replacement item ``i``'s marginal
+    inclusion probability after ``n`` draws is a function of *all* the weights
+    that saturates toward 1 for heavy items. So a without-replacement draw
+    never realised the intended ``∝ 1/χ²`` distribution at all.
+
+    It also makes the bias analysis exact. Reweighting negatives by ``w(x)``
+    shifts the Bayes-optimal logit by ``log(w(x) / E_p[w])``; that identity
+    holds for i.i.d. draws from ``q(x) ∝ w(x) p(x)``, which is what
+    with-replacement sampling produces and what without-replacement sampling
+    only approximates. The §4.2 stratified reliability diagrams and the fitted
+    Platt intercept are both testing that identity, so it needs to be the one
+    the sampler actually implements.
+
+    Weights are normalised linearly (``w / sum(w)``), never by softmax:
+    ``1/χ²`` is already non-negative so it needs only a sum to become a
+    distribution, and ``softmax`` would give ``P ∝ exp(1/χ²)`` -- a different
+    distribution with an implicit temperature, which also overflows here since
+    ``_CHI2_FLOOR`` lets ``1/χ²`` reach 1000.
+
     Returns
     -------
     numpy.ndarray
-        Sorted int64 indices into ``y``.
+        Sorted int64 indices into ``y``, with duplicates possible among the
+        negatives.
     """
     y = np.asarray(y)
     chi2 = np.asarray(chi2, dtype=np.float64)
     pos = np.flatnonzero(y == 1)
     neg = np.flatnonzero(y == 0)
 
-    n_take = min(len(neg), neg_per_pos * len(pos))
+    # With replacement the target is always reachable from a non-empty pool.
+    n_take = neg_per_pos * len(pos) if len(neg) else 0
     if n_take == 0:
         return np.sort(pos)
 
@@ -120,25 +155,19 @@ def hard_negative_subsample(
     c = np.where(np.isfinite(c), np.maximum(c, _CHI2_FLOOR), np.inf)
     weights = 1.0 / c
     total = weights.sum()
-    n_nonzero = int(np.count_nonzero(weights))
 
     if not np.isfinite(total) or total <= 0.0:
-        # Every negative is non-finite chi2 (weight 0 everywhere): no signal
+        # Every negative has non-finite chi2 (weight 0 everywhere): no signal
         # to weight by, so fall back to a uniform draw.
-        picked = rng.choice(neg, size=n_take, replace=False)
-    elif n_nonzero < n_take:
-        # Fewer hard (finite-chi2, nonzero-weight) negatives exist than we
-        # need. rng.choice(..., p=weights) cannot draw more items than there
-        # are nonzero-probability entries, so take all of the hard negatives
-        # outright and fill the remainder uniformly from the easy
-        # (non-finite-chi2, zero-weight) pool.
-        hard_mask = weights > 0.0
-        hard = neg[hard_mask]
-        easy = neg[~hard_mask]
-        fill = rng.choice(easy, size=n_take - len(hard), replace=False)
-        picked = np.concatenate([hard, fill])
+        picked = rng.choice(neg, size=n_take, replace=True)
     else:
-        picked = rng.choice(neg, size=n_take, replace=False, p=weights / total)
+        # No shortfall branch is needed any more: with replacement, drawing
+        # n_take items only requires *one* entry with nonzero probability, not
+        # n_take of them. The previous without-replacement implementation had
+        # to special-case "fewer hard negatives than we need" and backfill
+        # uniformly from the zero-weight pool, which silently mixed two
+        # different sampling distributions into one training set.
+        picked = rng.choice(neg, size=n_take, replace=True, p=weights / total)
     return np.sort(np.concatenate([pos, picked]))
 
 

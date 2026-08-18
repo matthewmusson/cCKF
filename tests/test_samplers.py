@@ -47,11 +47,15 @@ def test_uniform_subsample_hits_target_ratio(imbalanced_labels):
     assert (y == 0).sum() == 50
 
 
-def test_uniform_subsample_keeps_all_positives_when_negatives_are_scarce():
+def test_uniform_subsample_hits_the_target_ratio_even_with_one_negative():
+    """With replacement the 1:5 target is always reachable from a non-empty
+    pool, so a scarce-negative case is resampled up rather than truncated."""
     y = np.array([1, 1, 1, 0], dtype=np.uint8)
     idx = samplers.uniform_subsample(y, neg_per_pos=5, rng=np.random.default_rng(0))
     assert y[idx].sum() == 3
-    assert (y[idx] == 0).sum() == 1  # only one negative exists
+    # 3 positives x 5 = 15 negative draws, all necessarily the same row.
+    assert (y[idx] == 0).sum() == 15
+    assert set(idx[y[idx] == 0].tolist()) == {3}
 
 
 def test_hard_negative_subsample_prefers_low_chi2_negatives(imbalanced_labels):
@@ -143,9 +147,13 @@ def test_hard_negative_subsample_fewer_hard_negatives_than_requested_does_not_cr
     nonzero weight). neg_per_pos=5 with 10 positives requests n_take=50,
     i.e. 10 more than the 40 available hard negatives.
 
-    Required degrade-gracefully behavior: return exactly n_take negatives,
-    include *all* 40 hard (finite-chi2) negatives, and fill the remaining 10
-    slots uniformly from the 950 easy (+inf) negatives.
+    Sampling with replacement removes the shortfall entirely: drawing 50 items
+    needs only *one* nonzero-probability entry, not 50. So the required
+    behavior is now stronger and simpler than the old backfill -- every draw
+    comes from the hard pool, with duplicates, and a zero-weight negative can
+    never be selected. The old without-replacement path had to fill the last
+    10 slots uniformly from the easy pool, which silently mixed two different
+    sampling distributions into one training set.
     """
     chi2 = np.full(1000, np.inf)
     chi2[10:50] = 1.0  # exactly 40 finite ("hard") negatives among the 990
@@ -160,24 +168,26 @@ def test_hard_negative_subsample_fewer_hard_negatives_than_requested_does_not_cr
 
     chosen_neg = idx[imbalanced_labels[idx] == 0]
     hard_pool = np.arange(10, 50)
-    easy_pool = np.setdiff1d(np.flatnonzero(imbalanced_labels == 0), hard_pool)
 
-    # All 40 hard negatives must be present -- they're strictly preferred.
-    assert np.array_equal(np.intersect1d(chosen_neg, hard_pool), hard_pool)
-    # The remaining 10 slots come from the easy (+inf) pool.
-    filled = np.setdiff1d(chosen_neg, hard_pool)
-    assert len(filled) == 10
-    assert np.all(np.isin(filled, easy_pool))
+    # Every negative draw is a hard one; zero-weight negatives are unreachable.
+    assert np.all(np.isin(chosen_neg, hard_pool))
+    # Duplicates are the mechanism that makes the target reachable.
+    assert len(chosen_neg) > len(np.unique(chosen_neg))
 
 
-def test_hard_negative_subsample_exact_boundary_uses_weighted_path(imbalanced_labels):
-    """Boundary case: the number of nonzero-weight (finite-chi2) negatives
-    exactly equals n_take -- no shortfall and no surplus. This must still
-    succeed via the ordinary weighted rng.choice(..., p=...) branch (it must
-    NOT trip the new shortfall/fill path, since there is nothing to fill).
+def test_hard_negative_subsample_never_draws_a_zero_weight_negative(
+    imbalanced_labels,
+):
+    """Zero-weight (non-finite chi2) negatives must be unreachable.
+
+    Under with-replacement weighted sampling this holds regardless of how the
+    hard-pool size compares to n_take, which is the property the old
+    without-replacement implementation could not guarantee. Exercised here at
+    the exact boundary (50 hard negatives, 50 slots) where the old code was
+    most fragile.
     """
     chi2 = np.full(1000, np.inf)
-    chi2[10:60] = 1.0  # exactly 50 finite negatives == n_take (neg_per_pos=5 * 10 pos)
+    chi2[10:60] = 1.0  # exactly 50 finite negatives == n_take (5 * 10 pos)
 
     idx = samplers.hard_negative_subsample(
         imbalanced_labels, chi2, neg_per_pos=5, rng=np.random.default_rng(0)
@@ -188,11 +198,37 @@ def test_hard_negative_subsample_exact_boundary_uses_weighted_path(imbalanced_la
     assert (y == 0).sum() == 50
 
     chosen_neg = idx[imbalanced_labels[idx] == 0]
-    # With exactly 50 nonzero-weight negatives and 50 slots, every one of
-    # them must be chosen -- none of the +inf ("easy") negatives should
-    # appear.
-    expected = np.arange(10, 60)
-    assert np.array_equal(np.sort(chosen_neg), expected)
+    assert np.all(np.isin(chosen_neg, np.arange(10, 60)))
+
+
+def test_hard_negative_subsample_draw_frequency_tracks_the_weights(
+    imbalanced_labels,
+):
+    """The point of with-replacement sampling: realised draw frequencies are
+    proportional to 1/chi2.
+
+    Without replacement, an item's inclusion probability is *not* w_i/sum(w) --
+    it saturates toward 1 for heavy items -- so the intended distribution was
+    never realised. With replacement it is exact, which is what makes the
+    log(w(x)/E[w]) bias identity (and hence the Platt-intercept diagnostic)
+    valid. Two hard negatives with chi2 1 and 4 should be drawn in roughly a
+    4:1 ratio.
+    """
+    chi2 = np.full(1000, np.inf)
+    chi2[10] = 1.0
+    chi2[11] = 4.0
+
+    idx = samplers.hard_negative_subsample(
+        imbalanced_labels, chi2, neg_per_pos=200, rng=np.random.default_rng(0)
+    )
+    chosen_neg = idx[imbalanced_labels[idx] == 0]
+    n_light = int((chosen_neg == 10).sum())
+    n_heavy = int((chosen_neg == 11).sum())
+
+    assert n_light + n_heavy == len(chosen_neg)
+    assert n_heavy > 0
+    # Expected 4:1; allow generous slack for a 2000-draw multinomial.
+    assert 3.0 < n_light / n_heavy < 5.5
 
 
 def test_prior_logit_shift_matches_definition():
