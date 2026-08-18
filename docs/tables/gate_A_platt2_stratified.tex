@@ -1,0 +1,66 @@
+% Requires: \usepackage{booktabs, siunitx, multirow}
+% Arm A (no subsampling) + 2-parameter Platt, validation split
+% (events 4, 12, 20, 28), 24,108,662 candidate rows. Generated 2026-08-17 from
+% results/curves/gate_A.json (scripts/export_gate_curves.py).
+\begin{table}[htbp]
+  \centering
+  \small
+  \caption[Gate performance by occupancy and pseudorapidity]{%
+    Arm~A (no subsampling) with two-parameter Platt calibration, resolved by
+    search-window occupancy and by $|\eta|$ on the validation split.
+    $N$ is the stratum's row count; DR-ECE is restricted to
+    $p \in [0.01, 0.99]$. Note that AUC-ROC is nearly flat across occupancy
+    while AUC-PR falls from \num{0.974} to \num{0.584}: as more candidates
+    compete at a step the within-stratum positive fraction drops, and
+    precision drops with it, which the base-rate-invariant ROC hides. The
+    aggregate AUC-PR of \num{0.799} sits close to the $n \geq 7$ value because
+    that stratum carries \SI{92}{\percent} of all rows. Calibration runs the
+    other way, best in the crowded stratum and worst in the isolated one.}
+  \label{tab:gate-A-platt2-stratified}
+  \sisetup{table-number-alignment = center, detect-weight}
+  \begin{tabular}{
+      l
+      S[table-format = 8.0, group-separator = {,}]
+      S[table-format = 1.4]
+      S[table-format = 1.4]
+      S[table-format = 1.2e-1]
+      S[table-format = 1.2e-1]
+      S[table-format = 2.1]
+      S[table-format = 1.2e-1]
+    }
+    \toprule
+    Stratum & {$N$} & {AUC-ROC} & {AUC-PR} & {ECE} & {DR-ECE}
+      & {$\frac{\text{DR-ECE}}{\text{ECE}}$} & {MCE} \\
+    \midrule
+    \multicolumn{8}{l}{\emph{By search-window occupancy}} \\
+    \quad $n = 1$ (isolated) &   177158 & 0.9905 & 0.9738 & 8.78e-3 & 1.96e-2 &  2.2 & 6.75e-2 \\
+    \quad $n = 2$--3         &   564518 & 0.9847 & 0.8272 & 2.60e-3 & 1.40e-2 &  5.4 & 4.32e-2 \\
+    \quad $n = 4$--6         &  1079096 & 0.9798 & 0.6469 & 1.19e-3 & 1.11e-2 &  9.3 & 1.22e-1 \\
+    \quad $n \geq 7$         & 22287890 & 0.9881 & 0.5836 & 2.30e-4 & 7.57e-3 & 32.9 & 4.46e-2 \\
+    \midrule
+    \multicolumn{8}{l}{\emph{By $|\eta|$}} \\
+    \quad $[0.0, 0.5)$ &   644469 & 0.9905 & 0.8990 & 1.65e-3 & 1.20e-2 &  7.3 & 4.91e-2 \\
+    \quad $[0.5, 1.0)$ &  1017635 & 0.9921 & 0.8991 & 8.99e-4 & 1.03e-2 & 11.4 & 8.05e-2 \\
+    \quad $[1.0, 1.5)$ &  4568547 & 0.9917 & 0.8146 & 4.75e-4 & 1.09e-2 & 22.8 & 4.42e-2 \\
+    \quad $[1.5, 2.0)$ & 14092842 & 0.9911 & 0.7065 & 1.82e-4 & 1.02e-2 & 56.3 & 6.81e-2 \\
+    \quad $[2.0, 2.5)$ &  2690558 & 0.9912 & 0.7227 & 5.77e-4 & 1.10e-2 & 19.1 & 5.30e-2 \\
+    \quad $[2.5, 3.0)$ &  1091957 & 0.9810 & 0.6814 & 1.04e-3 & 6.88e-3 &  6.6 & 4.82e-2 \\
+    \quad $[3.0, 4.0)$ &     2654 & 0.9978 & 0.9808 & 1.23e-2 & 1.31e-1 & 10.7 & \multicolumn{1}{c}{2.13e-6\rlap{$^{\dagger}$}} \\
+    \midrule
+    All rows & 24108662 & 0.9931 & 0.7987 & 3.87e-4 & 9.89e-3 & 25.6 & 4.95e-2 \\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{0.5em}
+  \begin{minipage}{0.92\linewidth}
+    \footnotesize
+    $^{\dagger}$~Not comparable to the other MCE entries. MCE is a maximum over
+    bins holding at least 100 rows, whereas ECE and DR-ECE weight every bin.
+    This stratum has \num{2654} rows with \SI{88.7}{\percent} below
+    $p = 0.01$, so only the $p \approx 0$ bulk bin is eligible and MCE reports
+    that one trivially-calibrated bin. The \num{299} rows spanning the decision
+    region are what produce DR-ECE $= \num{1.31e-1}$, the worst in the table.
+    The usual ordering $\text{MCE} \geq \text{ECE}$ holds only when the two
+    share a bin set.
+  \end{minipage}
+\end{table}
