@@ -415,3 +415,63 @@ def test_wilson_ci_brackets_across_the_whole_range():
     for k in range(0, 51):
         lo, hi = metrics.wilson_ci(k, 50)
         assert lo <= k / 50 <= hi
+
+
+def test_mce_detail_exposes_that_one_eligible_bin_drove_the_result():
+    """Regression for a real misreading.
+
+    ECE weights every bin; MCE drops bins under MIN_BIN_COUNT. On a thin sample
+    almost every bin is sparse, so MCE can end up reporting a single
+    trivially-calibrated bulk bin while DR-ECE reports large error from the
+    sparse bins it still includes -- inverting the usual MCE >= ECE ordering by
+    orders of magnitude. Measured on the |eta| in [3.0, 4.0) stratum: MCE
+    2.1e-06 against DR-ECE 1.3e-01. The eligible-bin count is what makes that
+    legible, so it must be reported.
+    """
+    # 2,000 well-calibrated rows at p~0 (one populated bin) plus 60 badly
+    # miscalibrated rows spread thinly across the decision region.
+    rng = np.random.default_rng(0)
+    bulk = np.full(2_000, 1e-4)
+    bulk_labels = np.zeros(2_000, dtype=bool)
+    spread = np.linspace(0.05, 0.9, 60)
+    spread_labels = np.zeros(60, dtype=bool)  # predicted high, never positive
+
+    pred = np.concatenate([bulk, spread])
+    labels = np.concatenate([bulk_labels, spread_labels])
+
+    detail = metrics.max_calibration_error_detail(pred, labels)
+
+    assert detail["n_bins_eligible"] < 5, "thin spread must leave few live bins"
+    assert detail["n_bins_total"] == 30
+    # The eligible rows are overwhelmingly the easy bulk, not the bad region.
+    assert detail["frac_rows_eligible"] > 0.9
+    assert detail["mce"] == pytest.approx(
+        metrics.max_calibration_error(pred, labels), abs=1e-12
+    )
+    assert detail["argmax_bin"]["count"] >= metrics.MIN_BIN_COUNT
+
+
+def test_mce_detail_reports_nan_when_no_bin_is_eligible():
+    """No data is not perfect calibration."""
+    pred = np.linspace(0.2, 0.8, 30)  # one row per bin at most
+    labels = np.zeros(30, dtype=bool)
+    detail = metrics.max_calibration_error_detail(pred, labels)
+    assert np.isnan(detail["mce"])
+    assert detail["n_bins_eligible"] == 0
+    assert detail["argmax_bin"] is None
+
+
+def test_mce_at_least_ece_when_every_bin_is_populated():
+    """The ordering I relied on holds only under full occupancy -- pin it."""
+    rng = np.random.default_rng(1)
+    z = rng.normal(scale=3.0, size=400_000)
+    pred = 1.0 / (1.0 + np.exp(-z))
+    labels = rng.random(400_000) < pred
+    detail = metrics.max_calibration_error_detail(pred, labels)
+
+    # Nearly every bin populated (the outermost log-odds bins reach p<1e-5,
+    # which a normal-scale fixture does not occupy), and essentially all rows
+    # eligible -- the condition under which the two metrics share a bin set.
+    assert detail["n_bins_eligible"] >= detail["n_bins_total"] - 2
+    assert detail["frac_rows_eligible"] > 0.999
+    assert detail["mce"] >= metrics.expected_calibration_error(pred, labels)

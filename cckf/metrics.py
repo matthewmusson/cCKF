@@ -279,6 +279,22 @@ def max_calibration_error(
     Complements ECE: a small badly-calibrated region cannot hide behind a large
     well-calibrated one. Sparse bins are excluded so this is not just the
     noisiest bin's sampling error.
+
+    **The sparse filter makes this NOT comparable to ECE on thin samples.**
+    ``expected_calibration_error`` deliberately weights *every* bin, so that it
+    remains an average over the whole sample; this function drops any bin under
+    ``min_count``. When all bins are populated the usual ordering ``MCE >= ECE``
+    holds, since the max of a set is at least its weighted mean. When most bins
+    are sparse the two are computed over different bin sets and the ordering can
+    invert -- dramatically. Measured example: the ``|eta| in [3.0, 4.0)``
+    stratum holds 2,654 val rows, 88.7% of them below p=0.01. Only the p~0 bulk
+    bin clears 100 rows, so MCE reports that one trivially-calibrated bin
+    (2.1e-06) while DR-ECE, which has no per-bin filter, reports 1.3e-01 from
+    the 299 rows spread across the decision region. MCE was not wrong there; it
+    was answering a question about one bin.
+
+    Use :func:`max_calibration_error_detail` when the eligible-bin count matters
+    -- i.e. whenever this is computed on anything smaller than a full split.
     """
     data = reliability_bins(
         pred, labels, n_bins=n_bins, edges=edges, min_count=min_count
@@ -289,6 +305,60 @@ def max_calibration_error(
         if not b["sparse"]
     ]
     return float(max(gaps)) if gaps else 0.0
+
+
+def max_calibration_error_detail(
+    pred: np.ndarray,
+    labels: np.ndarray,
+    n_bins: int = 30,
+    edges: np.ndarray | None = None,
+    min_count: int = MIN_BIN_COUNT,
+) -> dict:
+    """:func:`max_calibration_error` plus the support behind it.
+
+    An MCE is only interpretable alongside how many bins were eligible to
+    produce it. Over one eligible bin it is that bin's gap, not a worst case
+    over the score range, and printing the two side by side without the count
+    invites exactly the wrong comparison (see the caveat in
+    :func:`max_calibration_error`).
+
+    Returns
+    -------
+    dict
+        ``mce`` (NaN when no bin is eligible, rather than 0.0 -- "no data" is
+        not "perfectly calibrated"), ``n_bins_eligible``, ``n_bins_total``,
+        ``n_rows_eligible``, ``frac_rows_eligible``, and ``argmax_bin`` giving
+        ``bin_lo``/``bin_hi``/``count`` of the worst bin so it can be located
+        without recomputing.
+    """
+    data = reliability_bins(
+        pred, labels, n_bins=n_bins, edges=edges, min_count=min_count
+    )
+    live = [b for b in data["bins"] if not b["sparse"]]
+    n_rows_total = sum(b["count"] for b in data["bins"])
+    n_rows_live = sum(b["count"] for b in live)
+    if not live:
+        return {
+            "mce": float("nan"),
+            "n_bins_eligible": 0,
+            "n_bins_total": len(data["bins"]),
+            "n_rows_eligible": 0,
+            "frac_rows_eligible": 0.0,
+            "argmax_bin": None,
+        }
+    worst = max(live, key=lambda b: abs(b["observed_fraction"] - b["mean_predicted"]))
+    return {
+        "mce": float(abs(worst["observed_fraction"] - worst["mean_predicted"])),
+        "n_bins_eligible": len(live),
+        "n_bins_total": len(data["bins"]),
+        "n_rows_eligible": int(n_rows_live),
+        "frac_rows_eligible": (n_rows_live / n_rows_total) if n_rows_total else 0.0,
+        "argmax_bin": {
+            "bin_lo": worst["bin_lo"],
+            "bin_hi": worst["bin_hi"],
+            "count": worst["count"],
+        },
+    }
 
 
 def decision_region_ece(
