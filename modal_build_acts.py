@@ -3089,6 +3089,19 @@ def _extract_sweep_row(tau_g: float, tau_v: float, metrics: dict) -> dict:
     duplicate-rate reporting. Per CLAUDE.md: efficiency = ``eff_particles``,
     fake/duplicate rate = ``fakeratio_tracks`` / ``duplicateratio_tracks``
     (DM matching, track-level fake/duplicate — NOT the particle-level ratios).
+
+    ``gate_time_frac``/``value_time_frac`` (brief line 39) are the share of
+    *instrumented* cCKF hot-path time spent in gate vs. value inference:
+    ``gate_inference_ns`` / ``value_inference_ns`` summed over
+    ``cckf_timing_per_event`` (see ``scripts/extract_metrics.py``'s
+    ``read_cckf_timing_csv``), divided by the sum of all four instrumented
+    per-event components (``gate_inference_ns + gate_feature_ns +
+    value_inference_ns + meas_selection_ns`` — the only per-event timing
+    breakdown ``CckfTrackFindingAlgorithm::execute`` writes). This is *not*
+    a fraction of total wall time (seeding/propagation/ambi aren't
+    instrumented per-event), but of the algorithm's own accounted work —
+    the meaningful denominator for "is gate or value inference the
+    bottleneck within cCKF."
     """
     pre_ambi = metrics.get("summary", {}).get("pre_ambi") or {}
     post_ambi = metrics.get("summary", {}).get("post_ambi") or {}
@@ -3100,6 +3113,25 @@ def _extract_sweep_row(tau_g: float, tau_v: float, metrics: dict) -> dict:
     timing_rows = metrics.get("cckf_timing_per_event") or []
     gate_calls = sum(int(r.get("gate_inference_calls", 0) or 0) for r in timing_rows)
     value_calls = sum(int(r.get("value_inference_calls", 0) or 0) for r in timing_rows)
+
+    def _sum_ns(field: str) -> float:
+        return sum(float(r.get(field, 0) or 0) for r in timing_rows)
+
+    gate_inference_ns = _sum_ns("gate_inference_ns")
+    gate_feature_ns = _sum_ns("gate_feature_ns")
+    value_inference_ns = _sum_ns("value_inference_ns")
+    meas_selection_ns = _sum_ns("meas_selection_ns")
+    total_instrumented_ns = (
+        gate_inference_ns + gate_feature_ns + value_inference_ns + meas_selection_ns
+    )
+    gate_time_frac = (
+        round(gate_inference_ns / total_instrumented_ns, 6)
+        if total_instrumented_ns > 0 else None
+    )
+    value_time_frac = (
+        round(value_inference_ns / total_instrumented_ns, 6)
+        if total_instrumented_ns > 0 else None
+    )
 
     wall_seconds = metrics.get("wall_seconds")
     events = metrics.get("events") or len(timing_rows) or None
@@ -3117,6 +3149,8 @@ def _extract_sweep_row(tau_g: float, tau_v: float, metrics: dict) -> dict:
         "runtime_per_event_s": runtime_per_event_s,
         "gate_calls": gate_calls,
         "value_calls": value_calls,
+        "gate_time_frac": gate_time_frac,
+        "value_time_frac": value_time_frac,
         "wall_seconds": wall_seconds,
     }
 
@@ -3153,6 +3187,8 @@ SWEEP_FIELDNAMES = [
     "runtime_per_event_s",
     "gate_calls",
     "value_calls",
+    "gate_time_frac",
+    "value_time_frac",
     "wall_seconds",
 ]
 
@@ -3265,7 +3301,8 @@ def pareto_sweep(
                     f"eff={row['efficiency']}  fake={row['fake_rate']}  "
                     f"dup(pre/post)={row['duplicate_rate_pre_ambi']}/"
                     f"{row['duplicate_rate_post_ambi']}  "
-                    f"t/evt={row['runtime_per_event_s']}s"
+                    f"t/evt={row['runtime_per_event_s']}s  "
+                    f"gate_frac={row['gate_time_frac']}  value_frac={row['value_time_frac']}"
                 )
                 # Incremental save + volume commit for crash resilience.
                 rows_out.sort(key=lambda r: (r["tau_g"], r["tau_v"]))

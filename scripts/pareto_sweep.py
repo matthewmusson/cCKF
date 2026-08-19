@@ -44,7 +44,8 @@ def load_rows(csv_path: Path) -> list[dict[str, Any]]:
     numeric_cols = [
         "tau_g", "tau_v", "efficiency", "fake_rate",
         "duplicate_rate_pre_ambi", "duplicate_rate_post_ambi",
-        "runtime_per_event_s", "gate_calls", "value_calls", "wall_seconds",
+        "runtime_per_event_s", "gate_calls", "value_calls",
+        "gate_time_frac", "value_time_frac", "wall_seconds",
     ]
     rows = []
     with open(csv_path, newline="") as f:
@@ -103,7 +104,10 @@ def print_summary(rows: list[dict[str, Any]], front: list[dict[str, Any]], *, in
     print(f"Grid points: {n_total}  complete: {n_complete}  failed/incomplete: {n_failed}")
     print(f"Pareto front size: {len(front)}\n")
 
-    header = f"{'tau_g':>7} {'tau_v':>7} {'eff%':>8} {'fake%':>8} {'dup_pre%':>9} {'dup_post%':>10} {'t/evt(s)':>9} {'wall(s)':>8}"
+    header = (
+        f"{'tau_g':>7} {'tau_v':>7} {'eff%':>8} {'fake%':>8} {'dup_pre%':>9} "
+        f"{'dup_post%':>10} {'t/evt(s)':>9} {'gate_tf':>8} {'val_tf':>8} {'wall(s)':>8}"
+    )
     print(header)
     print("-" * len(header))
     for r in front:
@@ -113,6 +117,8 @@ def print_summary(rows: list[dict[str, Any]], front: list[dict[str, Any]], *, in
             f"{(r.get('duplicate_rate_pre_ambi') or float('nan')):>9.4f} "
             f"{(r.get('duplicate_rate_post_ambi') or float('nan')):>10.4f} "
             f"{(r.get('runtime_per_event_s') or float('nan')):>9.3f} "
+            f"{(r.get('gate_time_frac') if r.get('gate_time_frac') is not None else float('nan')):>8.4f} "
+            f"{(r.get('value_time_frac') if r.get('value_time_frac') is not None else float('nan')):>8.4f} "
             f"{(r.get('wall_seconds') or float('nan')):>8.1f}"
         )
 
