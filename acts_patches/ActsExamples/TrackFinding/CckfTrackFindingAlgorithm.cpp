@@ -14,6 +14,7 @@
 #include "cckf/CckfFeatures.hpp"
 #include "cckf/CckfMeasurementSelector.hpp"
 #include "cckf/CckfTimers.hpp"
+#include "cckf/SensorLookup.hpp"
 
 #include "Acts/Definitions/Algebra.hpp"
 #include "Acts/Definitions/Direction.hpp"
@@ -136,8 +137,10 @@ class CckfMeasurementSelectorAdapter {
   using Traj = Acts::VectorMultiTrajectory;
 
   explicit CckfMeasurementSelectorAdapter(
-      cckf::CckfMeasurementSelector* selector, Traj* trajectory)
-      : m_selector(selector), m_trajectory(trajectory) {}
+      cckf::CckfMeasurementSelector* selector, Traj* trajectory,
+      const cckf::SensorLookup* sensorLookup)
+      : m_selector(selector), m_trajectory(trajectory),
+        m_sensorLookup(sensorLookup) {}
 
   void setSeed(const std::optional<ConstSeedProxy>& seed) { m_seed = seed; }
 
@@ -219,12 +222,13 @@ class CckfMeasurementSelectorAdapter {
 
       m_selector->setBranchContext(ctx);
 
-      // TODO(task5): Look up sensor properties from digiConfig / geometry.
-      // For now, set to zeros. The gate MLP receives zero pitch/thickness,
-      // which yields zero kappa_u / kappa_v / q_tilde (guarded by the
-      // epsilon checks in buildGateFeatures). The raw cluster features
-      // (s_u, s_v, Q_tot, sigma_uu/uv/vv) still carry signal.
-      m_selector->setSensorProps(cckf::SensorProps{});
+      cckf::SensorProps sensorProps{};
+      if (m_sensorLookup != nullptr) {
+        auto geoId = candidates[0].referenceSurface().geometryId();
+        sensorProps = m_sensorLookup->get(
+            static_cast<uint32_t>(geoId.volume()));
+      }
+      m_selector->setSensorProps(sensorProps);
     }
 
     // ---- Delegate to the cCKF gate ----
@@ -234,6 +238,7 @@ class CckfMeasurementSelectorAdapter {
  private:
   cckf::CckfMeasurementSelector* m_selector;
   Traj* m_trajectory;
+  const cckf::SensorLookup* m_sensorLookup;
   std::optional<ConstSeedProxy> m_seed;
 
   bool isSeedCandidate(const Traj::TrackStateProxy& candidate) const {
@@ -536,10 +541,8 @@ CckfTrackFindingAlgorithm::CckfTrackFindingAlgorithm(
   // from the value function's feature vector instead.
   {
     bool valueActive = !m_cfg.valueWeightsPath.empty();
-    bool passthroughActive = m_cfg.valueWeightsPath.empty();
-    bool customStopperActive = valueActive || passthroughActive;
 
-    if (customStopperActive) {
+    {
       if (m_cfg.maxPixelHoles != std::numeric_limits<std::size_t>::max()) {
         ACTS_WARNING(
             "maxPixelHoles is set to " << m_cfg.maxPixelHoles
@@ -575,6 +578,11 @@ CckfTrackFindingAlgorithm::CckfTrackFindingAlgorithm(
           return Acts::TrackSelector(cfg);
         },
         m_cfg.trackSelectorCfg.value());
+  }
+
+  if (!m_cfg.digiConfigPath.empty()) {
+    m_sensorLookup =
+        std::make_unique<cckf::SensorLookup>(m_cfg.digiConfigPath);
   }
 
   m_inputMeasurements.initialize(m_cfg.inputMeasurements);
@@ -714,7 +722,8 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   // function.
 
   CckfMeasurementSelectorAdapter cckfMeasSelAdapter(
-      cckfSelector.get(), trackStateContainerTemp.get());
+      cckfSelector.get(), trackStateContainerTemp.get(),
+      m_sensorLookup.get());
 
   TrackStateCreatorType trackStateCreator;
   trackStateCreator.sourceLinkAccessor

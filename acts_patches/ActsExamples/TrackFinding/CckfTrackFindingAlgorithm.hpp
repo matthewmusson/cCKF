@@ -41,6 +41,8 @@
 #include <variant>
 #include <vector>
 
+namespace cckf { class SensorLookup; }
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #include <tbb/combinable.h>
@@ -151,7 +153,8 @@ class CckfTrackFindingAlgorithm final : public IAlgorithm {
     /// If non-empty, per-event timing data is appended to this CSV file.
     std::string outputTimingPath;
     /// Digitization configuration path (for sensor property lookup).
-    /// Reserved for Task 5; currently unused.
+    /// When set, SensorLookup is loaded once and used to populate
+    /// pitch_u/pitch_v/thickness gate features per volume.
     std::string digiConfigPath;
   };
 
@@ -171,6 +174,7 @@ class CckfTrackFindingAlgorithm final : public IAlgorithm {
 
   Config m_cfg;
   std::optional<Acts::TrackSelector> m_trackSelector;
+  std::unique_ptr<cckf::SensorLookup> m_sensorLookup;
 
   ReadDataHandle<MeasurementSubset> m_inputMeasurements{this,
                                                         "InputMeasurements"};
