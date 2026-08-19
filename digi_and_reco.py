@@ -369,6 +369,13 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     )
     if timing_enabled:
         seq_kwargs["outputDir"] = str(output_dir)
+        # Sequencer's own default filename is "timing.csv" — identical to
+        # cCKF's per-event timing CSV (cckf_timing_output, default
+        # "timing.csv"). Both would land in the same output_dir, and the
+        # Sequencer writes its file in truncate mode *after* the run, so it
+        # would silently clobber the cCKF timing CSV written during
+        # execute(). Give it a distinct name so both files survive.
+        seq_kwargs["outputTimingFile"] = "timing.tsv"
     s = Sequencer(**seq_kwargs)
     
     # Get detector and field
