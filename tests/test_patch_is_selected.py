@@ -209,23 +209,49 @@ def test_selected_correctness_is_exclusive():
 def _synthetic_contributor_arrays() -> ak.Array:
     """Two tracks in event 0, one track in event 1.
 
-    Track 0 (seed_id 0) has 3 states: normal, hole, merged cluster.
-    Track 1 (seed_id 1) has 1 state. Track 2 is event 1.
+    Track 0 (seed_id 0) has 5 all-states: measurement, hole, material, measurement,
+    material.  The particle_ids_* are doubly-jagged (track, state, contributor) --
+    one entry per all-state (not measurement-only).
+    Track 1 (seed_id 1) has 2 all-states. Track 2 is event 1 with 2 all-states.
 
-    volume_id/layer_id/module_id are singly-jagged (track, state).
-    particle_ids_* are doubly-jagged (track, state, contributor).
+    volume_id/layer_id/module_id are singly-jagged (track, state), matching
+    the same all-state shape as particle_ids_*.  This mirrors the real ROOT
+    tree where both groups have the same length (all-state).
     """
     return ak.Array(
         {
             "event_nr": [0, 0, 1],
-            "particle_ids_particle": [[[101], [], [101, 202]], [[303]], [[404]]],
-            "particle_ids_vertex_primary": [[[0], [], [0, 0]], [[0]], [[0]]],
-            "particle_ids_vertex_secondary": [[[0], [], [0, 0]], [[0]], [[0]]],
-            "particle_ids_generation": [[[0], [], [0, 0]], [[0]], [[0]]],
-            "particle_ids_sub_particle": [[[0], [], [0, 0]], [[0]], [[0]]],
-            "volume_id": [[16, 16, 17], [16], [18]],
-            "layer_id": [[2, 2, 4], [2], [6]],
-            "module_id": [[100, 101, 200], [102], [300]],
+            # doubly-jagged: (track, state, contributor)
+            # Track 0: hit, hole, material, hit+merged, material
+            "particle_ids_particle": [
+                [[101], [], [], [101, 202], []],
+                [[303], []],
+                [[], [404]],
+            ],
+            "particle_ids_vertex_primary": [
+                [[0], [], [], [0, 0], []],
+                [[0], []],
+                [[], [0]],
+            ],
+            "particle_ids_vertex_secondary": [
+                [[0], [], [], [0, 0], []],
+                [[0], []],
+                [[], [0]],
+            ],
+            "particle_ids_generation": [
+                [[0], [], [], [0, 0], []],
+                [[0], []],
+                [[], [0]],
+            ],
+            "particle_ids_sub_particle": [
+                [[0], [], [], [0, 0], []],
+                [[0], []],
+                [[], [0]],
+            ],
+            # singly-jagged: same all-state shape as particle_ids
+            "volume_id": [[16, 16, 16, 17, 17], [16, 16], [18, 18]],
+            "layer_id": [[2, 2, 2, 4, 4], [2, 2], [6, 6]],
+            "module_id": [[100, 101, 101, 200, 200], [102, 103], [300, 301]],
         }
     )
 
@@ -238,10 +264,12 @@ def test_select_contributors_handles_hole_and_merged_cluster():
 
     df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
 
+    # State 1 (vol=16/lay=2/mod=101) is a hole -- empty contributor list.
     hole_gid = encode_geometry_id(np.array([16]), np.array([2]), np.array([101]))[0]
-    row_hole = df[(df["seed_id"] == 0) & (df["geometry_id"] == hole_gid)].iloc[0]
-    assert row_hole["sel_contrib_pids"] == []
+    rows_hole = df[(df["seed_id"] == 0) & (df["geometry_id"] == hole_gid)]
+    assert rows_hole.iloc[0]["sel_contrib_pids"] == []
 
+    # State 3 (vol=17/lay=4/mod=200) is a merged cluster -- two contributors.
     merged_gid = encode_geometry_id(np.array([17]), np.array([4]), np.array([200]))[0]
     row_merged = df[(df["seed_id"] == 0) & (df["geometry_id"] == merged_gid)].iloc[0]
     expected = encode_particle_id(
@@ -262,15 +290,19 @@ def test_select_contributors_returns_geometry_id():
 
     track0 = df[df["seed_id"] == 0].sort_values("geometry_id")
     track0_gids = encode_geometry_id(
-        np.array([16, 16, 17]),
-        np.array([2, 2, 4]),
-        np.array([100, 101, 200]),
+        np.array([16, 16, 16, 17, 17]),
+        np.array([2, 2, 2, 4, 4]),
+        np.array([100, 101, 101, 200, 200]),
     )
     np.testing.assert_array_equal(track0["geometry_id"].to_numpy(), track0_gids)
 
     track1 = df[df["seed_id"] == 1]
-    track1_gid = encode_geometry_id(np.array([16]), np.array([2]), np.array([102]))
-    np.testing.assert_array_equal(track1["geometry_id"].to_numpy(), track1_gid)
+    track1_gids = encode_geometry_id(
+        np.array([16, 16]),
+        np.array([2, 2]),
+        np.array([102, 103]),
+    )
+    np.testing.assert_array_equal(track1["geometry_id"].to_numpy(), track1_gids)
 
 
 def test_select_contributors_sel_has_hit_false_only_for_empty_contrib_list():
@@ -278,7 +310,9 @@ def test_select_contributors_sel_has_hit_false_only_for_empty_contrib_list():
 
     df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
     df = df.sort_values(["seed_id", "geometry_id"]).reset_index(drop=True)
-    assert df["sel_has_hit"].tolist() == [True, False, True, True]
+    # Track 0: 5 states — hit, hole, material(no), merged(yes), material(no)
+    # Track 1: 2 states — hit, material(no)
+    assert df["sel_has_hit"].tolist() == [True, False, False, True, False, True, False]
 
 
 def test_select_contributors_filters_to_the_requested_event():
@@ -287,31 +321,45 @@ def test_select_contributors_filters_to_the_requested_event():
 
     df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
     assert set(df["seed_id"].unique()) == {0, 1}
-    assert len(df) == 4  # 3 states for track 0 + 1 state for track 1
+    assert len(df) == 7  # 5 states for track 0 + 2 states for track 1
 
     df1 = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=1)
-    assert len(df1) == 1
+    assert len(df1) == 2
 
 
 # --- Primary route: doubly-jagged residual parsing -------------------------
 
 
 def _synthetic_residual_arrays() -> ak.Array:
-    """Same track layout as the contributor fixture: track 0 has 3 states
-    (middle one a hole -> NaN residual), track 1 has 1 state, track 2 is a
-    different event and must be filtered out.
+    """Mimic the real ROOT tree's two jagged-length groups.
 
-    volume_id/layer_id/module_id are singly-jagged (track, state), same
-    shape as the residuals. geometry_id = encode_geometry_id(vol, lay, mod).
+    The ROOT tree has **all-state** branches (one entry per CKF state --
+    measurements, holes, material interactions) and **measurement-only**
+    branches (one entry per state that has a hit).
+
+    Track 0: 5 all-states, 2 measurements at positions [0, 3] (the others
+             are holes / material interactions with no hit).
+    Track 1: 2 all-states, 1 measurement at position [0].
+    Track 2: event 1, 2 all-states, 1 measurement at position [1].
+
+    All-state: volume_id, layer_id, module_id, l_x_hit (length 5, 2, 2).
+    Measurement-only: res_eLOC0_prt, res_eLOC1_prt (length 2, 1, 1).
+    l_x_hit is all-state but finite only at measurement positions.
     """
     return ak.Array(
         {
             "event_nr": [0, 0, 1],
-            "res_eLOC0_prt": [[0.10, np.nan, -0.30], [0.05], [9.9]],
-            "res_eLOC1_prt": [[0.20, np.nan, 0.40], [0.15], [9.9]],
-            "volume_id": [[16, 16, 17], [16], [18]],
-            "layer_id": [[2, 2, 4], [2], [6]],
-            "module_id": [[100, 101, 200], [102], [300]],
+            # Measurement-only (2, 1, 1 per track)
+            "res_eLOC0_prt": [[0.10, -0.30], [0.05], [9.9]],
+            "res_eLOC1_prt": [[0.20, 0.40], [0.15], [9.9]],
+            # All-state (5, 2, 2 per track)
+            "volume_id": [[16, 16, 16, 17, 17], [16, 16], [18, 18]],
+            "layer_id": [[2, 2, 2, 4, 4], [2, 2], [6, 6]],
+            "module_id": [[100, 101, 101, 200, 200], [102, 103], [300, 301]],
+            # All-state; finite only at measurement positions
+            "l_x_hit": [[1.0, np.nan, np.nan, -2.0, np.nan],
+                        [3.0, np.nan],
+                        [np.nan, 5.0]],
         }
     )
 
@@ -323,9 +371,9 @@ def test_root_residuals_drops_hole_and_returns_geometry_id():
     df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
     df = df.sort_values(["seed_id", "geometry_id"]).reset_index(drop=True)
 
-    # The hole (track 0, state 1 with vol=16/lay=2/mod=101) is dropped because
-    # its residual is NaN. The two surviving states for track 0 are on
-    # different modules.
+    # Track 0 has 2 measurement states at all-state positions [0, 3],
+    # corresponding to vol/lay/mod = (16,2,100) and (17,4,200).
+    # Track 1 has 1 measurement at position [0] = (16,2,102).
     expected_gids = encode_geometry_id(
         np.array([16, 17, 16]),
         np.array([2, 4, 2]),
@@ -346,7 +394,8 @@ def test_root_residuals_filters_to_the_requested_event():
 
     df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=1)
     assert df["seed_id"].tolist() == [0]
-    expected_gid = encode_geometry_id(np.array([18]), np.array([6]), np.array([300]))
+    # Track 2's measurement is at all-state position [1] = (18, 6, 301).
+    expected_gid = encode_geometry_id(np.array([18]), np.array([6]), np.array([301]))
     np.testing.assert_array_equal(df["geometry_id"].to_numpy(), expected_gid)
 
 
@@ -366,8 +415,9 @@ def test_root_and_contributor_parsing_agree_on_geometry_id_layout():
     resid = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
 
     contrib_states = set(zip(contrib["seed_id"], contrib["geometry_id"]))
-    # Residuals drop the hole at (0, vol=16/lay=2/mod=101); contributors keep
-    # it (empty list).
+    # Residuals contain only measurement states; contributors contain all
+    # states (measurements + holes + material).  The hole at
+    # (0, vol=16/lay=2/mod=101) appears in contributors but not residuals.
     resid_states = set(zip(resid["seed_id"], resid["geometry_id"]))
     assert resid_states <= contrib_states
     hole_gid = int(

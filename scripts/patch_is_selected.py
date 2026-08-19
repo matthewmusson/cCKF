@@ -221,16 +221,17 @@ def selected_correctness(sel: pd.DataFrame, majority: pd.DataFrame) -> pd.DataFr
     return out[["seed_id", "geometry_id", "sel_correct", "sel_wrong"]]
 
 
-#: Per-state residual branches. Same ``_prt`` convention as ``eLOC0_prt`` etc.
-#: in expansion.py's ``_TRACKSTATE_SCALAR_BRANCHES``: singly-jagged
-#: (track, state), not one entry per state.
+#: Measurement-only residual branches.  These are shorter than the all-state
+#: branches (``volume_id``, ``eLOC0_prt``, etc.) -- they contain one entry
+#: per measurement state, not per state overall.  ``l_x_hit`` (all-state) is
+#: read alongside the geometry fields so we can mask geometry down to the
+#: same measurement-state subset before flattening.
 _RESIDUAL_FIELDS = ("res_eLOC0_prt", "res_eLOC1_prt")
 
-#: Per-state geometry branches, same singly-jagged (track, state) shape as
-#: the residuals. Composed via ``expansion.encode_geometry_id`` into a single
-#: ``geometry_id`` join key -- ``step_k`` (a per-track state ordinal) does
-#: not mean the same thing in the Parquet as in the ROOT tree, so it cannot
-#: be used to join the two.
+#: All-state geometry branches.  These have one entry per state (measurements
+#: + holes + material interactions), so they are *longer* than the
+#: measurement-only ``res_*_prt`` branches.  A ``l_x_hit``-based mask selects
+#: the measurement subset so the two can be placed in the same DataFrame.
 _GEOMETRY_FIELDS = ("volume_id", "layer_id", "module_id")
 
 
@@ -239,13 +240,19 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
 
     Takes an already-loaded awkward Array (one entry per track) so it can be
     exercised directly against synthetic fixtures without a ROOT file.
-    ``res_eLOC0_prt``/``res_eLOC1_prt`` are singly-jagged, per-state scalar
-    branches -- the tree is one entry per track (expansion.py:418-429), not
-    one entry per state as originally assumed; ``ak.num``/``ak.flatten`` at
-    ``axis=1`` peel off the per-state layer to build ``seed_id`` exactly as
-    expansion.py's ``load_trackstates`` does for its own ``_prt``-suffixed
-    scalar branches. ``volume_id``/``layer_id``/``module_id`` share that same
-    shape and are flattened the same way, then packed into ``geometry_id``.
+
+    The ROOT tree has two jagged length groups per track:
+
+    * **All-state** (one entry per CKF state -- measurements, holes, material
+      interactions): ``volume_id``, ``layer_id``, ``module_id``, ``l_x_hit``,
+      ``eLOC0_prt``, etc.
+    * **Measurement-only** (one entry per state that has a hit):
+      ``res_eLOC0_prt``, ``res_eLOC1_prt``, ``pull_*_prt``, ``dim_hit``, etc.
+
+    The geometry fields are all-state while the residuals are measurement-only,
+    so the geometry arrays must be masked to the measurement subset before
+    flattening.  ``l_x_hit`` (all-state, finite only at measurement states)
+    provides that mask.
     """
     import awkward as ak
 
@@ -258,17 +265,25 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     if n_tracks == 0:
         return empty
 
-    n_states = ak.to_numpy(ak.num(arrays["res_eLOC0_prt"], axis=1)).astype(np.int64)
-    if n_states.sum() == 0:
+    n_meas = ak.to_numpy(ak.num(arrays["res_eLOC0_prt"], axis=1)).astype(np.int64)
+    if n_meas.sum() == 0:
         return empty
-    track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
+    track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_meas)
 
     res0 = ak.to_numpy(ak.flatten(arrays["res_eLOC0_prt"], axis=1)).astype(np.float64)
     res1 = ak.to_numpy(ak.flatten(arrays["res_eLOC1_prt"], axis=1)).astype(np.float64)
 
-    vol = ak.to_numpy(ak.flatten(arrays["volume_id"], axis=1)).astype(np.int64)
-    lay = ak.to_numpy(ak.flatten(arrays["layer_id"], axis=1)).astype(np.int64)
-    mod = ak.to_numpy(ak.flatten(arrays["module_id"], axis=1)).astype(np.int64)
+    # Mask all-state geometry down to measurement states only.
+    hit_mask = ~ak.is_none(arrays["l_x_hit"]) & ak.is_valid(arrays["l_x_hit"])
+    lx = ak.fill_none(arrays["l_x_hit"], np.nan)
+    hit_mask = np.isfinite(ak.to_numpy(ak.flatten(lx, axis=1)))
+    # Rebuild as jagged mask matching the all-state shape.
+    all_n = ak.to_numpy(ak.num(arrays["volume_id"], axis=1))
+    hit_mask_jagged = ak.unflatten(hit_mask, all_n)
+
+    vol = ak.to_numpy(ak.flatten(arrays["volume_id"][hit_mask_jagged], axis=1)).astype(np.int64)
+    lay = ak.to_numpy(ak.flatten(arrays["layer_id"][hit_mask_jagged], axis=1)).astype(np.int64)
+    mod = ak.to_numpy(ak.flatten(arrays["module_id"][hit_mask_jagged], axis=1)).astype(np.int64)
     gid = encode_geometry_id(vol, lay, mod)
 
     df = pd.DataFrame(
@@ -299,7 +314,7 @@ def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
     with uproot.open(root_path) as fh:
         tree = fh["trackstates"]
         available = set(tree.keys())
-        fields = list(_RESIDUAL_FIELDS) + list(_GEOMETRY_FIELDS)
+        fields = list(_RESIDUAL_FIELDS) + list(_GEOMETRY_FIELDS) + ["l_x_hit"]
         if "event_nr" in available:
             fields = fields + ["event_nr"]
         # uproot's `cut=` filtering silently no-ops in this environment (see
