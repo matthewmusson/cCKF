@@ -289,26 +289,40 @@ def test_select_contributors_filters_to_the_requested_event():
 def _synthetic_residual_arrays() -> ak.Array:
     """Same track layout as the contributor fixture: track 0 has 3 states
     (middle one a hole -> NaN residual), track 1 has 1 state, track 2 is a
-    different event and must be filtered out."""
+    different event and must be filtered out.
+
+    volume_id/layer_id/module_id are singly-jagged (track, state), same
+    shape as the residuals. geometry_id = encode_geometry_id(vol, lay, mod).
+    """
     return ak.Array(
         {
             "event_nr": [0, 0, 1],
             "res_eLOC0_prt": [[0.10, np.nan, -0.30], [0.05], [9.9]],
             "res_eLOC1_prt": [[0.20, np.nan, 0.40], [0.15], [9.9]],
+            "volume_id": [[16, 16, 17], [16], [18]],
+            "layer_id": [[2, 2, 4], [2], [6]],
+            "module_id": [[100, 101, 200], [102], [300]],
         }
     )
 
 
-def test_root_residuals_drops_hole_and_keeps_correct_step_k():
+def test_root_residuals_drops_hole_and_returns_geometry_id():
+    from expansion import encode_geometry_id
     from scripts.patch_is_selected import _root_residuals_from_arrays
 
     df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
-    df = df.sort_values(["seed_id", "step_k"]).reset_index(drop=True)
+    df = df.sort_values(["seed_id", "geometry_id"]).reset_index(drop=True)
 
-    # The hole (track 0, step_k 1) is dropped; step_k 0 and 2 survive with
-    # their correct per-track ordinal, not renumbered after the drop.
+    # The hole (track 0, state 1 with vol=16/lay=2/mod=101) is dropped because
+    # its residual is NaN. The two surviving states for track 0 are on
+    # different modules.
+    expected_gids = encode_geometry_id(
+        np.array([16, 17, 16]),
+        np.array([2, 4, 2]),
+        np.array([100, 200, 102]),
+    )
     assert df["seed_id"].tolist() == [0, 0, 1]
-    assert df["step_k"].tolist() == [0, 2, 0]
+    np.testing.assert_array_equal(df["geometry_id"].to_numpy(), expected_gids)
     np.testing.assert_allclose(df["res_l0"].tolist(), [0.10, -0.30, 0.05])
     np.testing.assert_allclose(df["res_l1"].tolist(), [0.20, 0.40, 0.15])
 
@@ -317,11 +331,13 @@ def test_root_residuals_filters_to_the_requested_event():
     """seed_id is synthesized from position among the *filtered* tracks
     (expansion.py:423's convention), so the sole event-1 track is reindexed
     to seed_id 0, not its original position (2) in the unfiltered array."""
+    from expansion import encode_geometry_id
     from scripts.patch_is_selected import _root_residuals_from_arrays
 
     df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=1)
     assert df["seed_id"].tolist() == [0]
-    assert df["step_k"].tolist() == [0]
+    expected_gid = encode_geometry_id(np.array([18]), np.array([6]), np.array([300]))
+    np.testing.assert_array_equal(df["geometry_id"].to_numpy(), expected_gid)
 
 
 def test_root_and_contributor_parsing_agree_on_step_k_layout():

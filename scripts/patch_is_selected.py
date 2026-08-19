@@ -66,7 +66,7 @@ from cckf.splits import assert_not_test
 # expansion.encode_particle_id's docstring is explicit that the layout is a
 # pipeline-internal convention, not ACTS's SimBarcode -- so a local copy that
 # drifted would break the majority-membership test silently.
-from expansion import encode_particle_id
+from expansion import encode_particle_id, encode_geometry_id
 
 #: Residual match tolerance in mm. ROOT stores float32, the expansion computes
 #: in float64, so agreement is limited by float32 epsilon on values of order
@@ -214,6 +214,13 @@ def selected_correctness(sel: pd.DataFrame, majority: pd.DataFrame) -> pd.DataFr
 #: (track, state), not one entry per state.
 _RESIDUAL_FIELDS = ("res_eLOC0_prt", "res_eLOC1_prt")
 
+#: Per-state geometry branches, same singly-jagged (track, state) shape as
+#: the residuals. Composed via ``expansion.encode_geometry_id`` into a single
+#: ``geometry_id`` join key -- ``step_k`` (a per-track state ordinal) does
+#: not mean the same thing in the Parquet as in the ROOT tree, so it cannot
+#: be used to join the two.
+_GEOMETRY_FIELDS = ("volume_id", "layer_id", "module_id")
+
 
 def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     """Pure parsing step of :func:`load_root_residuals`.
@@ -222,10 +229,11 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     exercised directly against synthetic fixtures without a ROOT file.
     ``res_eLOC0_prt``/``res_eLOC1_prt`` are singly-jagged, per-state scalar
     branches -- the tree is one entry per track (expansion.py:418-429), not
-    one entry per state as originally assumed; ``ak.num``/``ak.local_index``
-    at ``axis=1`` peel off the per-state layer to build ``seed_id``/``step_k``
-    exactly as expansion.py's ``load_trackstates`` does for its own
-    ``_prt``-suffixed scalar branches.
+    one entry per state as originally assumed; ``ak.num``/``ak.flatten`` at
+    ``axis=1`` peel off the per-state layer to build ``seed_id`` exactly as
+    expansion.py's ``load_trackstates`` does for its own ``_prt``-suffixed
+    scalar branches. ``volume_id``/``layer_id``/``module_id`` share that same
+    shape and are flattened the same way, then packed into ``geometry_id``.
     """
     import awkward as ak
 
@@ -233,7 +241,7 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
         event_mask = ak.to_numpy(arrays["event_nr"]) == int(event_id)
         arrays = arrays[event_mask]
 
-    empty = pd.DataFrame(columns=["seed_id", "step_k", "res_l0", "res_l1"])
+    empty = pd.DataFrame(columns=["seed_id", "geometry_id", "res_l0", "res_l1"])
     n_tracks = len(arrays)
     if n_tracks == 0:
         return empty
@@ -242,17 +250,19 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     if n_states.sum() == 0:
         return empty
     track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
-    state_idx = ak.to_numpy(
-        ak.flatten(ak.local_index(arrays["res_eLOC0_prt"], axis=1))
-    ).astype(np.int64)
 
     res0 = ak.to_numpy(ak.flatten(arrays["res_eLOC0_prt"], axis=1)).astype(np.float64)
     res1 = ak.to_numpy(ak.flatten(arrays["res_eLOC1_prt"], axis=1)).astype(np.float64)
 
+    vol = ak.to_numpy(ak.flatten(arrays["volume_id"], axis=1)).astype(np.int64)
+    lay = ak.to_numpy(ak.flatten(arrays["layer_id"], axis=1)).astype(np.int64)
+    mod = ak.to_numpy(ak.flatten(arrays["module_id"], axis=1)).astype(np.int64)
+    gid = encode_geometry_id(vol, lay, mod)
+
     df = pd.DataFrame(
         {
             "seed_id": track_nr,
-            "step_k": state_idx,
+            "geometry_id": gid,
             "res_l0": res0,
             "res_l1": res1,
         }
@@ -268,16 +278,16 @@ def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
     Returns
     -------
     pandas.DataFrame
-        Columns ``seed_id``, ``step_k``, ``res_l0``, ``res_l1``; one row per
-        state that has a selected measurement (rows where either residual is
-        NaN, i.e. holes, are dropped).
+        Columns ``seed_id``, ``geometry_id``, ``res_l0``, ``res_l1``; one row
+        per state that has a selected measurement (rows where either residual
+        is NaN, i.e. holes, are dropped).
     """
     import uproot
 
     with uproot.open(root_path) as fh:
         tree = fh["trackstates"]
         available = set(tree.keys())
-        fields = list(_RESIDUAL_FIELDS)
+        fields = list(_RESIDUAL_FIELDS) + list(_GEOMETRY_FIELDS)
         if "event_nr" in available:
             fields = fields + ["event_nr"]
         # uproot's `cut=` filtering silently no-ops in this environment (see
