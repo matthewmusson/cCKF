@@ -14,6 +14,16 @@ Usage
         --parquet-dir /data/results/train32/expanded \\
         --out-dir /data/cache/gate_staged/train \\
         --only-events 0,1
+
+    # Pure-seed run: filter to seeds where all 3 seed hits are from the
+    # branch's majority particle. --parquet-dir MUST be SELECTED_DIR (the
+    # output of scripts/patch_is_selected.py) -- pure-seed classification
+    # needs the is_ckf_selected column, which the raw expanded Parquets
+    # don't have.
+    python scripts/build_gate_cache.py --split train \\
+        --parquet-dir /data/results/train32/selected \\
+        --out-dir /data/cache/gate_pure/train \\
+        --pure-seeds-only
 """
 
 from __future__ import annotations
@@ -23,9 +33,11 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pyarrow.parquet as pq
 
 from cckf import cache, features, splits
 from cckf.event_selection import resolve_requested_events
+from cckf.seed_purity import compute_pure_seed_set
 
 
 def resolve_split_events(split: str, only_events: str) -> tuple[int, ...]:
@@ -75,6 +87,13 @@ def main() -> None:
             "(default, unchanged behaviour)."
         ),
     )
+    parser.add_argument(
+        "--pure-seeds-only",
+        action="store_true",
+        help="Filter to pure seeds (3/3 seed hits from majority particle). "
+             "Requires --parquet-dir to point at selected Parquets "
+             "(with is_ckf_selected column).",
+    )
     args = parser.parse_args()
 
     events = resolve_split_events(args.split, args.only_events)
@@ -103,8 +122,38 @@ def main() -> None:
             raise FileNotFoundError(f"missing {path}")
         paths.append(path)
 
+    pure_seed_sets = None
+    if args.pure_seeds_only:
+        # Seed purity (cckf.seed_purity) needs is_ckf_selected to find each
+        # branch's first 3 CKF-selected measurement hits -- only present in
+        # the *selected* Parquets (scripts/patch_is_selected.py), not the
+        # raw expanded ones. Fail fast with a clear pointer rather than
+        # letting compute_pure_seed_set raise a bare KeyError per file.
+        schema_columns = set(pq.ParquetFile(paths[0]).schema_arrow.names)
+        if "is_ckf_selected" not in schema_columns:
+            raise ValueError(
+                f"--pure-seeds-only requires --parquet-dir to point at "
+                f"selected Parquets (with an is_ckf_selected column), but "
+                f"{paths[0]} has no such column. Point --parquet-dir at "
+                f"the SELECTED_DIR output of scripts/patch_is_selected.py "
+                f"(e.g. .../train32/selected), not the raw expanded dir."
+            )
+        print(
+            "NOTE: --pure-seeds-only is set. Computing pure seed sets from "
+            f"{len(paths)} file(s) -- --parquet-dir must be SELECTED_DIR "
+            "(is_ckf_selected present), which it is here."
+        )
+        pure_seed_sets = {path: compute_pure_seed_set(str(path)) for path in paths}
+        n_pure = sum(len(s) for s in pure_seed_sets.values())
+        print(f"pure_seeds_only: {n_pure} pure (seed_id, branch_id) pairs total")
+
     print(f"split={args.split} events={list(events)} files={len(paths)}")
-    meta = cache.build_gate_cache(paths, args.out_dir, batch_rows=args.batch_rows)
+    meta = cache.build_gate_cache(
+        paths,
+        args.out_dir,
+        batch_rows=args.batch_rows,
+        pure_seed_sets=pure_seed_sets,
+    )
 
     if is_staged:
         # Mark this cache as partial so a later consumer (a training script,

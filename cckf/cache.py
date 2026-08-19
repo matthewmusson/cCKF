@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
+import pandas as pd
 import pyarrow.parquet as pq
 
 from . import features as feat
@@ -79,8 +80,21 @@ class CacheWriter:
         self.n_rows += len(X)
         self.n_positive += int(y.sum())
 
-    def close(self, source_files: Sequence[str]) -> dict:
-        """Flush, write ``meta.json``, and return the summary report."""
+    def close(
+        self, source_files: Sequence[str], pure_seeds_only: bool = False
+    ) -> dict:
+        """Flush, write ``meta.json``, and return the summary report.
+
+        Parameters
+        ----------
+        source_files : sequence of str
+            Parquet paths this cache was built from, recorded verbatim.
+        pure_seeds_only : bool
+            Whether rows were filtered to pure seeds (spec's pure-seed
+            training ablation). Recorded in ``meta.json`` so a downstream
+            consumer can tell a pure-seed cache apart from a full cache
+            without re-deriving it from the source files.
+        """
         for handle in (self._fx, self._fy, self._fa, self._fm):
             handle.close()
         meta = {
@@ -93,6 +107,7 @@ class CacheWriter:
             "feature_names": list(feat.GATE_FEATURES),
             "aux_columns": list(_AUX_COLUMNS),
             "source_files": [str(s) for s in source_files],
+            "pure_seeds_only": pure_seeds_only,
         }
         (self.out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
         return meta
@@ -102,6 +117,7 @@ def build_gate_cache(
     parquet_paths: Iterable[Path | str],
     out_dir: Path | str,
     batch_rows: int = 1_000_000,
+    pure_seed_sets: dict[Path, set[tuple[int, int]]] | None = None,
 ) -> dict:
     """Stream Parquet files into a gate feature cache.
 
@@ -114,6 +130,16 @@ def build_gate_cache(
     batch_rows : int
         Rows per streaming batch. Memory use is roughly
         ``batch_rows × 26 × 8 bytes`` during derivation.
+    pure_seed_sets : dict of Path to set of (int, int), optional
+        When given, restricts the cache to rows whose ``(seed_id,
+        branch_id)`` is a "pure" seed (spec's pure-seed training ablation
+        -- see ``cckf.seed_purity.compute_pure_seed_set``). Keyed by the
+        resolved Parquet path so each file is filtered against its own
+        pure set; a file with no entry in the dict is left unfiltered
+        (all its trainable rows pass through, same as ``pure_seed_sets
+        is None``). Applied after ``gate_row_mask`` and before feature
+        construction. ``None`` (the default) disables filtering entirely
+        and behaves exactly as before.
 
     Returns
     -------
@@ -123,11 +149,22 @@ def build_gate_cache(
     paths = [Path(p) for p in parquet_paths]
     writer = CacheWriter(out_dir, n_features=len(feat.GATE_FEATURES))
 
+    # Pure-seed filtering keys on (seed_id, branch_id), which the gate
+    # feature/label columns alone don't include -- pull them in too, but
+    # only when the caller actually asked for filtering, so a plain (no
+    # pure_seed_sets) run's column list -- and therefore its cache
+    # contents -- is unchanged from before this parameter existed.
+    read_columns = _READ_COLUMNS
+    if pure_seed_sets is not None:
+        read_columns = tuple(
+            dict.fromkeys((*_READ_COLUMNS, "seed_id", "branch_id"))
+        )
+
     for path in paths:
         pf = pq.ParquetFile(path)
         available = set(pf.schema_arrow.names)
-        columns = [c for c in _READ_COLUMNS if c in available]
-        missing = set(_READ_COLUMNS) - available
+        columns = [c for c in read_columns if c in available]
+        missing = set(read_columns) - available
         if missing:
             raise ValueError(f"{path} is missing required columns: {sorted(missing)}")
 
@@ -148,6 +185,29 @@ def build_gate_cache(
             y = derived["label_same_particle"][mask]
             ambiguous = derived["label_ambiguous"][mask]
 
+            if pure_seed_sets is not None:
+                pure_set = pure_seed_sets.get(path)
+                if pure_set is not None:
+                    # Vectorised membership test rather than a per-row
+                    # `(s, b) in pure_set` loop: at ~1M rows/batch a Python
+                    # loop dominates wall time, while a MultiIndex.isin is a
+                    # single vectorised hash-join.
+                    if pure_set:
+                        pure_index = pd.MultiIndex.from_tuples(
+                            pure_set, names=["seed_id", "branch_id"]
+                        )
+                        row_index = pd.MultiIndex.from_arrays(
+                            [df["seed_id"].to_numpy(), df["branch_id"].to_numpy()]
+                        )
+                        pure_mask = row_index.isin(pure_index)
+                    else:
+                        pure_mask = np.zeros(len(df), dtype=bool)
+                    df = df.loc[pure_mask].reset_index(drop=True)
+                    y = y[pure_mask]
+                    ambiguous = ambiguous[pure_mask]
+                    if len(df) == 0:
+                        continue
+
             X = feat.build_gate_features(df)
             aux = np.column_stack(
                 [
@@ -165,7 +225,9 @@ def build_gate_cache(
 
             writer.append(X, y, aux, ambiguous.astype(np.uint8))
 
-    return writer.close([str(p) for p in paths])
+    return writer.close(
+        [str(p) for p in paths], pure_seeds_only=pure_seed_sets is not None
+    )
 
 
 def load_cache(out_dir: Path | str) -> dict:
