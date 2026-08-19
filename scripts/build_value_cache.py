@@ -146,7 +146,10 @@ def _state_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def process_event(
-    parquet_path: Path, csv_dir: str, event_id: int
+    parquet_path: Path,
+    csv_dir: str,
+    event_id: int,
+    pure_seed_set: set[tuple[int, int]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """Return ``(X, y, aux, event_meta)`` for one event.
 
@@ -213,6 +216,27 @@ def process_event(
             np.empty((0, 3), np.float32),
             event_meta,
         )
+
+    # Filter to pure seeds (3/3 seed hits from majority particle) if requested.
+    if pure_seed_set is not None:
+        if pure_seed_set:
+            pure_index = pd.MultiIndex.from_tuples(
+                pure_seed_set, names=["seed_id", "branch_id"]
+            )
+            row_index = pd.MultiIndex.from_arrays(
+                [df["seed_id"].to_numpy(), df["branch_id"].to_numpy()]
+            )
+            pure_mask = row_index.isin(pure_index)
+        else:
+            pure_mask = np.zeros(len(df), dtype=bool)
+        df = df.loc[pure_mask].reset_index(drop=True)
+        if df.empty:
+            return (
+                np.empty((0, len(feat.VALUE_FEATURES)), np.float32),
+                np.empty(0, np.float32),
+                np.empty((0, 3), np.float32),
+                event_meta,
+            )
 
     step = value_target.build_step_table(df)
     counts = value_target.particle_simhit_counts(load_simhits(csv_dir, event_id))
@@ -289,6 +313,11 @@ def main() -> None:
             "(default, unchanged behaviour)."
         ),
     )
+    parser.add_argument(
+        "--pure-seeds-only",
+        action="store_true",
+        help="Filter to pure seeds (3/3 seed hits from majority particle).",
+    )
     args = parser.parse_args()
 
     # Validate against this split's own events, not the train+val+cal union:
@@ -313,6 +342,17 @@ def main() -> None:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    pure_sets = None
+    if args.pure_seeds_only:
+        from cckf.seed_purity import compute_pure_seed_set
+
+        pure_sets = {}
+        for event_id in events:
+            path = Path(args.parquet_dir) / f"expanded_event{event_id:09d}.parquet"
+            pure_sets[event_id] = compute_pure_seed_set(str(path))
+            print(f"event {event_id}: {len(pure_sets[event_id]):,} pure branches")
+
     xs, ys, auxs = [], [], []
     total_tier_dropped = 0
     total_valid_target = 0
@@ -324,7 +364,9 @@ def main() -> None:
         # directories, so each event's simhits CSV sits beside the ROOT file
         # of the batch that produced it. An explicit --csv-dir overrides.
         csv_dir = args.csv_dir or stage1_map.csv_dir_for(event_id)
-        X, y, aux, event_meta = process_event(path, csv_dir, event_id)
+        X, y, aux, event_meta = process_event(
+            path, csv_dir, event_id, pure_seed_set=pure_sets.get(event_id) if pure_sets else None
+        )
         print(f"event {event_id}: {len(y):,} states")
         xs.append(X)
         ys.append(y)
@@ -402,6 +444,8 @@ def main() -> None:
         "chi2_saturation_threshold": _CHI2_SATURATION_THRESHOLD,
         "events": list(events),
     }
+    if args.pure_seeds_only:
+        meta["pure_seeds_only"] = True
     if is_staged:
         # Mark a subset build as partial so no consumer -- or human reading a
         # directory listing -- can mistake it for a full-split cache. Same
