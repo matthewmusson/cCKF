@@ -457,3 +457,223 @@ its own point estimate by ~4e-19 at `k=0` (exact arithmetic gives the lower
 bound as 0; float gives 4.3e-19 at n=500). Harmless in a JSON dump, fatal to
 `matplotlib.errorbar`, which rejects the negative bar length. Now clamped to
 bracket `k/n`, with parametrized regression tests.
+
+## 2026-08-17 — Stratified metrics (F9), base rates, and two metric-comparability findings
+
+Adds the (calibrator × arm × stratification) metric tensor and, in the course of
+reading it, two findings about the metrics themselves that change how the earlier
+tables in this log should be read.
+
+### The F9 tensor
+
+12 figures, `figures/gate/F9_metrics_{gate_platt2,gate_platt4}_{A,B,C}_by_{occ,abseta}`
+— one per cell of {Platt-2, Platt-4} × {A, B, C} × {occupancy, |η|}. Each shows
+six metrics (AUC-ROC, AUC-PR, ECE, DR-ECE, DR-ECE/ECE, MCE) as bars over that
+variable's strata, with the all-rows value as a dashed reference and the stratum
+row count on the x-label.
+
+Per-stratum AUC is computed on the actual rows, not rebuilt from the shipped
+reliability histograms: ECE/DR-ECE/MCE are bin-based and recoverable, but AUC
+depends on within-stratum *ranking*, which a 1000-bin histogram only
+approximates. `curves.metric_bundle` now returns NaN AUCs on a single-class
+sample rather than letting sklearn raise — a real condition for the 2,654-row
+forward |η| stratum, not a defensive hypothetical.
+
+### Base rates (val split) — a property of the data, model-independent
+
+Verified identical across all 3 arms × 4 estimators × 11 strata.
+LaTeX: `docs/tables/gate_base_rates.tex`.
+
+| stratum | candidates | % rows | true hits | % pos | π | 1/π |
+|---|---|---|---|---|---|---|
+| n=1 (isolated) | 177,158 | 0.73% | 50,060 | **36.54%** | 28.2573% | 3.5 |
+| n=2-3 | 564,518 | 2.34% | 21,883 | 15.97% | 3.8764% | 25.8 |
+| n=4-6 | 1,079,096 | 4.48% | 12,164 | 8.88% | 1.1272% | 88.7 |
+| n=7+ | 22,287,890 | 92.45% | 52,892 | **38.61%** | 0.2373% | 421.4 |
+| \|η\|[0.0,0.5) | 644,469 | 2.67% | 21,396 | 15.62% | 3.3199% | 30.1 |
+| \|η\|[0.5,1.0) | 1,017,635 | 4.22% | 22,056 | 16.10% | 2.1674% | 46.1 |
+| \|η\|[1.0,1.5) | 4,568,547 | 18.95% | 31,018 | 22.64% | 0.6789% | 147.3 |
+| \|η\|[1.5,2.0) | 14,092,842 | 58.46% | 27,168 | 19.83% | **0.1928%** | 518.7 |
+| \|η\|[2.0,2.5) | 2,690,558 | 11.16% | 16,949 | 12.37% | 0.6299% | 158.7 |
+| \|η\|[2.5,3.0) | 1,091,957 | 4.53% | 18,171 | 13.26% | 1.6641% | 60.1 |
+| \|η\|[3.0,4.0) | 2,654 | 0.01% | 241 | 0.18% | **9.0806%** | 11.0 |
+| all | 24,108,662 | 100% | 136,999 | 100% | 0.5683% | 176.0 |
+
+Three facts worth carrying:
+
+1. **Over a third of all true hits sit in isolated windows.** n=1 is 0.73% of
+   candidates but 36.5% of positives; n=7+ is 92.5% of candidates and 38.6% of
+   positives. The positives split roughly evenly between the trivially-easy and
+   the hardest stratum despite a 126× difference in candidate count. A large
+   share of the gate's correct decisions are on windows with no ambiguity.
+2. **π is non-monotone in |η|**, minimum 0.193% at [1.5,2.0) — the stratum
+   holding 58% of all candidates — rising again forward to 9.08%. Plausibly the
+   barrel/endcap transition, *not verified against ODD geometry.*
+3. **π is set mechanically by occupancy**: one candidate in the window is
+   usually the right one; among seven-plus at most one can be.
+
+### Finding: raw ECE is not comparable across strata, and its ordering is an artifact
+
+Arm A + Platt-2, occupancy strata:
+
+| stratum | π | ECE | **ECE/π** | DR-ECE | AUC-PR |
+|---|---|---|---|---|---|
+| n=1 | 28.26% | 8.78e-03 | **0.031** | 1.96e-02 | 0.974 |
+| n=2-3 | 3.88% | 2.60e-03 | 0.067 | 1.40e-02 | 0.827 |
+| n=4-6 | 1.13% | 1.19e-03 | **0.106** | 1.11e-02 | 0.647 |
+| n=7+ | 0.237% | 2.30e-04 | 0.097 | 7.57e-03 | 0.584 |
+| *spread* | *119×* | *38×* | ***3.4×*** | ***2.6×*** | |
+
+ECE tracks π, not calibration quality: π spans 119× and ECE spans 38×.
+**Normalising by π collapses the spread to 3.4× and reverses the ordering** —
+n=1 becomes the best-calibrated stratum and n=4-6 the worst. Where nearly all
+predictions and labels are ~0, |obs − pred| is small by construction; there is
+less error available to make.
+
+Consequences:
+
+- **Never compare raw ECE across strata.** Use DR-ECE (2.6× spread, tightest of
+  the four) — restricting to p ∈ [0.01, 0.99] removes the easy-negative bulk
+  whose size π controls. This is a second, independent argument for DR-ECE
+  beyond catching the decision region: it is the *comparable* quantity.
+- The same effect explains two earlier puzzles. |η|[3.0,4.0) has the best
+  AUC-PR in the table (0.9808) because it has the **highest** base rate
+  (9.08%, 1 in 11) — easiest task, not best model. And n=7+ has the lowest ECE
+  because it has the lowest π.
+
+### Finding: MCE and ECE do not share a bin set, so MCE ≥ ECE can invert
+
+`expected_calibration_error` weights **every** bin, by design, so it stays an
+average over the whole sample. `max_calibration_error` drops bins under
+`MIN_BIN_COUNT = 100`. When all bins are populated the familiar ordering holds.
+When most are sparse the two are computed over *different* bin sets.
+
+Measured on |η|[3.0,4.0): 2,654 rows, **88.7% below p = 0.01**. Only the p≈0
+bulk bin clears 100 rows, so MCE reported that single trivially-calibrated bin
+(**2.13e-06**) while DR-ECE — which filters on region total, not per bin —
+reported **1.31e-01** from the 299 rows spanning the decision region, the worst
+value in the table. Five orders of magnitude apart, from disjoint subsets of the
+same stratum.
+
+`metrics.max_calibration_error_detail` (a896a85) now returns `mce` alongside
+`n_bins_eligible`, `n_bins_total`, `n_rows_eligible`, `frac_rows_eligible` and
+`argmax_bin`; MCE is NaN rather than 0.0 when nothing is eligible.
+`max_calibration_error` keeps its signature and value, so no logged number moves.
+
+**This also reframes the "MCE should be gated" note above.** The spec contains
+**zero** mentions of MCE — its calibration targets (§4.2: ECE < 0.02 overall,
+< 0.05 per stratum) are exactly the three that *are* gated. MCE is an addition
+of ours to close ECE's count-weighting blind spot, so gating it is a §4.2
+amendment, not a code fix. Two obstacles to doing it now: the natural threshold
+is not ECE's 0.05 (MCE is a max, systematically larger — arm A's *primary*
+config is 0.0495 aggregate and 0.122 in n=4-6, so a 0.05 gate would fail our
+best result), and any gate needs `n_bins_eligible` as a precondition or thin
+strata would report reassuring values while being the worst calibrated.
+**Recommendation: do not gate MCE yet**; pick a threshold from arm A's measured
+per-stratum distribution and propose it with evidence.
+
+### Also in this batch
+
+- **Occupancy affects discrimination, not calibration, and |η| affects neither
+  much.** Arm A + Platt-2: AUC-ROC is flat across occupancy (0.980–0.991) while
+  AUC-PR collapses 0.974 → 0.584. Across |η|, AUC-ROC sits in 0.981–0.992 with
+  no trend while AUC-PR falls 0.899 → 0.681. |η| is partly a proxy for
+  occupancy rather than an independent axis.
+- **|η|[1.5,2.0) carries a 56.3× ECE inflation**, the largest in the table, and
+  holds 58% of all rows — most of what drags the aggregate ECE to 3.87e-04.
+- LaTeX tables added: `docs/tables/gate_ece_vs_dr_ece.tex`,
+  `docs/tables/gate_A_platt2_stratified.tex`, `docs/tables/gate_base_rates.tex`.
+
+## 2026-08-17 — Sampler corrected to draw with replacement; arms B and C re-running
+
+`cckf/samplers.py` (dc8a482) now draws negatives **with replacement** in both
+subsampling arms.
+
+**Why it is a correctness fix, not a preference.** Weighted sampling *without*
+replacement does not give inclusion probabilities proportional to the weights.
+For i.i.d. draws with replacement `P(draw = i) = w_i / Σw` exactly; without
+replacement, item i's marginal inclusion probability after n draws is a function
+of *all* the weights that saturates toward 1 for heavy items. **Arm C therefore
+never realised the intended ∝1/χ² distribution at all.**
+
+It also makes the bias analysis exact rather than approximate. Reweighting
+negatives by w(x) shifts the Bayes-optimal logit by `log(w(x)/E_p[w])`; that
+identity holds for i.i.d. draws from `q(x) ∝ w(x)p(x)`, which is what
+with-replacement sampling produces. The stratified reliability diagrams and the
+fitted Platt intercept both test that identity, so the sampler must implement it.
+
+Arm B switched too. Uniform sampling does not need replacement — the marginal is
+uniform either way — but B and C must share the scheme or the S1 ablation
+differs in two variables instead of one.
+
+**A latent flaw was deleted with the shortfall branch.** When fewer hard
+negatives existed than `n_take`, the old code took every hard negative and
+backfilled uniformly from the *zero-weight* pool — silently mixing two sampling
+distributions into one training set. With replacement, drawing `n_take` items
+needs only one nonzero-probability entry, and a zero-weight negative is
+unreachable by construction. Three tests that had pinned the old semantics were
+replaced, and one added that nothing previously checked: realised draw
+*frequencies* track 1/χ² in the expected 4:1 ratio.
+
+Weights remain linearly normalised (`w/Σw`), never softmax: 1/χ² is already
+non-negative so a sum suffices, and `exp(1/χ²)` would both change the
+distribution and overflow, since `_CHI2_FLOOR` lets 1/χ² reach 1000.
+
+**Status: arms B and C are re-training under the corrected sampler**, then
+re-auditing and re-exporting. **Arm A is unaffected** (`picked = row_idx`, no
+subsampling), so the headline result — DR-ECE 3.39e-03 raw, 85× better than χ²
+on the cal split, and figure G3 — stands unchanged. Every B and C number in the
+two preceding sections is from the pre-replacement sampler and will move.
+
+**Not changed, deliberately:** the negative subsample is still drawn *once*
+before training and reused every epoch (`scripts/train_gate.py`), so arm C's
+model sees the same ~4.29M negatives for all its epochs. Per-epoch resampling
+would cover far more of the 173M negative pool at the same per-epoch cost. Ruled
+out of scope for this re-run by explicit decision, to keep one variable changed.
+
+## Value function V_φ — blocker status as of 2026-08-17
+
+**Not started. Blocked on a data join, not on the model.** Full diagnosis in the
+`is_ckf_selected` incident entry above; this is the standing summary.
+
+**What is needed.** `V^{π†}` labels require knowing which candidate the CKF
+actually *accepted* at each step, to replay the truth-greedy rollout. That is
+the `is_ckf_selected` column, produced by joining the expanded Parquet against
+the Stage 1 `trackstates_ckf.root`.
+
+**Why it fails.** The join key recorded in this log,
+`(seed_id, step_k) = (track_nr, state_idx)`, is wrong on `step_k`. Measured on
+event 0: `seed_id` aligns exactly (both span [0, 979275]) but `step_k` does not —
+Parquet reaches 38, ROOT only 17. Only 574,910 of 5,671,978 ROOT states (10.1%)
+share a key, and on the keys that *do* overlap the files contradict each other:
+Parquet says hole (`cand_hit_id = -1`, NaN residual) where ROOT reports a finite
+measurement. Result: **0 matches of 5.67M**.
+
+**Ruled out — do not re-derive.** Units (median |residual| 3.63 mm Parquet vs
+1.55 mm ROOT, same scale) and sign convention (opposite-sign agreement is
+better, 0.47% vs 0.009% within 1e-4, but nowhere near enough to explain total
+failure).
+
+**Remaining hypothesis.** The two files count steps differently — ACTS may skip
+states when writing the tree, or `expansion.py` may enumerate branch-steps ACTS
+does not. Resolving it means reading `expansion.py`'s `step_k` construction
+against the ACTS `RootTrackStatesWriter`.
+
+**Do NOT force a match** by widening `DEFAULT_TOL` (1e-4) or flipping a residual
+sign. That manufactures agreement without establishing the rows correspond, and
+this column feeds the training target directly, so a wrong join silently trains
+V_φ on false labels.
+
+**Diagnostic:** `modal run modal_train.py::diagnose_join --event-id 0` —
+read-only, never commits.
+
+**Cleanup owed:** delete
+`results/train32/selected/expanded_event{000000000,000000001}.parquet` (all-False
+`is_ckf_selected` from the failed run). `patch_selected_all` skips events whose
+output exists and its integrity check validates only the Parquet footer, so it
+would silently accept them. **Awaiting explicit confirmation before deleting.**
+
+**Also ready and untested against real data**, once the join is fixed:
+`train_value.py` streaming path (67c1d1d), `cckf/stage1_map.py` provenance map
+(82ade1e), value-cache staging with `--only-events` (00cfb35), and the
+`patch_event` write guard (9385520).
