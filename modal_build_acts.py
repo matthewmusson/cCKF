@@ -51,6 +51,7 @@ image = (
     .add_local_file("expansion.py", remote_path="/app/expansion.py")
     .add_local_dir("utils", remote_path="/app/utils")
     .add_local_dir("scripts", remote_path="/app/scripts")
+    .add_local_dir("acts_patches", remote_path="/app/acts_patches")
 )
 
 

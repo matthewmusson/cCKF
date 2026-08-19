@@ -79,6 +79,7 @@ image = (
     .add_local_file("digi_and_reco.py", remote_path="/app/digi_and_reco.py")
     .add_local_dir("utils", remote_path="/app/utils")
     .add_local_dir("scripts", remote_path="/app/scripts")
+    .add_local_dir("acts_patches", remote_path="/app/acts_patches")
 )
 
 
