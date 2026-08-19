@@ -653,6 +653,97 @@ def export_gate_curves(arms: str = "A,B,C") -> list[str]:
     return written
 
 
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, cpu=16, memory=262144, timeout=86400
+)
+def build_pure_caches(splits_to_build: str = "train,val,cal") -> dict:
+    """Build gate and value caches filtered to pure seeds only.
+
+    Pure-seed caches read from SELECTED_DIR (which contains is_ckf_selected for
+    purity filtering) and write to distinct gate_pure/{split} and value_pure/{split}
+    roots, never overwriting the full caches.
+    """
+    import sys
+
+    results = {}
+    splits = [s.strip() for s in splits_to_build.split(",") if s.strip()]
+
+    for split in splits:
+        # Gate cache: reads from SELECTED_DIR (needs is_ckf_selected for purity)
+        _run_script([
+            sys.executable, "/root/scripts/build_gate_cache.py",
+            "--split", split,
+            "--parquet-dir", SELECTED_DIR,
+            "--out-dir", f"{CACHE_DIR}/gate_pure/{split}",
+            "--pure-seeds-only",
+        ])
+        data_vol.commit()
+        results[f"gate_pure_{split}"] = "ok"
+
+        # Value cache
+        _run_script([
+            sys.executable, "/root/scripts/build_value_cache.py",
+            "--split", split,
+            "--parquet-dir", SELECTED_DIR,
+            "--out-dir", f"{CACHE_DIR}/value_pure/{split}",
+            "--pure-seeds-only",
+        ])
+        data_vol.commit()
+        results[f"value_pure_{split}"] = "ok"
+
+    return results
+
+
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, gpu="A10G",
+    memory=131072, timeout=43200,
+    secrets=[modal.Secret.from_name("wandb")],
+)
+def train_gate_pure(wandb_project: str = "cckf-gate-pure") -> dict:
+    """Train gate on pure-seed cache with sampler A (no subsampling)."""
+    import json, sys
+
+    out_dir = f"{MODEL_DIR}/gate_pure_A"
+    _run_script([
+        sys.executable, "/root/scripts/train_gate.py",
+        "--train-cache", f"{CACHE_DIR}/gate_pure/train",
+        "--val-cache", f"{CACHE_DIR}/gate_pure/val",
+        "--out-dir", out_dir,
+        "--sampler", "A",
+        "--device", "cuda",
+        "--wandb-project", wandb_project,
+    ])
+    data_vol.commit()
+    with open(f"{out_dir}/gate_metrics.json") as fh:
+        return json.load(fh)
+
+
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, gpu="A10G",
+    memory=131072, timeout=43200,
+    secrets=[modal.Secret.from_name("wandb")],
+)
+def train_value_pure(wandb_project: str = "cckf-value-pure", seed: int = 0) -> dict:
+    """Train value function V_φ on pure-seed cache with T2 targets."""
+    import json, sys
+
+    out_dir = f"{MODEL_DIR}/value_pure_v0"
+    cmd = [
+        sys.executable, "/root/scripts/train_value.py",
+        "--train-cache", f"{CACHE_DIR}/value_pure/train",
+        "--val-cache", f"{CACHE_DIR}/value_pure/val",
+        "--out-dir", out_dir,
+        "--device", "cuda",
+        "--seed", str(seed),
+    ]
+    if wandb_project:
+        cmd += ["--wandb-project", wandb_project]
+    _run_script(cmd)
+    data_vol.commit()
+    with open(f"{out_dir}/value_metrics.json") as fh:
+        return json.load(fh)
+
+
 @app.local_entrypoint()
 def export_curves(arms: str = "A,B,C") -> None:
     """Usage: modal run modal_train.py::export_curves --arms A,B,C"""
@@ -741,3 +832,29 @@ def train_gate_all() -> None:
 @app.local_entrypoint()
 def audit(model_dir: str = f"{MODEL_DIR}/gate_B", value_predictions: str = "") -> None:
     print(run_audit.remote(model_dir=model_dir, value_predictions=value_predictions))
+
+
+@app.local_entrypoint()
+def build_pure(splits: str = "train,val,cal") -> None:
+    """Build pure-seed caches. Usage: modal run --detach modal_train.py::build_pure"""
+    import json
+    print(json.dumps(build_pure_caches.remote(splits_to_build=splits), indent=2))
+
+
+@app.local_entrypoint()
+def train_pure_all(skip_cache: bool = False) -> None:
+    """Full pure-seed pipeline: build caches → train gate → train value.
+    Usage: modal run --detach modal_train.py::train_pure_all"""
+    import json
+
+    if not skip_cache:
+        print("=== building pure-seed caches ===")
+        print(json.dumps(build_pure_caches.remote(splits_to_build="train,val,cal"), indent=2))
+
+    print("=== training gate (pure) ===")
+    gate_metrics = train_gate_pure.remote()
+    print(json.dumps(gate_metrics, indent=2))
+
+    print("=== training value (pure, T2) ===")
+    value_metrics = train_value_pure.remote()
+    print(json.dumps(value_metrics, indent=2))
