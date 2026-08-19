@@ -114,6 +114,10 @@ target_include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ActsExamples/TrackFinding
         ${CMAKE_CURRENT_SOURCE_DIR}/../../Framework/include/ActsExamples
 )
+# SensorLookup.hpp includes <nlohmann/json.hpp>. ACTS's top-level CMake
+# already calls find_package(nlohmann_json), so the target just needs to
+# be linked to pick up its include directory.
+target_link_libraries(ActsExamplesTrackFinding PRIVATE nlohmann_json::nlohmann_json)
 CMAKE_EOF
 echo "CMakeLists.txt patched."
 
