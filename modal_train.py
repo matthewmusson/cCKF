@@ -81,12 +81,13 @@ def diagnose_selected_join(event_id: int = 0) -> dict:
     is safe to run beside a training job (this volume's only corruption
     incident came from concurrent commits, experiments/LOG.md).
 
-    ``match_selected`` joins on ``(seed_id, step_k)`` and then requires both
-    residual components to agree within ``DEFAULT_TOL`` (1e-4 mm). A zero
+    ``match_selected`` joins on ``(seed_id, geometry_id)`` and then requires
+    both residual components to agree within ``DEFAULT_TOL`` (1e-4 mm). A zero
     match rate has three candidate causes, and they are distinguishable:
 
-    1. **Key mismatch** -- the ``(seed_id, step_k)`` sets barely intersect, so
-       the merge yields NaN residuals. Diagnosed by the overlap counts.
+    1. **Key mismatch** -- the ``(seed_id, geometry_id)`` sets barely
+       intersect, so the merge yields NaN residuals. Diagnosed by the overlap
+       counts.
     2. **Sign convention** -- the Parquet's ``residual_l0 = local0 - pred_l0``
        (expansion.py:755) versus ACTS's ``res_eLOC0_prt``. If the conventions
        are opposite, ``|r - res|`` is large everywhere while ``|r + res|`` is
@@ -103,6 +104,7 @@ def diagnose_selected_join(event_id: int = 0) -> dict:
     import pyarrow.parquet as pq
 
     from cckf import stage1_map
+    from expansion import encode_geometry_id
     from scripts.patch_is_selected import load_root_residuals
 
     parquet_path = f"{EXPANDED_DIR}/expanded_event{event_id:09d}.parquet"
@@ -111,14 +113,25 @@ def diagnose_selected_join(event_id: int = 0) -> dict:
 
     cand = pq.read_table(
         parquet_path,
-        columns=["seed_id", "step_k", "cand_hit_id", "residual_l0", "residual_l1"],
+        columns=[
+            "seed_id",
+            "volume_id",
+            "layer_id",
+            "surface_id",
+            "cand_hit_id",
+            "residual_l0",
+            "residual_l1",
+        ],
     ).to_pandas()
+    cand["geometry_id"] = encode_geometry_id(
+        cand["volume_id"], cand["layer_id"], cand["surface_id"]
+    )
     root_res = load_root_residuals(root_path, event_id)
 
     cand_keys = set(
-        map(tuple, cand[["seed_id", "step_k"]].drop_duplicates().to_numpy())
+        map(tuple, cand[["seed_id", "geometry_id"]].drop_duplicates().to_numpy())
     )
-    root_keys = set(map(tuple, root_res[["seed_id", "step_k"]].to_numpy()))
+    root_keys = set(map(tuple, root_res[["seed_id", "geometry_id"]].to_numpy()))
     overlap = cand_keys & root_keys
 
     out = {
@@ -134,11 +147,6 @@ def diagnose_selected_join(event_id: int = 0) -> dict:
         "root_seed_id_range": [
             int(root_res["seed_id"].min()),
             int(root_res["seed_id"].max()),
-        ],
-        "cand_step_k_range": [int(cand["step_k"].min()), int(cand["step_k"].max())],
-        "root_step_k_range": [
-            int(root_res["step_k"].min()),
-            int(root_res["step_k"].max()),
         ],
     }
 
@@ -157,11 +165,11 @@ def diagnose_selected_join(event_id: int = 0) -> dict:
         )
 
     if not overlap:
-        out["verdict"] = "KEY MISMATCH: no (seed_id, step_k) in common"
+        out["verdict"] = "KEY MISMATCH: no (seed_id, geometry_id) in common"
         print(out)
         return out
 
-    merged = cand.merge(root_res, on=["seed_id", "step_k"], how="inner")
+    merged = cand.merge(root_res, on=["seed_id", "geometry_id"], how="inner")
     d_minus0 = (merged["residual_l0"] - merged["res_l0"]).abs()
     d_plus0 = (merged["residual_l0"] + merged["res_l0"]).abs()
     d_minus1 = (merged["residual_l1"] - merged["res_l1"]).abs()
@@ -170,7 +178,9 @@ def diagnose_selected_join(event_id: int = 0) -> dict:
     # Per state, the *best* candidate is the one that should be the selected
     # hit; the aggregate over all candidates would be dominated by the
     # non-selected ones, which are supposed to disagree.
-    grp = merged.assign(d_minus=d_minus0, d_plus=d_plus0).groupby(["seed_id", "step_k"])
+    grp = merged.assign(d_minus=d_minus0, d_plus=d_plus0).groupby(
+        ["seed_id", "geometry_id"]
+    )
     best_minus = grp["d_minus"].min().to_numpy()
     best_plus = grp["d_plus"].min().to_numpy()
 
