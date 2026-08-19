@@ -209,11 +209,11 @@ def test_selected_correctness_is_exclusive():
 def _synthetic_contributor_arrays() -> ak.Array:
     """Two tracks in event 0, one track in event 1.
 
-    Track 0 (seed_id 0) has 3 states: a normal single-contributor state, a
-    hole (0 contributors), and a merged cluster (2 contributors) -- the exact
-    shape that crashed the old ``ak.flatten(..., axis=1)`` + ``ak.to_numpy``
-    approach. Track 1 (seed_id 1) has 1 state. Track 2 belongs to event 1 and
-    must be dropped when filtering for event_id=0.
+    Track 0 (seed_id 0) has 3 states: normal, hole, merged cluster.
+    Track 1 (seed_id 1) has 1 state. Track 2 is event 1.
+
+    volume_id/layer_id/module_id are singly-jagged (track, state).
+    particle_ids_* are doubly-jagged (track, state, contributor).
     """
     return ak.Array(
         {
@@ -223,6 +223,9 @@ def _synthetic_contributor_arrays() -> ak.Array:
             "particle_ids_vertex_secondary": [[[0], [], [0, 0]], [[0]], [[0]]],
             "particle_ids_generation": [[[0], [], [0, 0]], [[0]], [[0]]],
             "particle_ids_sub_particle": [[[0], [], [0, 0]], [[0]], [[0]]],
+            "volume_id": [[16, 16, 17], [16], [18]],
+            "layer_id": [[2, 2, 4], [2], [6]],
+            "module_id": [[100, 101, 200], [102], [300]],
         }
     )
 
@@ -230,15 +233,17 @@ def _synthetic_contributor_arrays() -> ak.Array:
 def test_select_contributors_handles_hole_and_merged_cluster():
     """The exact shape that crashed: a 0-contributor hole and a 2-contributor
     merged cluster in the same track."""
-    from expansion import encode_particle_id
+    from expansion import encode_particle_id, encode_geometry_id
     from scripts.patch_is_selected import _select_contributors_from_arrays
 
     df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
 
-    row_hole = df[(df["seed_id"] == 0) & (df["step_k"] == 1)].iloc[0]
+    hole_gid = encode_geometry_id(np.array([16]), np.array([2]), np.array([101]))[0]
+    row_hole = df[(df["seed_id"] == 0) & (df["geometry_id"] == hole_gid)].iloc[0]
     assert row_hole["sel_contrib_pids"] == []
 
-    row_merged = df[(df["seed_id"] == 0) & (df["step_k"] == 2)].iloc[0]
+    merged_gid = encode_geometry_id(np.array([17]), np.array([4]), np.array([200]))[0]
+    row_merged = df[(df["seed_id"] == 0) & (df["geometry_id"] == merged_gid)].iloc[0]
     expected = encode_particle_id(
         np.array([0, 0]),
         np.array([0, 0]),
@@ -249,25 +254,30 @@ def test_select_contributors_handles_hole_and_merged_cluster():
     assert row_merged["sel_contrib_pids"] == expected
 
 
-def test_select_contributors_step_k_is_per_track_ordinal():
-    """step_k is a 0-based ordinal within each track, independent across
-    tracks with differing state counts -- not a groupby().cumcount() over a
-    flat per-state table (there is no such table; the tree is per-track)."""
+def test_select_contributors_returns_geometry_id():
+    from expansion import encode_geometry_id
     from scripts.patch_is_selected import _select_contributors_from_arrays
 
     df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
 
-    track0 = df[df["seed_id"] == 0].sort_values("step_k")["step_k"].tolist()
-    track1 = df[df["seed_id"] == 1].sort_values("step_k")["step_k"].tolist()
-    assert track0 == [0, 1, 2]
-    assert track1 == [0]
+    track0 = df[df["seed_id"] == 0].sort_values("geometry_id")
+    track0_gids = encode_geometry_id(
+        np.array([16, 16, 17]),
+        np.array([2, 2, 4]),
+        np.array([100, 101, 200]),
+    )
+    np.testing.assert_array_equal(track0["geometry_id"].to_numpy(), track0_gids)
+
+    track1 = df[df["seed_id"] == 1]
+    track1_gid = encode_geometry_id(np.array([16]), np.array([2]), np.array([102]))
+    np.testing.assert_array_equal(track1["geometry_id"].to_numpy(), track1_gid)
 
 
 def test_select_contributors_sel_has_hit_false_only_for_empty_contrib_list():
     from scripts.patch_is_selected import _select_contributors_from_arrays
 
     df = _select_contributors_from_arrays(_synthetic_contributor_arrays(), event_id=0)
-    df = df.sort_values(["seed_id", "step_k"]).reset_index(drop=True)
+    df = df.sort_values(["seed_id", "geometry_id"]).reset_index(drop=True)
     assert df["sel_has_hit"].tolist() == [True, False, True, True]
 
 

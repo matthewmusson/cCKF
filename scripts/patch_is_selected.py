@@ -97,11 +97,18 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     ``particle_ids_particle`` (and its four sibling fields) is doubly-jagged:
     (track, state, contributor) -- expansion.py:135-136. This mirrors
     ``expansion.py``'s ``load_trackstates`` exactly: ``ak.num(..., axis=1)``
-    and ``ak.local_index(..., axis=1)`` peel off the per-state layer to
-    build ``seed_id``/``step_k``, then a single ``axis=1`` flatten drops the
-    per-track nesting (leaving one, possibly empty, jagged contributor list
-    per state) before a full flatten and re-grouping by per-state counts
-    recovers the contributor lists.
+    on the per-state layer builds ``seed_id``, then a single ``axis=1``
+    flatten drops the per-track nesting (leaving one, possibly empty, jagged
+    contributor list per state) before a full flatten and re-grouping by
+    per-state counts recovers the contributor lists.
+
+    ``volume_id``/``layer_id``/``module_id`` are singly-jagged (track,
+    state), the same shape as the residual branches in
+    :func:`_root_residuals_from_arrays` -- a single ``axis=1`` flatten (not
+    the doubly-jagged pattern above) recovers one value per state, which is
+    packed into ``geometry_id`` via :func:`expansion.encode_geometry_id`.
+    ``step_k`` (a per-track state ordinal) does not mean the same thing in
+    the Parquet as in the ROOT tree, so it cannot be used to join the two.
     """
     import awkward as ak
 
@@ -110,23 +117,27 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
         arrays = arrays[event_mask]
 
     empty = pd.DataFrame(
-        columns=["seed_id", "step_k", "sel_contrib_pids", "sel_has_hit"]
+        columns=["seed_id", "geometry_id", "sel_contrib_pids", "sel_has_hit"]
     )
     n_tracks = len(arrays)
     if n_tracks == 0:
         return empty
 
     # particle_ids_particle is doubly-jagged (track, state, contributor):
-    # axis=1 num/local_index operate on the per-state layer directly.
+    # axis=1 num operates on the per-state layer directly.
     n_states = ak.to_numpy(ak.num(arrays["particle_ids_particle"], axis=1)).astype(
         np.int64
     )
     if n_states.sum() == 0:
         return empty
     track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
-    state_idx = ak.to_numpy(
-        ak.flatten(ak.local_index(arrays["particle_ids_particle"], axis=1))
-    ).astype(np.int64)
+
+    # volume_id/layer_id/module_id are singly-jagged (track, state): a plain
+    # axis=1 flatten recovers one value per state, same as the residuals.
+    vol = ak.to_numpy(ak.flatten(arrays["volume_id"], axis=1)).astype(np.int64)
+    lay = ak.to_numpy(ak.flatten(arrays["layer_id"], axis=1)).astype(np.int64)
+    mod = ak.to_numpy(ak.flatten(arrays["module_id"], axis=1)).astype(np.int64)
+    gid = encode_geometry_id(vol, lay, mod)
 
     # Drop the per-track nesting only -- each element is now one (possibly
     # empty) jagged contributor list per state, in (track, state) order.
@@ -145,7 +156,7 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     df = pd.DataFrame(
         {
             "seed_id": track_nr,
-            "step_k": state_idx,
+            "geometry_id": gid,
             "sel_contrib_pids": ak.to_list(nested),
         }
     )
@@ -159,15 +170,16 @@ def load_selected_contributors(root_path: str, event_id: int) -> pd.DataFrame:
     Returns
     -------
     pandas.DataFrame
-        ``seed_id``, ``step_k``, ``sel_contrib_pids`` (list of int64 barcodes),
-        ``sel_has_hit`` (False for holes, where the contributor list is empty).
+        ``seed_id``, ``geometry_id``, ``sel_contrib_pids`` (list of int64
+        barcodes), ``sel_has_hit`` (False for holes, where the contributor
+        list is empty).
     """
     import uproot
 
     with uproot.open(root_path) as fh:
         tree = fh["trackstates"]
         available = set(tree.keys())
-        fields = list(_PARTICLE_ID_FIELDS)
+        fields = list(_PARTICLE_ID_FIELDS) + list(_GEOMETRY_FIELDS)
         if "event_nr" in available:
             fields = fields + ["event_nr"]
         # uproot's `cut=` filtering silently no-ops in this environment (see
