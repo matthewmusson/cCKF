@@ -85,6 +85,7 @@ def compute_pure_seed_set(parquet_path: str) -> set[tuple[int, int]]:
     derived = lab.derive_labels(table)
     df = table.to_pandas()
     df["label_same_particle"] = derived["label_same_particle"]
+    df = df.loc[~df["majority_undefined"].astype(bool)].reset_index(drop=True)
 
     purity = classify_seed_purity(df)
     pure = purity.loc[purity["seed_purity"] == "pure"]

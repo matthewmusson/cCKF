@@ -18,7 +18,11 @@ def _make_parquet(tmp_path, rows):
         "cand_hit_id": pa.array(df["cand_hit_id"], pa.int64()),
         "contrib_pids": pa.array(df["contrib_pids"], pa.list_(pa.int64())),
         "branch_majority_pid": pa.array(df["branch_majority_pid"], pa.int64()),
-        "majority_undefined": pa.array([False] * len(df), pa.bool_()),
+        "majority_undefined": pa.array(
+            df["majority_undefined"] if "majority_undefined" in df
+            else [False] * len(df),
+            pa.bool_(),
+        ),
     })
     path = tmp_path / "test.parquet"
     pq.write_table(table, path)
@@ -39,6 +43,26 @@ def test_pure_seed_3_of_3(tmp_path):
     path = _make_parquet(tmp_path, rows)
     pure_set = compute_pure_seed_set(path)
     assert (0, 0) in pure_set
+
+
+def test_majority_undefined_excluded(tmp_path):
+    """Branch with majority_undefined=True is excluded from the pure set even
+    though its seed hits would otherwise look 3/3 pure."""
+    rows = [
+        {"seed_id": 0, "branch_id": 0, "step_k": 0, "is_ckf_selected": True,
+         "cand_hit_id": 10, "contrib_pids": [100], "branch_majority_pid": 100,
+         "majority_undefined": True},
+        {"seed_id": 0, "branch_id": 0, "step_k": 1, "is_ckf_selected": True,
+         "cand_hit_id": 11, "contrib_pids": [100], "branch_majority_pid": 100,
+         "majority_undefined": True},
+        {"seed_id": 0, "branch_id": 0, "step_k": 2, "is_ckf_selected": True,
+         "cand_hit_id": 12, "contrib_pids": [100], "branch_majority_pid": 100,
+         "majority_undefined": True},
+    ]
+    path = _make_parquet(tmp_path, rows)
+    pure_set = compute_pure_seed_set(path)
+    assert (0, 0) not in pure_set
+    assert pure_set == set()
 
 
 def test_majority_seed_2_of_3(tmp_path):
