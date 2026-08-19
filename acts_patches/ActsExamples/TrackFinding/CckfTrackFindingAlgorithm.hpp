@@ -41,7 +41,7 @@
 #include <variant>
 #include <vector>
 
-namespace cckf { class SensorLookup; }
+#include "cckf/SensorLookup.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"
