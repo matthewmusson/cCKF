@@ -326,8 +326,8 @@ class CckfMeasurementSelector {
       const auto& surface = ts.referenceSurface();
       auto freeParams = Acts::transformBoundToFreeParameters(
           surface, *m_geoCtx, predicted);
-      Acts::Vector3 direction = freeParams.segment<3>(Acts::eFreeDir0);
-      Acts::Vector3 position = freeParams.segment<3>(Acts::eFreePos0);
+      Acts::Vector3 direction = freeParams.template segment<3>(Acts::eFreeDir0);
+      Acts::Vector3 position = freeParams.template segment<3>(Acts::eFreePos0);
       auto angles = ActsExamples::incidenceAngles(
           surface.referenceFrame(*m_geoCtx, position, direction),
           direction);
