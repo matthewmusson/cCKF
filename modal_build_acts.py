@@ -3076,6 +3076,244 @@ def run_cckf(
     return metrics
 
 
+# ---------------------------------------------------------------------------
+# Task 10: Pareto sweep over (tau_g, tau_v)
+# ---------------------------------------------------------------------------
+
+def _extract_sweep_row(tau_g: float, tau_v: float, metrics: dict) -> dict:
+    """Flatten a ``run_cckf`` metrics dict into one Pareto-sweep CSV row.
+
+    Efficiency/fake rate are read post-ambi (the final, deployed numbers —
+    same convention as ``run_joint_motpe_optimizer``'s objectives). Duplicate
+    rate is reported both pre- and post-ambi per Task 8's per-event timing +
+    duplicate-rate reporting. Per CLAUDE.md: efficiency = ``eff_particles``,
+    fake/duplicate rate = ``fakeratio_tracks`` / ``duplicateratio_tracks``
+    (DM matching, track-level fake/duplicate — NOT the particle-level ratios).
+    """
+    pre_ambi = metrics.get("summary", {}).get("pre_ambi") or {}
+    post_ambi = metrics.get("summary", {}).get("post_ambi") or {}
+
+    def _pct(block: dict, key: str) -> float | None:
+        v = block.get(key)
+        return None if v is None else round(float(v) * 100.0, 4)
+
+    timing_rows = metrics.get("cckf_timing_per_event") or []
+    gate_calls = sum(int(r.get("gate_inference_calls", 0) or 0) for r in timing_rows)
+    value_calls = sum(int(r.get("value_inference_calls", 0) or 0) for r in timing_rows)
+
+    wall_seconds = metrics.get("wall_seconds")
+    events = metrics.get("events") or len(timing_rows) or None
+    runtime_per_event_s = (
+        round(wall_seconds / events, 4) if wall_seconds is not None and events else None
+    )
+
+    return {
+        "tau_g": tau_g,
+        "tau_v": tau_v,
+        "efficiency": _pct(post_ambi, "eff_particles"),
+        "fake_rate": _pct(post_ambi, "fakeratio_tracks"),
+        "duplicate_rate_pre_ambi": _pct(pre_ambi, "duplicateratio_tracks"),
+        "duplicate_rate_post_ambi": _pct(post_ambi, "duplicateratio_tracks"),
+        "runtime_per_event_s": runtime_per_event_s,
+        "gate_calls": gate_calls,
+        "value_calls": value_calls,
+        "wall_seconds": wall_seconds,
+    }
+
+
+def _is_dominated(row: dict, others: list[dict]) -> bool:
+    """Non-domination test on (efficiency MAX, fake_rate MIN, wall_seconds MIN).
+
+    A row is dominated if some other row is at least as good on all three
+    axes and strictly better on at least one. Rows with a missing (None)
+    objective value (a failed/partial run) can never dominate and are never
+    reported as part of the front.
+    """
+    e, f, w = row["efficiency"], row["fake_rate"], row["wall_seconds"]
+    if e is None or f is None or w is None:
+        return True
+    for other in others:
+        if other is row:
+            continue
+        oe, of, ow = other["efficiency"], other["fake_rate"], other["wall_seconds"]
+        if oe is None or of is None or ow is None:
+            continue
+        if oe >= e and of <= f and ow <= w and (oe > e or of < f or ow < w):
+            return True
+    return False
+
+
+SWEEP_FIELDNAMES = [
+    "tau_g",
+    "tau_v",
+    "efficiency",
+    "fake_rate",
+    "duplicate_rate_pre_ambi",
+    "duplicate_rate_post_ambi",
+    "runtime_per_event_s",
+    "gate_calls",
+    "value_calls",
+    "wall_seconds",
+]
+
+
+@app.function(
+    image=image,
+    volumes={BUILD_PATH: build_vol, DATA_PATH: data_vol},
+    cpu=2,
+    memory=8192,
+    timeout=86400,
+)
+def pareto_sweep(
+    gate_thresholds: str = "0.1,0.3,0.5,0.7,0.9",
+    value_thresholds: str = "0.01,0.05,0.1,0.2,0.5",
+    events: int = 32,
+    max_parallel: int = 8,
+    config: str = "cckf_envelope",
+):
+    """Sweep the (tau_g, tau_v) grid with ``run_cckf`` and collect Pareto data.
+
+    Fans out ``run_cckf.remote()`` calls (same app as this function — Task 9
+    put ``run_cckf`` here because it's the only app with the patched ACTS
+    build; cross-app ``.remote()`` calls aren't supported) over the full
+    threshold grid, ``max_parallel`` at a time via ``ThreadPoolExecutor``
+    (same pattern as ``validate_joint_motpe_eval`` in modal_acts.py).
+    Resumes from an existing ``results/pareto_sweep.csv`` on the data volume
+    if present, so a killed/timed-out sweep can be restarted without
+    re-running already-completed grid points.
+
+    Usage:
+        modal run --detach modal_build_acts.py::pareto_sweep \\
+            --gate-thresholds 0.1,0.3,0.5,0.7,0.9 \\
+            --value-thresholds 0.01,0.05,0.1,0.2,0.5 \\
+            --events 32 --max-parallel 8
+    """
+    import csv
+    import itertools
+    import os
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    data_vol.reload()
+
+    tau_gs = [float(x) for x in gate_thresholds.split(",") if x.strip() != ""]
+    tau_vs = [float(x) for x in value_thresholds.split(",") if x.strip() != ""]
+    grid = list(itertools.product(tau_gs, tau_vs))
+
+    results_dir = f"{DATA_PATH}/results"
+    os.makedirs(results_dir, exist_ok=True)
+    out_csv = f"{results_dir}/pareto_sweep.csv"
+
+    print("=== Pareto sweep: (tau_g, tau_v) grid ===")
+    print(f"tau_g: {tau_gs}")
+    print(f"tau_v: {tau_vs}")
+    print(f"Grid points: {len(grid)}  events/point: {events}  "
+          f"total event-runs: {len(grid) * events}")
+    print(f"config={config}  max_parallel={max_parallel}")
+    print(f"Output: {out_csv}")
+
+    # Resume: skip (tau_g, tau_v) pairs already present in an existing CSV.
+    done: dict[tuple[float, float], dict] = {}
+    if os.path.exists(out_csv):
+        with open(out_csv, newline="") as f:
+            for row in csv.DictReader(f):
+                key = (round(float(row["tau_g"]), 6), round(float(row["tau_v"]), 6))
+                done[key] = {
+                    k: (float(v) if v not in ("", None) else None)
+                    for k, v in row.items()
+                }
+                done[key]["tau_g"] = float(row["tau_g"])
+                done[key]["tau_v"] = float(row["tau_v"])
+        print(f"Resuming: {len(done)} grid point(s) already in {out_csv}")
+
+    pending = [
+        (tg, tv) for (tg, tv) in grid
+        if (round(tg, 6), round(tv, 6)) not in done
+    ]
+    print(f"Remaining: {len(pending)}")
+
+    def _run_one(tau_g: float, tau_v: float):
+        t0 = time.time()
+        try:
+            metrics = run_cckf.remote(
+                config=config,
+                events=events,
+                gate_threshold=tau_g,
+                value_threshold=tau_v,
+            )
+            metrics.setdefault("events", events)
+            row = _extract_sweep_row(tau_g, tau_v, metrics)
+            return tau_g, tau_v, row, None
+        except Exception as e:  # keep the sweep alive on a single bad point
+            wall = time.time() - t0
+            print(f"  [tau_g={tau_g} tau_v={tau_v}] FAILED after {wall:.0f}s: "
+                  f"{type(e).__name__}: {e}")
+            return tau_g, tau_v, None, str(e)
+
+    rows_out = list(done.values())
+    n_finished = 0
+
+    with ThreadPoolExecutor(max_workers=max_parallel) as ex:
+        futs = {ex.submit(_run_one, tg, tv): (tg, tv) for (tg, tv) in pending}
+        for fut in as_completed(futs):
+            tau_g, tau_v, row, err = fut.result()
+            n_finished += 1
+            if row is not None:
+                rows_out.append(row)
+                print(
+                    f"  [{n_finished}/{len(pending)}] tau_g={tau_g} tau_v={tau_v}  "
+                    f"eff={row['efficiency']}  fake={row['fake_rate']}  "
+                    f"dup(pre/post)={row['duplicate_rate_pre_ambi']}/"
+                    f"{row['duplicate_rate_post_ambi']}  "
+                    f"t/evt={row['runtime_per_event_s']}s"
+                )
+                # Incremental save + volume commit for crash resilience.
+                rows_out.sort(key=lambda r: (r["tau_g"], r["tau_v"]))
+                with open(out_csv, "w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=SWEEP_FIELDNAMES)
+                    w.writeheader()
+                    w.writerows(rows_out)
+                data_vol.commit()
+
+    rows_out.sort(key=lambda r: (r["tau_g"], r["tau_v"]))
+    with open(out_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SWEEP_FIELDNAMES)
+        w.writeheader()
+        w.writerows(rows_out)
+    data_vol.commit()
+
+    # Pareto front: non-dominated on (efficiency MAX, fake_rate MIN, wall_seconds MIN).
+    complete_rows = [
+        r for r in rows_out
+        if r["efficiency"] is not None and r["fake_rate"] is not None
+        and r["wall_seconds"] is not None
+    ]
+    pareto = [r for r in complete_rows if not _is_dominated(r, complete_rows)]
+    pareto.sort(key=lambda r: -r["efficiency"])
+
+    print(f"\n=== Pareto sweep complete ===")
+    print(f"Grid points: {len(grid)}  completed: {len(rows_out)}  "
+          f"failed: {len(grid) - len(rows_out)}")
+    print(f"Pareto front size: {len(pareto)}")
+    print(f"\nPareto front (eff↑, fake↓, wall↓):")
+    for r in pareto:
+        print(
+            f"  tau_g={r['tau_g']:.3f}  tau_v={r['tau_v']:.3f}  "
+            f"eff={r['efficiency']:.2f}%  fake={r['fake_rate']:.3f}%  "
+            f"dup_post={r['duplicate_rate_post_ambi']:.3f}%  "
+            f"t/evt={r['runtime_per_event_s']:.2f}s  wall={r['wall_seconds']:.1f}s"
+        )
+
+    return {
+        "grid_points": len(grid),
+        "completed": len(rows_out),
+        "failed": len(grid) - len(rows_out),
+        "n_pareto": len(pareto),
+        "csv_path": out_csv,
+        "pareto": pareto,
+    }
+
+
 @app.local_entrypoint()
 def show_sample():
     """Print schema and sample rows from one expanded parquet file."""
