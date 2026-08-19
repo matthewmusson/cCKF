@@ -15,6 +15,7 @@ these stub ``load_root_residuals`` and test only the guard.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -26,14 +27,19 @@ from scripts.patch_is_selected import patch_event
 def _tiny_expanded_parquet(tmp_path, residuals):
     """One state with ``len(residuals)`` candidate rows.
 
-    Carries the five columns ``patch_event`` reads plus a filler column, so
-    the round-trip also proves untouched columns survive.
+    Carries the columns ``patch_event`` reads (including the geometry
+    triplet it composes into ``geometry_id``) plus a filler column, so the
+    round-trip also proves untouched columns survive. ``volume_id=16,
+    layer_id=2, surface_id=100`` for every row -- all candidates and the
+    stubbed ROOT state are on the same single state.
     """
     n = len(residuals)
     table = pa.table(
         {
             "seed_id": pa.array([0] * n, pa.int64()),
-            "step_k": pa.array([0] * n, pa.int64()),
+            "volume_id": pa.array([16] * n, pa.int64()),
+            "layer_id": pa.array([2] * n, pa.int64()),
+            "surface_id": pa.array([100] * n, pa.int64()),
             "cand_hit_id": pa.array(list(range(n)), pa.int64()),
             "residual_l0": pa.array(list(residuals), pa.float64()),
             "residual_l1": pa.array([0.0] * n, pa.float64()),
@@ -43,6 +49,16 @@ def _tiny_expanded_parquet(tmp_path, residuals):
     path = tmp_path / "expanded_event000000000.parquet"
     pq.write_table(table, path)
     return path
+
+
+def _geometry_id(volume_id: int = 16, layer_id: int = 2, surface_id: int = 100) -> int:
+    from expansion import encode_geometry_id
+
+    return int(
+        encode_geometry_id(
+            np.array([volume_id]), np.array([layer_id]), np.array([surface_id])
+        )[0]
+    )
 
 
 def _stub_root(monkeypatch, root_res):
@@ -57,7 +73,14 @@ def test_writes_when_match_fraction_is_high(tmp_path, monkeypatch):
     src = _tiny_expanded_parquet(tmp_path, [0.5, 1.5])
     _stub_root(
         monkeypatch,
-        pd.DataFrame({"seed_id": [0], "step_k": [0], "res_l0": [0.5], "res_l1": [0.0]}),
+        pd.DataFrame(
+            {
+                "seed_id": [0],
+                "geometry_id": [_geometry_id()],
+                "res_l0": [0.5],
+                "res_l1": [0.0],
+            }
+        ),
     )
 
     out = tmp_path / "out.parquet"
@@ -80,7 +103,12 @@ def test_refuses_and_writes_nothing_on_zero_match(tmp_path, monkeypatch):
     _stub_root(
         monkeypatch,
         pd.DataFrame(
-            {"seed_id": [0], "step_k": [0], "res_l0": [999.0], "res_l1": [999.0]}
+            {
+                "seed_id": [0],
+                "geometry_id": [_geometry_id()],
+                "res_l0": [999.0],
+                "res_l1": [999.0],
+            }
         ),
     )
 
@@ -98,7 +126,7 @@ def test_refuses_on_partial_match_below_floor(tmp_path, monkeypatch):
         pd.DataFrame(
             {
                 "seed_id": [0, 0],
-                "step_k": [0, 1],
+                "geometry_id": [_geometry_id(), _geometry_id(surface_id=200)],
                 "res_l0": [0.5, 999.0],
                 "res_l1": [0.0, 999.0],
             }
@@ -116,7 +144,12 @@ def test_floor_is_overridable_for_diagnostics(tmp_path, monkeypatch):
     _stub_root(
         monkeypatch,
         pd.DataFrame(
-            {"seed_id": [0], "step_k": [0], "res_l0": [999.0], "res_l1": [999.0]}
+            {
+                "seed_id": [0],
+                "geometry_id": [_geometry_id()],
+                "res_l0": [999.0],
+                "res_l1": [999.0],
+            }
         ),
     )
 

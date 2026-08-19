@@ -203,9 +203,9 @@ def selected_correctness(sel: pd.DataFrame, majority: pd.DataFrame) -> pd.DataFr
     Returns
     -------
     pandas.DataFrame
-        ``seed_id``, ``step_k``, ``sel_correct``, ``sel_wrong`` in {0, 1}, with
-        at most one set per state. A hole is neither: it costs completeness but
-        does not pollute purity.
+        ``seed_id``, ``geometry_id``, ``sel_correct``, ``sel_wrong`` in
+        {0, 1}, with at most one set per state. A hole is neither: it costs
+        completeness but does not pollute purity.
     """
     out = sel.merge(majority, on="seed_id", how="left")
     maj = out["branch_majority_pid"].to_numpy()
@@ -218,7 +218,7 @@ def selected_correctness(sel: pd.DataFrame, majority: pd.DataFrame) -> pd.DataFr
     has_hit = out["sel_has_hit"].to_numpy(dtype=bool)
     out["sel_correct"] = (has_hit & member).astype(np.int64)
     out["sel_wrong"] = (has_hit & ~member).astype(np.int64)
-    return out[["seed_id", "step_k", "sel_correct", "sel_wrong"]]
+    return out[["seed_id", "geometry_id", "sel_correct", "sel_wrong"]]
 
 
 #: Per-state residual branches. Same ``_prt`` convention as ``eLOC0_prt`` etc.
@@ -314,16 +314,17 @@ def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
 def match_selected(
     cand: pd.DataFrame, root_res: pd.DataFrame, tol: float = DEFAULT_TOL
 ) -> np.ndarray:
-    """Flag the CKF-selected candidate within each ``(seed_id, step_k)`` state.
+    """Flag the CKF-selected candidate within each ``(seed_id, geometry_id)``
+    state.
 
     Parameters
     ----------
     cand : pandas.DataFrame
-        Candidate rows with ``seed_id``, ``step_k``, ``cand_hit_id``,
+        Candidate rows with ``seed_id``, ``geometry_id``, ``cand_hit_id``,
         ``residual_l0``, ``residual_l1``.
     root_res : pandas.DataFrame
-        Per-state selected residuals with ``seed_id``, ``step_k``, ``res_l0``,
-        ``res_l1``.
+        Per-state selected residuals with ``seed_id``, ``geometry_id``,
+        ``res_l0``, ``res_l1``.
     tol : float
         Absolute match tolerance in mm on each residual component.
 
@@ -336,7 +337,7 @@ def match_selected(
         smallest ``cand_hit_id`` so the result is deterministic.
     """
     work = cand.reset_index(drop=True)
-    merged = work.merge(root_res, on=["seed_id", "step_k"], how="left")
+    merged = work.merge(root_res, on=["seed_id", "geometry_id"], how="left")
 
     close = (
         (merged["residual_l0"] - merged["res_l0"]).abs().le(tol)
@@ -348,11 +349,11 @@ def match_selected(
     if not close.any():
         return selected
 
-    cands_close = merged.loc[close, ["seed_id", "step_k", "cand_hit_id"]].copy()
+    cands_close = merged.loc[close, ["seed_id", "geometry_id", "cand_hit_id"]].copy()
     cands_close["_row"] = np.flatnonzero(close)
     winners = (
-        cands_close.sort_values(["seed_id", "step_k", "cand_hit_id"])
-        .groupby(["seed_id", "step_k"], as_index=False)
+        cands_close.sort_values(["seed_id", "geometry_id", "cand_hit_id"])
+        .groupby(["seed_id", "geometry_id"], as_index=False)
         .first()
     )
     selected[winners["_row"].to_numpy()] = True
@@ -402,8 +403,19 @@ def patch_event(
 
     df = pq.read_table(
         parquet_path,
-        columns=["seed_id", "step_k", "cand_hit_id", "residual_l0", "residual_l1"],
+        columns=[
+            "seed_id",
+            "volume_id",
+            "layer_id",
+            "surface_id",
+            "cand_hit_id",
+            "residual_l0",
+            "residual_l1",
+        ],
     ).to_pandas()
+    df["geometry_id"] = encode_geometry_id(
+        df["volume_id"], df["layer_id"], df["surface_id"]
+    )
     root_res = load_root_residuals(root_path, event_id)
     selected = match_selected(df, root_res)
 

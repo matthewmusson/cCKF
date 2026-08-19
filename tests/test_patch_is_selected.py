@@ -11,11 +11,11 @@ from scripts.patch_is_selected import match_selected
 
 
 def _cands() -> pd.DataFrame:
-    # Two states. State (0,0) has 3 candidates; state (0,1) has 2.
+    # Two states. State (0,1001) has 3 candidates; state (0,1002) has 2.
     return pd.DataFrame(
         {
             "seed_id": [0, 0, 0, 0, 0],
-            "step_k": [0, 0, 0, 1, 1],
+            "geometry_id": [1001, 1001, 1001, 1002, 1002],
             "cand_hit_id": [10, 11, 12, 20, 21],
             "residual_l0": [0.10, -0.30, 0.90, 0.05, 2.00],
             "residual_l1": [0.20, 0.40, -0.10, 0.15, 1.00],
@@ -24,12 +24,12 @@ def _cands() -> pd.DataFrame:
 
 
 def _root() -> pd.DataFrame:
-    # ROOT says state (0,0) selected the candidate with residual (-0.30, 0.40)
-    # and state (0,1) selected residual (0.05, 0.15).
+    # ROOT says state (0,1001) selected the candidate with residual
+    # (-0.30, 0.40) and state (0,1002) selected residual (0.05, 0.15).
     return pd.DataFrame(
         {
             "seed_id": [0, 0],
-            "step_k": [0, 1],
+            "geometry_id": [1001, 1002],
             "res_l0": [-0.30, 0.05],
             "res_l1": [0.40, 0.15],
         }
@@ -44,13 +44,13 @@ def test_match_selected_picks_exactly_one_per_state():
 def test_match_selected_one_flag_per_state_group():
     cands = _cands()
     cands["is_sel"] = match_selected(cands, _root())
-    per_state = cands.groupby(["seed_id", "step_k"])["is_sel"].sum()
+    per_state = cands.groupby(["seed_id", "geometry_id"])["is_sel"].sum()
     assert (per_state == 1).all()
 
 
 def test_match_selected_marks_none_when_root_has_no_state():
     """A state with no ROOT entry (e.g. a hole) gets no selected candidate."""
-    root = _root().iloc[:1]  # drop state (0,1)
+    root = _root().iloc[:1]  # drop state (0,1002)
     sel = match_selected(_cands(), root)
     assert sel.tolist() == [False, True, False, False, False]
 
@@ -59,7 +59,7 @@ def test_match_selected_respects_tolerance():
     root = _root().copy()
     root.loc[0, "res_l0"] = -0.30 + 1e-2  # outside a 1e-4 tolerance
     sel = match_selected(_cands(), root, tol=1e-4)
-    # State (0,0) now matches nothing; state (0,1) still matches.
+    # State (0,1001) now matches nothing; state (0,1002) still matches.
     assert sel.tolist() == [False, False, False, True, False]
 
 
@@ -68,7 +68,7 @@ def test_match_selected_breaks_ties_deterministically():
     cands = pd.DataFrame(
         {
             "seed_id": [0, 0],
-            "step_k": [0, 0],
+            "geometry_id": [1001, 1001],
             "cand_hit_id": [11, 10],
             "residual_l0": [0.5, 0.5],
             "residual_l1": [0.5, 0.5],
@@ -77,7 +77,7 @@ def test_match_selected_breaks_ties_deterministically():
     root = pd.DataFrame(
         {
             "seed_id": [0],
-            "step_k": [0],
+            "geometry_id": [1001],
             "res_l0": [0.5],
             "res_l1": [0.5],
         }
@@ -130,7 +130,7 @@ def test_selected_correctness_flags_membership_not_primary_contributor():
     sel = pd.DataFrame(
         {
             "seed_id": [0],
-            "step_k": [0],
+            "geometry_id": [1001],
             "sel_contrib_pids": [[999, 7]],  # 999 dominates, 7 is the majority pid
             "sel_has_hit": [True],
         }
@@ -147,7 +147,7 @@ def test_selected_correctness_flags_wrong_when_majority_absent():
     sel = pd.DataFrame(
         {
             "seed_id": [0],
-            "step_k": [0],
+            "geometry_id": [1001],
             "sel_contrib_pids": [[999, 888]],
             "sel_has_hit": [True],
         }
@@ -165,7 +165,7 @@ def test_selected_correctness_counts_a_hole_as_neither():
     sel = pd.DataFrame(
         {
             "seed_id": [0],
-            "step_k": [0],
+            "geometry_id": [1001],
             "sel_contrib_pids": [[]],
             "sel_has_hit": [False],
         }
@@ -183,7 +183,7 @@ def test_selected_correctness_is_exclusive():
     sel = pd.DataFrame(
         {
             "seed_id": [0, 0, 0],
-            "step_k": [0, 1, 2],
+            "geometry_id": [1001, 1002, 1003],
             "sel_contrib_pids": [[7], [8], []],
             "sel_has_hit": [True, True, False],
         }
@@ -350,10 +350,11 @@ def test_root_residuals_filters_to_the_requested_event():
     np.testing.assert_array_equal(df["geometry_id"].to_numpy(), expected_gid)
 
 
-def test_root_and_contributor_parsing_agree_on_step_k_layout():
-    """Both parsers must derive step_k the same way from the same track
+def test_root_and_contributor_parsing_agree_on_geometry_id_layout():
+    """Both parsers must derive geometry_id the same way from the same track
     layout, since match_selected and selected_correctness join on
-    (seed_id, step_k) across their outputs."""
+    (seed_id, geometry_id) across their outputs."""
+    from expansion import encode_geometry_id
     from scripts.patch_is_selected import (
         _root_residuals_from_arrays,
         _select_contributors_from_arrays,
@@ -364,8 +365,12 @@ def test_root_and_contributor_parsing_agree_on_step_k_layout():
     )
     resid = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
 
-    contrib_states = set(zip(contrib["seed_id"], contrib["step_k"]))
-    # Residuals drop the hole at (0, 1); contributors keep it (empty list).
-    resid_states = set(zip(resid["seed_id"], resid["step_k"]))
+    contrib_states = set(zip(contrib["seed_id"], contrib["geometry_id"]))
+    # Residuals drop the hole at (0, vol=16/lay=2/mod=101); contributors keep
+    # it (empty list).
+    resid_states = set(zip(resid["seed_id"], resid["geometry_id"]))
     assert resid_states <= contrib_states
-    assert (0, 1) in contrib_states and (0, 1) not in resid_states
+    hole_gid = int(
+        encode_geometry_id(np.array([16]), np.array([2]), np.array([101]))[0]
+    )
+    assert (0, hole_gid) in contrib_states and (0, hole_gid) not in resid_states
