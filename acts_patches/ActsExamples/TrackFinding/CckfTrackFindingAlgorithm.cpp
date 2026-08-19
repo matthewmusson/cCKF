@@ -56,6 +56,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ostream>
 #include <stdexcept>
@@ -324,11 +325,12 @@ class FallbackMeasurementSelectorAdapter {
 // Column update policy:
 //   step_k:            +1 for every sensitive surface (measurement, hole,
 //                      or outlier). Updated here unconditionally.
-//   sum_gate_logodds:  TODO — requires the gate logit for the accepted
-//                      measurement. CckfMeasurementSelector does not
-//                      currently expose it. Initialised to 0; left at
-//                      initial value until an accessor is added.
-//   min_gate_logodds:  Same TODO as above. Initialised to +inf.
+//   sum_gate_logodds:  For measurements, += raw gate logit from the
+//                      CckfMeasurementSelector (looked up by source-link
+//                      index via lastGateLogit()). For holes, += a
+//                      pessimistic default (kHoleLogitDefault = -5.0f,
+//                      matching the Python training code's treatment).
+//   min_gate_logodds:  min(current, logit) using the same source as above.
 //   accumulated_x0:    TODO — requires per-surface material thickness.
 //                      Left at initial value (0).
 
@@ -337,8 +339,14 @@ class CckfBranchStopperWrapper {
   using BranchStopperResult =
       Acts::CombinatorialKalmanFilterBranchStopperResult;
 
-  explicit CckfBranchStopperWrapper(cckf::CckfBranchStopper* inner)
-      : m_inner(inner) {}
+  /// Pessimistic gate logit for holes (no measurement was selected).
+  /// This matches the chi2_log_odds treatment in the Python training code
+  /// for holes: a strongly negative logit indicating very low confidence.
+  static constexpr float kHoleLogitDefault = -5.0f;
+
+  explicit CckfBranchStopperWrapper(cckf::CckfBranchStopper* inner,
+                                    cckf::CckfMeasurementSelector* gate)
+      : m_inner(inner), m_gate(gate) {}
 
   mutable std::size_t m_nStoppedBranches = 0;
 
@@ -349,16 +357,37 @@ class CckfBranchStopperWrapper {
     // outlier). The CKF actor calls the branch stopper for each of these.
     kStepKWriter(track) += 1.0f;
 
-    // TODO(task5-or-later): Update sum/min gate log-odds and accumulated
-    // X0. This requires:
-    //   - Gate logit: add a lastGateLogit() accessor to
-    //     CckfMeasurementSelector, store per-candidate logit, and read it
-    //     here. For now the columns stay at their initial values (0 for
-    //     sum, +inf for min).
-    //   - X0: compute from the surface material properties and path
-    //     length through the material. The CKF actor's material
-    //     interaction is performed outside the branch stopper callback, so
-    //     a separate mechanism is needed.
+    // Update gate log-odds columns.
+    float logit = kHoleLogitDefault;
+    if (trackState.typeFlags().isMeasurement() ||
+        trackState.typeFlags().isOutlier()) {
+      // Look up the raw gate logit from the most recent select() call.
+      if (m_gate != nullptr && trackState.hasUncalibratedSourceLink()) {
+        const Acts::SourceLink sl = trackState.getUncalibratedSourceLink();
+        const auto* isl =
+            sl.getPtr<ActsExamples::IndexSourceLink>();
+        if (isl != nullptr) {
+          auto maybeLogit = m_gate->lastGateLogit(isl->index());
+          if (maybeLogit.has_value()) {
+            logit = *maybeLogit;
+          }
+          // If not found (shouldn't happen for accepted candidates),
+          // fall through with the hole default.
+        }
+      }
+    }
+    // For holes, logit stays at kHoleLogitDefault.
+
+    kSumGateLogOddsWriter(track) += logit;
+    float currentMin = kMinGateLogOddsWriter(track);
+    if (logit < currentMin) {
+      kMinGateLogOddsWriter(track) = logit;
+    }
+
+    // TODO(task5-or-later): Update accumulated X0. Requires per-surface
+    // material thickness. The CKF actor's material interaction is
+    // performed outside the branch stopper callback, so a separate
+    // mechanism is needed.
 
     // Delegate to the value function branch stopper.
     auto result = (*m_inner)(track, trackState);
@@ -381,6 +410,7 @@ class CckfBranchStopperWrapper {
       Acts::hashString(cckf::CckfColumns::kAccumulatedX0)};
 
   cckf::CckfBranchStopper* m_inner;
+  cckf::CckfMeasurementSelector* m_gate;
 };
 
 // ============================================================================
@@ -411,6 +441,11 @@ void writeTimingCsv(const std::string& path, std::size_t eventNumber,
   if (path.empty()) {
     return;
   }
+  // ACTS Sequencer can call execute() concurrently for different events.
+  // Protect the check-header-then-append sequence from data races.
+  static std::mutex csvMutex;
+  std::lock_guard<std::mutex> lock(csvMutex);
+
   // Open in append mode. Write header if the file is empty/new.
   bool writeHeader = false;
   {
@@ -492,6 +527,46 @@ CckfTrackFindingAlgorithm::CckfTrackFindingAlgorithm(
     throw std::invalid_argument(
         "inputClusters must be set when gateWeightsPath is provided "
         "(the gate MLP requires cluster features)");
+  }
+
+  // Warn about config fields that are silently ignored when the cCKF value
+  // function (or passthrough stopper) replaces the default branch stopper.
+  // The default BranchStopper in TrackFindingAlgorithm uses these to count
+  // pixel/strip holes separately, but the cCKF stopper reads hole counts
+  // from the value function's feature vector instead.
+  {
+    bool valueActive = !m_cfg.valueWeightsPath.empty();
+    bool passthroughActive = m_cfg.valueWeightsPath.empty();
+    bool customStopperActive = valueActive || passthroughActive;
+
+    if (customStopperActive) {
+      if (m_cfg.maxPixelHoles != std::numeric_limits<std::size_t>::max()) {
+        ACTS_WARNING(
+            "maxPixelHoles is set to " << m_cfg.maxPixelHoles
+            << " but is ignored: the cCKF "
+            << (valueActive ? "value function" : "passthrough")
+            << " branch stopper does not use pixel/strip hole caps.");
+      }
+      if (m_cfg.maxStripHoles != std::numeric_limits<std::size_t>::max()) {
+        ACTS_WARNING(
+            "maxStripHoles is set to " << m_cfg.maxStripHoles
+            << " but is ignored: the cCKF "
+            << (valueActive ? "value function" : "passthrough")
+            << " branch stopper does not use pixel/strip hole caps.");
+      }
+      if (!m_cfg.pixelVolumeIds.empty()) {
+        ACTS_WARNING(
+            "pixelVolumeIds is set but is ignored: the cCKF "
+            << (valueActive ? "value function" : "passthrough")
+            << " branch stopper does not distinguish pixel/strip volumes.");
+      }
+      if (!m_cfg.stripVolumeIds.empty()) {
+        ACTS_WARNING(
+            "stripVolumeIds is set but is ignored: the cCKF "
+            << (valueActive ? "value function" : "passthrough")
+            << " branch stopper does not distinguish pixel/strip volumes.");
+      }
+    }
   }
 
   if (m_cfg.trackSelectorCfg.has_value()) {
@@ -658,7 +733,8 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   }
 
   // ---- Wire up branch stopper ----
-  CckfBranchStopperWrapper cckfStopperWrapper(cckfStopper.get());
+  CckfBranchStopperWrapper cckfStopperWrapper(cckfStopper.get(),
+                                              cckfSelector.get());
   PassthroughBranchStopper passthroughStopper;
 
   using Extensions = Acts::CombinatorialKalmanFilterExtensions<TrackContainer>;
