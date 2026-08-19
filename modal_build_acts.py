@@ -2849,6 +2849,233 @@ def expand_all_events():
     print(f"Output: {out_dir}")
 
 
+# ---------------------------------------------------------------------------
+# Task 9: end-to-end cCKF smoke test
+# ---------------------------------------------------------------------------
+
+
+def _write_dummy_weight_blob(path, n_features, n_hidden, n_layers, rng):
+    """Write a randomly-initialized CCKF weight blob.
+
+    Matches the binary format read by ``WeightBlob::load``
+    (``acts_patches/cckf/WeightBlob.hpp``) and written by
+    ``scripts/export_weights.py``: magic ``"CCKF"``, version 1, then
+    ``n_features``/``n_hidden``/``n_layers`` as little-endian uint32,
+    standardization mean/std (``n_features`` float32 each), 4 Platt
+    params, then ``n_layers`` hidden (n_hidden, in_dim) weight/bias pairs
+    followed by one (1, n_hidden) head weight/bias pair.
+
+    This is intentionally dependency-free (no torch, no ``cckf.models``) so
+    the Modal image for this file doesn't need a torch install just to
+    produce smoke-test fixtures — it writes the same bytes
+    ``export_weights.export()`` would for a randomly-initialized
+    ``GateMLP``/``ValueMLP``, using identity standardization
+    (mean=0, std=1) and an identity Platt fit (a=1, b=0) so the blob is
+    self-consistent even though the weights themselves are meaningless.
+    """
+    import struct
+
+    import numpy as np
+
+    layer_dims = [n_features] + [n_hidden] * n_layers + [1]
+    with open(path, "wb") as f:
+        f.write(b"CCKF")
+        f.write(struct.pack("<I", 1))  # version
+        f.write(struct.pack("<III", n_features, n_hidden, n_layers))
+        f.write(np.zeros(n_features, dtype=np.float32).tobytes())  # mean
+        f.write(np.ones(n_features, dtype=np.float32).tobytes())  # std
+        f.write(struct.pack("<ffff", 1.0, 0.0, 0.0, 0.0))  # identity Platt
+        for i in range(n_layers + 1):
+            in_dim, out_dim = layer_dims[i], layer_dims[i + 1]
+            scale = np.sqrt(2.0 / in_dim).astype(np.float32)
+            w = rng.standard_normal((out_dim, in_dim)).astype(np.float32) * scale
+            b = np.zeros(out_dim, dtype=np.float32)
+            f.write(w.tobytes())
+            f.write(b.tobytes())
+
+
+@app.function(
+    image=image,
+    volumes={DATA_PATH: data_vol},
+    cpu=2,
+    memory=4096,
+    timeout=300,
+)
+def generate_dummy_weights(seed: int = 0):
+    """Write random gate.bin/value.bin CCKF blobs to the data volume.
+
+    For the Task 9 smoke test only: verifies the pipeline compiles and runs
+    end-to-end with the correct binary format, not that the resulting
+    tracking is any good. Real weights come from a trained checkpoint run
+    through ``scripts/export_weights.py``.
+
+    Shapes match ``cckf_envelope.yaml``'s expected paths
+    (``/data/weights/gate.bin``, ``/data/weights/value.bin``) and
+    ``cckf/models.py``: gate is 26->128x3->1 (``GateMLP`` defaults, matching
+    the ``n_layers == 3`` assertion in ``export_weights.export``), value is
+    11->128x2->1 (``ValueMLP`` defaults, ``n_layers == 2``).
+    """
+    import os
+
+    import numpy as np
+
+    data_vol.reload()
+    weights_dir = f"{DATA_PATH}/weights"
+    os.makedirs(weights_dir, exist_ok=True)
+
+    rng = np.random.default_rng(seed)
+    gate_path = f"{weights_dir}/gate.bin"
+    value_path = f"{weights_dir}/value.bin"
+    _write_dummy_weight_blob(gate_path, n_features=26, n_hidden=128, n_layers=3, rng=rng)
+    _write_dummy_weight_blob(value_path, n_features=11, n_hidden=128, n_layers=2, rng=rng)
+
+    data_vol.commit()
+
+    sizes = {p: os.path.getsize(p) for p in (gate_path, value_path)}
+    print(f"Wrote dummy weight blobs: {sizes}")
+    return {"gate_path": gate_path, "value_path": value_path, "sizes": sizes}
+
+
+@app.function(
+    image=image,
+    volumes={BUILD_PATH: build_vol, DATA_PATH: data_vol},
+    cpu=8,
+    memory=65536,
+    timeout=3600,
+)
+def run_cckf(
+    config: str = "cckf_envelope",
+    events: int = 2,
+    gate_threshold: float = 0.5,
+    value_threshold: float = 0.1,
+):
+    """End-to-end cCKF smoke test: patched CckfTrackFindingAlgorithm on real events.
+
+    Loads ``configs/<config>.yaml`` (default ``cckf_envelope.yaml``, which
+    sets ``cckf: true`` so ``digi_and_reco.py``'s ``setup_acts_reconstruction``
+    routes the CKF stage through ``addCckfTracks()`` /
+    ``CckfTrackFindingAlgorithm`` instead of the stock ``addCKFTracks()``),
+    overrides the event count and gate/value thresholds, runs the pipeline,
+    and parses the resulting ROOT/CSV output into a metrics dict via
+    ``scripts/extract_metrics.py``.
+
+    Preconditions (not run here — see ``scripts/smoke_test_cckf.sh``):
+    ``build_acts(force=True)`` must have produced a patched ACTS install on
+    ``build_vol``, and ``generate_dummy_weights()`` (or a real
+    ``export_weights.py`` run) must have written
+    ``/data/weights/gate.bin`` and ``/data/weights/value.bin`` to
+    ``data_vol``.
+    """
+    import json
+    import os
+    import sys
+    import time
+    import types
+    from pathlib import Path
+
+    import yaml
+
+    build_vol.reload()
+    data_vol.reload()
+    _setup_acts_env(use_patched=True)
+
+    # Symlink material maps (same pattern as verify_root_branches)
+    material_map = f"{DATA_PATH}/odd-material-maps.root"
+    if not os.path.exists(material_map):
+        raise FileNotFoundError("Material maps not found. Run seed_material_maps first.")
+    odd_data_dir = f"{ODD_INSTALL}/data"
+    os.makedirs(odd_data_dir, exist_ok=True)
+    map_link = f"{odd_data_dir}/odd-material-maps.root"
+    if not os.path.exists(map_link):
+        os.symlink(material_map, map_link)
+
+    # Weight blobs must already be on the data volume (generate_dummy_weights
+    # or a real export_weights.py run).
+    gate_weights = f"{DATA_PATH}/weights/gate.bin"
+    value_weights = f"{DATA_PATH}/weights/value.bin"
+    for blob_path, label in [(gate_weights, "gate"), (value_weights, "value")]:
+        if not os.path.exists(blob_path):
+            raise FileNotFoundError(
+                f"{label} weight blob not found at {blob_path}. Run "
+                "generate_dummy_weights (or export_weights.py for trained "
+                "weights) first."
+            )
+
+    # Load config — cckf_envelope.yaml already sets cckf: true, skip: 32
+    # (test set [32, 64), spec §6.1), and the weight/threshold defaults;
+    # here we override event count and thresholds per the function args.
+    config_name = config if config.endswith(".yaml") else f"{config}.yaml"
+    config_path = Path("/app/configs") / config_name
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Config not found: {config_path}")
+    with open(config_path) as f:
+        cfg_dict = yaml.safe_load(f)
+
+    cfg_dict.update({
+        "events": events,
+        "threads": 8,
+        "cckf_gate_weights": gate_weights,
+        "cckf_value_weights": value_weights,
+        "cckf_gate_threshold": gate_threshold,
+        "cckf_value_threshold": value_threshold,
+    })
+    cfg = types.SimpleNamespace(**cfg_dict)
+    cfg.seed = 42
+
+    output_dir = Path(f"{DATA_PATH}/results/run_cckf_{int(time.time())}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    import acts, acts.examples
+    print(f"acts module: {acts.__file__}")
+
+    from digi_and_reco import setup_acts_reconstruction
+    rnd = acts.examples.RandomNumbers(seed=cfg.seed)
+
+    print(
+        f"=== Running cCKF ({events} events, skip={getattr(cfg, 'skip', 0)}, "
+        f"gate_threshold={gate_threshold}, value_threshold={value_threshold}) ==="
+    )
+    t0 = time.time()
+    s = setup_acts_reconstruction(
+        Path(f"{DATA_PATH}/events/edm4hep.root"),
+        output_dir,
+        cfg, rnd,
+    )
+    s.run()
+    wall = time.time() - t0
+    print(f"Pipeline completed in {wall:.1f}s")
+
+    print("\n=== Output files ===")
+    for f_out in sorted(output_dir.iterdir()):
+        if f_out.name.startswith("_"):
+            continue
+        print(f"  {f_out.name}: {f_out.stat().st_size / 1e3:.1f} KB")
+
+    data_vol.commit()
+
+    # Parse metrics via scripts/extract_metrics.py's build_metrics()
+    sys.path.insert(0, "/app")
+    from scripts.extract_metrics import build_metrics
+
+    metrics = build_metrics(
+        output_dir,
+        cckf_timing_name=getattr(cfg, "cckf_timing_output", "timing.csv"),
+        acts_timing_name="timing.tsv",
+        pre_ambi_name="performance_finding_ckf.root",
+        post_ambi_name="performance_finding_ambi.root",
+    )
+    metrics["wall_seconds"] = round(wall, 1)
+    metrics["output_dir"] = str(output_dir)
+    metrics["config"] = config_name
+    metrics["gate_threshold"] = gate_threshold
+    metrics["value_threshold"] = value_threshold
+
+    print("\n=== Metrics ===")
+    print(json.dumps(metrics, indent=2, default=str))
+
+    return metrics
+
+
 @app.local_entrypoint()
 def show_sample():
     """Print schema and sample rows from one expanded parquet file."""
