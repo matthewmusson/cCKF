@@ -104,20 +104,21 @@ rm -f "${TRACKFINDING_CMAKE}.bak"
 #    explicitly rather than editing the .cpp's #include directives.
 cat >> "$TRACKFINDING_CMAKE" <<'CMAKE_EOF'
 
-# cCKF integration: CckfTrackFindingAlgorithm.cpp uses bare #include paths
-# ("CckfTrackFindingAlgorithm.hpp", "cckf/CckfXxx.hpp") that aren't resolved
-# by ExamplesTrackFinding's existing include directories, so add the two
-# containing directories directly.
+# cCKF integration: CckfTrackFindingAlgorithm.hpp transitively includes
+# cckf headers (SensorLookup.hpp, etc.) that live under Framework/include.
+# PUBLIC so the Python bindings target (which includes our header) also
+# gets these paths.
 target_include_directories(
     ActsExamplesTrackFinding
-    PRIVATE
+    PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include/ActsExamples/TrackFinding
         ${CMAKE_CURRENT_SOURCE_DIR}/../../Framework/include/ActsExamples
 )
 # SensorLookup.hpp includes <nlohmann/json.hpp>. ACTS's top-level CMake
 # already calls find_package(nlohmann_json), so the target just needs to
-# be linked to pick up its include directory.
-target_link_libraries(ActsExamplesTrackFinding PRIVATE nlohmann_json::nlohmann_json)
+# be linked to pick up its include directory. PUBLIC because the header
+# (CckfTrackFindingAlgorithm.hpp) transitively includes SensorLookup.hpp.
+target_link_libraries(ActsExamplesTrackFinding PUBLIC nlohmann_json::nlohmann_json)
 CMAKE_EOF
 echo "CMakeLists.txt patched."
 
