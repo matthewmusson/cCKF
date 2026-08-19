@@ -135,6 +135,156 @@ def _add_track_writers(
         s.addWriter(RootTrackFinderPerformanceWriter(**writer_kwargs))
 
 
+def addCckfTracks(
+    s,
+    trackingGeometry,
+    field,
+    trackSelectorConfig: TrackSelectorConfig,
+    ckfConfig: CkfConfig,
+    config,
+    geoDir: Path,
+    output_dir: Path,
+    logger,
+    twoWay: bool = True,
+    reverseSearch: bool = False,
+    prefix: str = "",
+) -> None:
+    """cCKF counterpart of ``addCKFTracks()``.
+
+    Same whiteboard wiring as the stock helper (measurements, seeds, tracking
+    geometry, field, track selector, ``TrackTruthMatcher``) but drives
+    ``ActsExamples::CckfTrackFindingAlgorithm`` — CKF with the learned gate
+    g_psi and value function V_phi (spec §8-§11) — instead of the stock
+    ``TrackFindingAlgorithm``. Reads the cCKF-specific fields from the YAML
+    config:
+
+    - ``cckf_gate_weights`` / ``cckf_value_weights``: paths to the gate/value
+      weight blobs. Empty/unset falls back to the algorithm's built-in
+      defaults (chi2 measurement selector / pass-through branch stopper —
+      see ``CckfTrackFindingAlgorithm::Config`` docstring).
+    - ``cckf_gate_threshold`` / ``cckf_value_threshold``: calibrated
+      acceptance thresholds tau_g / tau_v.
+    - ``cckf_gate_max_candidates``: branch cap after the gate.
+    - ``cckf_digi_config``: digi JSON for sensor-property lookup in the gate
+      features (defaults to the same digi config used for digitization).
+    - ``cckf_timing_output``: optional CSV filename for per-event cCKF timing
+      (written under ``output_dir``).
+
+    ``ckfConfig``'s chi2 cutoffs still populate ``measurementSelectorCfg`` as
+    the algorithm's documented fallback selector (used only when
+    ``gateWeightsPath`` is empty — e.g. a no-gate ablation run).
+    """
+    from acts.examples.reconstruction import trackSelectorDefaultKWArgs
+
+    customLogLevel = acts.examples.defaultLogging(s, LOG_LEVEL)
+
+    trkSelCfg = acts.TrackSelector.Config(
+        **trackSelectorDefaultKWArgs(trackSelectorConfig)
+    )
+
+    gate_weights = getattr(config, "cckf_gate_weights", None) or ""
+    value_weights = getattr(config, "cckf_value_weights", None) or ""
+    gate_threshold = float(getattr(config, "cckf_gate_threshold", 0.5))
+    value_threshold = float(getattr(config, "cckf_value_threshold", 0.1))
+    gate_max_candidates = int(getattr(config, "cckf_gate_max_candidates", 10))
+
+    timing_output = getattr(config, "cckf_timing_output", None)
+    outputTimingPath = str(output_dir / timing_output) if timing_output else ""
+
+    cckf_digi_config = getattr(config, "cckf_digi_config", None) or getattr(
+        config, "digi_config", None
+    )
+    digiConfigPath = (
+        str(_resolve_digi_config(cckf_digi_config, geoDir)) if cckf_digi_config else ""
+    )
+
+    logger.info(
+        "cCKF enabled: gate_weights=%s value_weights=%s gateThreshold=%s "
+        "valueThreshold=%s gateMaxCandidates=%s",
+        gate_weights or "<none>",
+        value_weights or "<none>",
+        gate_threshold,
+        value_threshold,
+        gate_max_candidates,
+    )
+
+    trackFinder = acts.examples.CckfTrackFindingAlgorithm(
+        level=customLogLevel(),
+        inputMeasurements=f"{prefix}measurement_subset",
+        inputInitialTrackParameters=f"{prefix}estimatedparameters",
+        inputSeeds=(
+            f"{prefix}estimatedseeds"
+            if ckfConfig.seedDeduplication or ckfConfig.stayOnSeed
+            else ""
+        ),
+        outputTracks=f"{prefix}ckf_tracks",
+        trackingGeometry=trackingGeometry,
+        magneticField=field,
+        findTracks=acts.examples.CckfTrackFindingAlgorithm.makeTrackFinderFunction(
+            trackingGeometry, field, customLogLevel()
+        ),
+        measurementSelectorCfg=acts.MeasurementSelector.Config(
+            [
+                (
+                    acts.GeometryIdentifier(),
+                    (
+                        [],
+                        [ckfConfig.chi2CutOffMeasurement],
+                        [ckfConfig.chi2CutOffOutlier],
+                        [ckfConfig.numMeasurementsCutOff],
+                    ),
+                )
+            ]
+        ),
+        inputClusters="clusters",
+        gateWeightsPath=gate_weights,
+        valueWeightsPath=value_weights,
+        gateThreshold=gate_threshold,
+        valueThreshold=value_threshold,
+        gateMaxCandidates=gate_max_candidates,
+        outputTimingPath=outputTimingPath,
+        digiConfigPath=digiConfigPath,
+        **acts.examples.defaultKWArgs(
+            trackSelectorCfg=trkSelCfg,
+            maxSteps=ckfConfig.maxSteps,
+            twoWay=twoWay,
+            reverseSearch=reverseSearch,
+            seedDeduplication=ckfConfig.seedDeduplication,
+            stayOnSeed=ckfConfig.stayOnSeed,
+            pixelVolumeIds=ckfConfig.pixelVolumes,
+            stripVolumeIds=ckfConfig.stripVolumes,
+            maxPixelHoles=ckfConfig.maxPixelHoles,
+            maxStripHoles=ckfConfig.maxStripHoles,
+            trimTracks=ckfConfig.trimTracks,
+            useJosephFormulation=ckfConfig.useJosephFormulation,
+            constrainToVolumeIds=ckfConfig.constrainToVolumes,
+            endOfWorldVolumeIds=ckfConfig.endOfWorldVolumes,
+        ),
+    )
+    s.addAlgorithm(trackFinder)
+    s.addWhiteboardAlias(f"{prefix}tracks", trackFinder.config.outputTracks)
+
+    # Same TrackTruthMatcher wiring addCKFTracks() does internally — required
+    # downstream by ambiguity resolution / performance writers, which read
+    # the "track_particle_matching" / "particle_track_matching" aliases.
+    matchAlg = acts.examples.TrackTruthMatcher(
+        level=customLogLevel(),
+        inputTracks=trackFinder.config.outputTracks,
+        inputParticles="particles_selected",
+        inputMeasurementParticlesMap="measurement_particles_map",
+        outputTrackParticleMatching=f"{prefix}ckf_track_particle_matching",
+        outputParticleTrackMatching=f"{prefix}ckf_particle_track_matching",
+        doubleMatching=True,
+    )
+    s.addAlgorithm(matchAlg)
+    s.addWhiteboardAlias(
+        "track_particle_matching", matchAlg.config.outputTrackParticleMatching
+    )
+    s.addWhiteboardAlias(
+        "particle_track_matching", matchAlg.config.outputParticleTrackMatching
+    )
+
+
 def parse_args():
     """Parse command line arguments"""
     parser = create_base_parser("Digitization and reconstruction for ACTS")
@@ -584,20 +734,42 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
                 "DecisionLogWriter (utils.decision_log); ACTS CKF has no native hook yet"
             )
 
-        addCKFTracks(
-            s,
-            trackingGeometry,
-            field,
-            trackSelectorConfig=TrackSelectorConfig(**track_sel_kwargs),
-            ckfConfig=CkfConfig(**ckf_kwargs),
-            twoWay=True,
-            # Disable internal ROOT/CSV writers; we add them explicitly below
-            outputDirRoot=None,
-            writeCovMat=False,
-            writeTrackStates=False,
-            writeTrackSummary=False,
-            writePerformance=False,
-        )
+        # cckf: true switches the CKF stage to CckfTrackFindingAlgorithm
+        # (learned gate g_psi + value function V_phi) in place of the stock
+        # TrackFindingAlgorithm. Both paths populate the same "tracks" /
+        # "track_particle_matching" / "particle_track_matching" whiteboard
+        # aliases, so everything downstream (ambiguity resolution, writers)
+        # is unaffected by which one ran.
+        cckf_enabled = getattr(config, "cckf", False)
+        if cckf_enabled:
+            logger.info("cCKF enabled (cckf: true) — using CckfTrackFindingAlgorithm")
+            addCckfTracks(
+                s,
+                trackingGeometry,
+                field,
+                trackSelectorConfig=TrackSelectorConfig(**track_sel_kwargs),
+                ckfConfig=CkfConfig(**ckf_kwargs),
+                config=config,
+                geoDir=geoDir,
+                output_dir=output_dir,
+                logger=logger,
+                twoWay=True,
+            )
+        else:
+            addCKFTracks(
+                s,
+                trackingGeometry,
+                field,
+                trackSelectorConfig=TrackSelectorConfig(**track_sel_kwargs),
+                ckfConfig=CkfConfig(**ckf_kwargs),
+                twoWay=True,
+                # Disable internal ROOT/CSV writers; we add them explicitly below
+                outputDirRoot=None,
+                writeCovMat=False,
+                writeTrackStates=False,
+                writeTrackSummary=False,
+                writePerformance=False,
+            )
 
         # Optional ROOT output & performance writers for CKF stage
         write_matching_details = getattr(config, "write_matching_details", False)
