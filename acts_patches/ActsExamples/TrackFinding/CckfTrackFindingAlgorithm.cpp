@@ -36,6 +36,7 @@
 #include "Acts/Surfaces/Surface.hpp"
 #include "Acts/TrackFinding/CombinatorialKalmanFilter.hpp"
 #include "Acts/TrackFinding/TrackStateCreator.hpp"
+#include "Acts/TrackFitting/GainMatrixUpdater.hpp"
 #include "Acts/Utilities/Enumerate.hpp"
 #include "Acts/Utilities/HashedString.hpp"
 #include "Acts/Utilities/HashCombine.hpp"
@@ -143,6 +144,7 @@ class CckfMeasurementSelectorAdapter {
         m_sensorLookup(sensorLookup) {}
 
   void setSeed(const std::optional<ConstSeedProxy>& seed) { m_seed = seed; }
+  void setGeoContext(const Acts::GeometryContext& gc) { m_geoContext = &gc; }
 
   Acts::Result<std::pair<std::vector<Traj::TrackStateProxy>::iterator,
                          std::vector<Traj::TrackStateProxy>::iterator>>
@@ -231,6 +233,10 @@ class CckfMeasurementSelectorAdapter {
       m_selector->setSensorProps(sensorProps);
     }
 
+    if (m_selector != nullptr && m_geoContext != nullptr) {
+      m_selector->setGeoContext(*m_geoContext);
+    }
+
     // ---- Delegate to the cCKF gate ----
     return m_selector->select<Traj>(candidates, isOutlier, logger);
   }
@@ -240,6 +246,7 @@ class CckfMeasurementSelectorAdapter {
   Traj* m_trajectory;
   const cckf::SensorLookup* m_sensorLookup;
   std::optional<ConstSeedProxy> m_seed;
+  const Acts::GeometryContext* m_geoContext = nullptr;
 
   bool isSeedCandidate(const Traj::TrackStateProxy& candidate) const {
     assert(candidate.hasUncalibratedSourceLink());
@@ -507,8 +514,8 @@ void initCckfColumns(const TrackContainer::TrackProxy& track) {
 // ============================================================================
 
 CckfTrackFindingAlgorithm::CckfTrackFindingAlgorithm(
-    Config config, std::unique_ptr<const Acts::Logger> logger)
-    : IAlgorithm("CckfTrackFindingAlgorithm", std::move(logger)),
+    Config config, std::unique_ptr<const Acts::Logger> lgr)
+    : IAlgorithm("CckfTrackFindingAlgorithm", std::move(lgr)),
       m_cfg(std::move(config)) {
   if (m_cfg.inputMeasurements.empty()) {
     throw std::invalid_argument("Missing measurements input collection");
@@ -724,6 +731,7 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   CckfMeasurementSelectorAdapter cckfMeasSelAdapter(
       cckfSelector.get(), trackStateContainerTemp.get(),
       m_sensorLookup.get());
+  cckfMeasSelAdapter.setGeoContext(ctx.geoContext);
 
   TrackStateCreatorType trackStateCreator;
   trackStateCreator.sourceLinkAccessor

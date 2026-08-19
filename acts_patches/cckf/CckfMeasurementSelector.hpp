@@ -81,6 +81,9 @@ class CckfMeasurementSelector {
   /// Set sensor properties for the current surface.
   void setSensorProps(const SensorProps& props) { m_sensorProps = props; }
 
+  /// Set the geometry context for coordinate transforms in buildFeatures.
+  void setGeoContext(const Acts::GeometryContext& gc) { m_geoCtx = &gc; }
+
   /// Look up the raw gate logit for a source-link index accepted in the most
   /// recent select() call. Returns std::nullopt if the index was not among
   /// the accepted candidates (e.g., it was pruned, or select() was not called
@@ -319,14 +322,14 @@ class CckfMeasurementSelector {
     }
 
     // Incidence angles from predicted direction
-    if (ts.hasPredicted()) {
+    if (ts.hasPredicted() && m_geoCtx != nullptr) {
       const auto& surface = ts.referenceSurface();
       auto freeParams = Acts::transformBoundToFreeParameters(
-          surface, Acts::GeometryContext{}, predicted);
+          surface, *m_geoCtx, predicted);
       Acts::Vector3 direction = freeParams.segment<3>(Acts::eFreeDir0);
       Acts::Vector3 position = freeParams.segment<3>(Acts::eFreePos0);
       auto angles = ActsExamples::incidenceAngles(
-          surface.referenceFrame(Acts::GeometryContext{}, position, direction),
+          surface.referenceFrame(*m_geoCtx, position, direction),
           direction);
       alpha_u = static_cast<float>(angles.alphaU);
       alpha_v = static_cast<float>(angles.alphaV);
@@ -357,6 +360,7 @@ class CckfMeasurementSelector {
   std::unique_ptr<MlpInference> m_gateInference;
   BranchContext m_branchCtx;
   SensorProps m_sensorProps;
+  const Acts::GeometryContext* m_geoCtx = nullptr;
 
   /// Per-surface map from source-link index to the raw gate logit for
   /// each accepted candidate. Cleared at the start of each select() call.
