@@ -762,6 +762,12 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
       std::string(cckf::CckfColumns::kAccumulatedX0));
   tracksTemp.addColumn<float>(std::string(cckf::CckfColumns::kStepK));
 
+  // pathInX0_interval on track states (mirrors TrackFindingAlgorithm patch)
+  trackStateContainer->addColumn<double>(
+      std::string(Acts::CkfConstants::kPathInX0Interval));
+  trackStateContainerTemp->addColumn<double>(
+      std::string(Acts::CkfConstants::kPathInX0Interval));
+
   // Standard columns (same as TrackFindingAlgorithm)
   tracks.addColumn<unsigned int>("trackGroup");
   tracksTemp.addColumn<unsigned int>("trackGroup");

@@ -13,6 +13,7 @@ cckf_gate_threshold: 0.5
 cckf_value_threshold: 0.1
 cckf_gate_max_candidates: 10
 cckf_digi_config: odd-digi-geometric-config.json
+digi_config: odd-digi-geometric-config.json
 cckf_timing_output: timing.csv
 
 # Envelope seeding (from spec §6.2)
