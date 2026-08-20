@@ -358,18 +358,21 @@ class CckfMeasurementSelector {
     float clus_sigma_uu = 0, clus_sigma_uv = 0, clus_sigma_vv = 0;
     float alpha_u = 0, alpha_v = 0;
 
+    if (m_clusters == nullptr) {
+      if (m_timers) ++m_timers->gate_diag.n_no_clusters_ptr;
+    } else if (!ts.hasUncalibratedSourceLink()) {
+      if (m_timers) ++m_timers->gate_diag.n_no_uncal_sl;
+    }
     if (m_clusters != nullptr && ts.hasUncalibratedSourceLink()) {
-      // getUncalibratedSourceLink() returns a SourceLink BY VALUE. Binding
-      // it to a named local (rather than chaining .getPtr<T>() straight off
-      // the temporary) keeps the SourceLink -- and the small-buffer storage
-      // its getPtr<T>() points into -- alive for the rest of this scope.
-      // Chaining directly off the temporary would return a pointer into
-      // storage that is destroyed at the end of that one statement, making
-      // every subsequent use of `isl` a dangling-pointer read (the same
-      // class of bug Task 1 hit and fixed for MlpInference's WeightBlob).
       const Acts::SourceLink sl = ts.getUncalibratedSourceLink();
       const auto* isl = sl.template getPtr<ActsExamples::IndexSourceLink>();
+      if (isl == nullptr) {
+        if (m_timers) ++m_timers->gate_diag.n_null_isl;
+      } else if (isl->index() >= m_clusters->size()) {
+        if (m_timers) ++m_timers->gate_diag.n_index_oob;
+      }
       if (isl != nullptr && isl->index() < m_clusters->size()) {
+        if (m_timers) ++m_timers->gate_diag.n_cluster_ok;
         const auto& cluster = (*m_clusters)[isl->index()];
         clus_s_u = static_cast<float>(cluster.sizeLoc0);
         clus_s_v = static_cast<float>(cluster.sizeLoc1);

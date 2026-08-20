@@ -1132,6 +1132,11 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
               << " rejected=" << gd.n_rejected
               << " outlier_fallback=" << gd.n_outlier_fallback
               << " nan_features=" << gd.n_nan_features);
+    ACTS_INFO("  cluster feature path: ok=" << gd.n_cluster_ok
+              << " no_clusters_ptr=" << gd.n_no_clusters_ptr
+              << " no_uncal_sl=" << gd.n_no_uncal_sl
+              << " null_isl=" << gd.n_null_isl
+              << " index_oob=" << gd.n_index_oob);
     ACTS_INFO("  chi2 accepted: mean=" << mean_chi2_acc
               << " max=" << gd.max_chi2_accepted);
     ACTS_INFO("  chi2 rejected: mean=" << mean_chi2_rej);

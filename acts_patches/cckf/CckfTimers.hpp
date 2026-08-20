@@ -37,6 +37,12 @@ struct GateDiagnostics {
   double sum_score_accepted = 0;
   double sum_score_rejected = 0;
   int64_t n_nan_features = 0;
+  int64_t n_no_clusters_ptr = 0;
+  int64_t n_no_uncal_sl = 0;
+  int64_t n_null_isl = 0;
+  int64_t n_index_oob = 0;
+  int64_t n_cluster_ok = 0;
+  int64_t n_no_geocontext = 0;
 };
 
 /// Per-step chi2/score aggregation across all seeds. Tells us whether
