@@ -62,12 +62,12 @@ def _run_script(cmd: list[str]) -> None:
     import os
     import subprocess
 
-    print(" ".join(cmd))
+    print(" ".join(cmd), flush=True)
     subprocess.run(
         cmd,
         check=True,
         cwd="/root",
-        env={**os.environ, "PYTHONPATH": "/root"},
+        env={**os.environ, "PYTHONPATH": "/root", "PYTHONUNBUFFERED": "1"},
     )
 
 
@@ -662,34 +662,48 @@ def build_pure_caches(splits_to_build: str = "train,val,cal") -> dict:
     Pure-seed caches read from SELECTED_DIR (which contains is_ckf_selected for
     purity filtering) and write to distinct gate_pure/{split} and value_pure/{split}
     roots, never overwriting the full caches.
+
+    Idempotent: skips any cache whose output directory already contains a
+    meta.json (from a prior committed run). This avoids re-doing hours of
+    work after a Modal preemption restart.
     """
     import sys
+    from pathlib import Path
 
     results = {}
     splits = [s.strip() for s in splits_to_build.split(",") if s.strip()]
 
     for split in splits:
-        # Gate cache: reads from SELECTED_DIR (needs is_ckf_selected for purity)
-        _run_script([
-            sys.executable, "/root/scripts/build_gate_cache.py",
-            "--split", split,
-            "--parquet-dir", SELECTED_DIR,
-            "--out-dir", f"{CACHE_DIR}/gate_pure/{split}",
-            "--pure-seeds-only",
-        ])
-        data_vol.commit()
-        results[f"gate_pure_{split}"] = "ok"
+        gate_dir = f"{CACHE_DIR}/gate_pure/{split}"
+        value_dir = f"{CACHE_DIR}/value_pure/{split}"
 
-        # Value cache
-        _run_script([
-            sys.executable, "/root/scripts/build_value_cache.py",
-            "--split", split,
-            "--parquet-dir", SELECTED_DIR,
-            "--out-dir", f"{CACHE_DIR}/value_pure/{split}",
-            "--pure-seeds-only",
-        ])
-        data_vol.commit()
-        results[f"value_pure_{split}"] = "ok"
+        if Path(f"{gate_dir}/meta.json").exists():
+            print(f"gate_pure/{split}: meta.json exists, skipping", flush=True)
+            results[f"gate_pure_{split}"] = "skipped"
+        else:
+            _run_script([
+                sys.executable, "/root/scripts/build_gate_cache.py",
+                "--split", split,
+                "--parquet-dir", SELECTED_DIR,
+                "--out-dir", gate_dir,
+                "--pure-seeds-only",
+            ])
+            data_vol.commit()
+            results[f"gate_pure_{split}"] = "ok"
+
+        if Path(f"{value_dir}/meta.json").exists():
+            print(f"value_pure/{split}: meta.json exists, skipping", flush=True)
+            results[f"value_pure_{split}"] = "skipped"
+        else:
+            _run_script([
+                sys.executable, "/root/scripts/build_value_cache.py",
+                "--split", split,
+                "--parquet-dir", SELECTED_DIR,
+                "--out-dir", value_dir,
+                "--pure-seeds-only",
+            ])
+            data_vol.commit()
+            results[f"value_pure_{split}"] = "ok"
 
     return results
 
@@ -742,6 +756,148 @@ def train_value_pure(wandb_project: str = "cckf-value-pure", seed: int = 0) -> d
     data_vol.commit()
     with open(f"{out_dir}/value_metrics.json") as fh:
         return json.load(fh)
+
+
+def _write_trained_blob(path, state_dict, mu, sigma, platt, n_features, n_hidden,
+                        n_layers):
+    """Write a CCKF binary blob from a trained checkpoint's state_dict."""
+    import struct
+
+    import numpy as np
+
+    layer_keys = sorted(
+        {k.rsplit(".", 1)[0] for k in state_dict if "weight" in k},
+        key=lambda k: int(k.split(".")[0]) if k.split(".")[0].isdigit() else k,
+    )
+    weights = [state_dict[f"{k}.weight"].float().numpy() for k in layer_keys]
+    biases = [state_dict[f"{k}.bias"].float().numpy() for k in layer_keys]
+
+    assert weights[0].shape[1] == n_features, (
+        f"Expected {n_features} input features, got {weights[0].shape[1]}")
+    assert weights[0].shape[0] == n_hidden, (
+        f"Expected {n_hidden} hidden, got {weights[0].shape[0]}")
+    assert len(weights) == n_layers + 1, (
+        f"Expected {n_layers + 1} weight matrices, got {len(weights)}")
+
+    mu = np.asarray(mu, dtype=np.float32)
+    sigma = np.asarray(sigma, dtype=np.float32)
+    assert len(mu) == n_features
+    assert len(sigma) == n_features
+
+    with open(path, "wb") as f:
+        f.write(b"CCKF")
+        f.write(struct.pack("<I", 1))
+        f.write(struct.pack("<III", n_features, n_hidden, n_layers))
+        f.write(mu.tobytes())
+        f.write(sigma.tobytes())
+        f.write(struct.pack("<ffff", *platt))
+        for w, b in zip(weights, biases):
+            f.write(w.astype(np.float32).tobytes())
+            f.write(b.astype(np.float32).tobytes())
+
+    total_params = sum(w.size + b.size for w, b in zip(weights, biases))
+    print(f"  {path}: {n_features}→{n_hidden}×{n_layers}→1, "
+          f"{total_params} params, platt=({platt[0]:.4f}, {platt[1]:.4f}, "
+          f"{platt[2]:.4f}, {platt[3]:.4f})")
+
+
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, cpu=2, memory=4096, timeout=300,
+)
+def export_trained_weights(
+    gate_model_dir: str = f"{MODEL_DIR}/gate_A",
+    value_model_dir: str = f"{MODEL_DIR}/value_pure_v0",
+    use_platt: str = "identity",
+) -> dict:
+    """Export trained gate + value checkpoints to CCKF binary blobs.
+
+    Reads trained PyTorch checkpoints (and calibration audit for the gate)
+    from the data volume, writes /data/weights/gate.bin and value.bin.
+
+    use_platt: "identity" (raw sigmoid, best per finding #1),
+               "2param" (Platt-2), or "4param" (spec §10.3 primary).
+    """
+    import json
+    import os
+
+    import torch
+
+    data_vol.reload()
+    weights_dir = f"{DATA_PATH}/weights"
+    os.makedirs(weights_dir, exist_ok=True)
+
+    gate_ckpt = torch.load(
+        f"{gate_model_dir}/gate_model.pt", map_location="cpu", weights_only=False)
+    gate_sd = gate_ckpt["state_dict"]
+
+    if use_platt == "identity":
+        platt = (1.0, 0.0, 0.0, 0.0)
+    else:
+        audit_path = f"{gate_model_dir}/audit/calibration_audit.json"
+        with open(audit_path) as f:
+            audit = json.load(f)
+        if use_platt == "4param":
+            p = audit["platt_4param"]
+            platt = (float(p["a0"]), float(p["a1"]),
+                     float(p["b0"]), float(p["b1"]))
+        else:
+            p = audit["platt_2param"]
+            platt = (float(p["a"]), 0.0, float(p["b"]), 0.0)
+
+    print("=== Gate g_ψ ===")
+    _write_trained_blob(
+        f"{weights_dir}/gate.bin", gate_sd,
+        gate_ckpt["mu"], gate_ckpt["sigma"], platt,
+        n_features=gate_ckpt["n_features"], n_hidden=gate_ckpt["width"],
+        n_layers=gate_ckpt["depth"],
+    )
+
+    value_ckpt = torch.load(
+        f"{value_model_dir}/value_model.pt", map_location="cpu", weights_only=False)
+    print("=== Value V_φ ===")
+    _write_trained_blob(
+        f"{weights_dir}/value.bin", value_ckpt["state_dict"],
+        value_ckpt["mu"], value_ckpt["sigma"],
+        (1.0, 0.0, 0.0, 0.0),
+        n_features=value_ckpt["n_features"], n_hidden=value_ckpt["width"],
+        n_layers=value_ckpt["depth"],
+    )
+
+    data_vol.commit()
+
+    sizes = {
+        "gate": os.path.getsize(f"{weights_dir}/gate.bin"),
+        "value": os.path.getsize(f"{weights_dir}/value.bin"),
+    }
+    print(f"\nExported trained weight blobs: {sizes}")
+    return {
+        "gate": f"{weights_dir}/gate.bin",
+        "value": f"{weights_dir}/value.bin",
+        "sizes": sizes,
+        "gate_platt": platt,
+        "gate_features": gate_ckpt.get("feature_names"),
+        "value_features": value_ckpt.get("feature_names"),
+    }
+
+
+@app.local_entrypoint()
+def export_weights(
+    gate_model_dir: str = f"{MODEL_DIR}/gate_A",
+    value_model_dir: str = f"{MODEL_DIR}/value_pure_v0",
+    use_platt: str = "identity",
+) -> None:
+    """Export trained weights to CCKF blobs on the data volume.
+
+    Usage: modal run modal_train.py::export_weights [--use-platt 2param]
+    """
+    import json
+
+    result = export_trained_weights.remote(
+        gate_model_dir=gate_model_dir,
+        value_model_dir=value_model_dir,
+        use_platt=use_platt,
+    )
+    print(json.dumps(result, indent=2))
 
 
 @app.local_entrypoint()

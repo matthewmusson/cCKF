@@ -149,7 +149,7 @@ def process_event(
     parquet_path: Path,
     csv_dir: str,
     event_id: int,
-    pure_seed_set: set[tuple[int, int]] | None = None,
+    pure_seeds_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """Return ``(X, y, aux, event_meta)`` for one event.
 
@@ -163,6 +163,11 @@ def process_event(
     drop rate, and ``max_accepted_chi2`` / ``n_accepted_chi2_above_saturation``
     for the χ² log-odds saturation check. Both are measured over this event
     only; :func:`main` aggregates across events.
+
+    When ``pure_seeds_only`` is True, purity is computed inline from the same
+    Parquet read and ``derive_labels`` call — no separate pre-computation pass.
+    ``_PURITY_COLUMNS`` is a strict subset of ``_NEEDED``, so this adds zero
+    extra I/O.
     """
     from expansion import load_simhits
 
@@ -174,12 +179,10 @@ def process_event(
     table = pq.read_table(parquet_path, columns=list(_NEEDED))
     derived = lab.derive_labels(table)
     df = table.to_pandas()
+    del table
     df["label_same_particle"] = derived["label_same_particle"]
 
-    # --- Required addition 2: χ² log-odds saturation check ---------------
-    # Measured over selected/accepted hits only, before the majority_undefined
-    # filter below (this is a question about the gate's chi2 scale on this
-    # event's Parquet, not about which branches have a defined majority).
+    # --- χ² log-odds saturation check (before any filtering) ---------------
     accepted_mask = df["is_ckf_selected"].to_numpy(dtype=bool) & (
         df["cand_hit_id"].to_numpy(dtype=np.int64) != -1
     )
@@ -197,7 +200,8 @@ def process_event(
         print(
             f"WARNING event {event_id}: {n_accepted_chi2_above_saturation} accepted "
             f"hits have chi2 > {_CHI2_SATURATION_THRESHOLD} — chi2_log_odds is "
-            f"saturating (max accepted chi2 = {max_accepted_chi2:.3f})"
+            f"saturating (max accepted chi2 = {max_accepted_chi2:.3f})",
+            flush=True,
         )
 
     event_meta = {
@@ -205,23 +209,30 @@ def process_event(
         "n_accepted_chi2_above_saturation": n_accepted_chi2_above_saturation,
         "n_tier_invariant_dropped": 0,
         "n_valid_target": 0,
+        "n_pure_branches": None,
     }
 
-    # A branch with no defined majority has no defined value target.
+    _empty = (
+        np.empty((0, len(feat.VALUE_FEATURES)), np.float32),
+        np.empty(0, np.float32),
+        np.empty((0, 3), np.float32),
+        event_meta,
+    )
+
     df = df.loc[~df["majority_undefined"].astype(bool)].reset_index(drop=True)
     if df.empty:
-        return (
-            np.empty((0, len(feat.VALUE_FEATURES)), np.float32),
-            np.empty(0, np.float32),
-            np.empty((0, 3), np.float32),
-            event_meta,
-        )
+        return _empty
 
-    # Filter to pure seeds (3/3 seed hits from majority particle) if requested.
-    if pure_seed_set is not None:
-        if pure_seed_set:
+    if pure_seeds_only:
+        from cckf.seed_purity import classify_seed_purity
+
+        purity = classify_seed_purity(df)
+        pure = purity.loc[purity["seed_purity"] == "pure"]
+        pure_set = set(zip(pure["seed_id"].tolist(), pure["branch_id"].tolist()))
+        event_meta["n_pure_branches"] = len(pure_set)
+        if pure_set:
             pure_index = pd.MultiIndex.from_tuples(
-                pure_seed_set, names=["seed_id", "branch_id"]
+                pure_set, names=["seed_id", "branch_id"]
             )
             row_index = pd.MultiIndex.from_arrays(
                 [df["seed_id"].to_numpy(), df["branch_id"].to_numpy()]
@@ -231,12 +242,7 @@ def process_event(
             pure_mask = np.zeros(len(df), dtype=bool)
         df = df.loc[pure_mask].reset_index(drop=True)
         if df.empty:
-            return (
-                np.empty((0, len(feat.VALUE_FEATURES)), np.float32),
-                np.empty(0, np.float32),
-                np.empty((0, 3), np.float32),
-                event_meta,
-            )
+            return _empty
 
     step = value_target.build_step_table(df)
     counts = value_target.particle_simhit_counts(load_simhits(csv_dir, event_id))
@@ -343,16 +349,6 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pure_sets = None
-    if args.pure_seeds_only:
-        from cckf.seed_purity import compute_pure_seed_set
-
-        pure_sets = {}
-        for event_id in events:
-            path = Path(args.parquet_dir) / f"expanded_event{event_id:09d}.parquet"
-            pure_sets[event_id] = compute_pure_seed_set(str(path))
-            print(f"event {event_id}: {len(pure_sets[event_id]):,} pure branches")
-
     xs, ys, auxs = [], [], []
     total_tier_dropped = 0
     total_valid_target = 0
@@ -360,14 +356,11 @@ def main() -> None:
     max_accepted_chi2_overall = float("-inf")
     for event_id in events:
         path = Path(args.parquet_dir) / f"expanded_event{event_id:09d}.parquet"
-        # Per-event, not once: Stage 1 split the 32 events across 16 batch
-        # directories, so each event's simhits CSV sits beside the ROOT file
-        # of the batch that produced it. An explicit --csv-dir overrides.
         csv_dir = args.csv_dir or stage1_map.csv_dir_for(event_id)
         X, y, aux, event_meta = process_event(
-            path, csv_dir, event_id, pure_seed_set=pure_sets.get(event_id) if pure_sets else None
+            path, csv_dir, event_id, pure_seeds_only=args.pure_seeds_only
         )
-        print(f"event {event_id}: {len(y):,} states")
+        print(f"event {event_id}: {len(y):,} states", flush=True)
         xs.append(X)
         ys.append(y)
         auxs.append(aux)

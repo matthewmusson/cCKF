@@ -117,7 +117,7 @@ def build_gate_cache(
     parquet_paths: Iterable[Path | str],
     out_dir: Path | str,
     batch_rows: int = 1_000_000,
-    pure_seed_sets: dict[Path, set[tuple[int, int]]] | None = None,
+    pure_seeds_only: bool = False,
 ) -> dict:
     """Stream Parquet files into a gate feature cache.
 
@@ -129,17 +129,15 @@ def build_gate_cache(
         Cache directory to create.
     batch_rows : int
         Rows per streaming batch. Memory use is roughly
-        ``batch_rows × 26 × 8 bytes`` during derivation.
-    pure_seed_sets : dict of Path to set of (int, int), optional
-        When given, restricts the cache to rows whose ``(seed_id,
-        branch_id)`` is a "pure" seed (spec's pure-seed training ablation
-        -- see ``cckf.seed_purity.compute_pure_seed_set``). Keyed by the
-        resolved Parquet path so each file is filtered against its own
-        pure set; a file with no entry in the dict is left unfiltered
-        (all its trainable rows pass through, same as ``pure_seed_sets
-        is None``). Applied after ``gate_row_mask`` and before feature
-        construction. ``None`` (the default) disables filtering entirely
-        and behaves exactly as before.
+        ``batch_rows × 26 × 8 bytes`` during derivation. Ignored when
+        ``pure_seeds_only`` is True (the file is read in full so purity
+        classification sees all rows for each branch).
+    pure_seeds_only : bool
+        When True, reads each file in full, computes seed purity inline
+        from the same ``derive_labels`` call, filters to ~3% pure rows,
+        then builds features on the small result. Eliminates the separate
+        ``compute_pure_seed_set`` pre-read that the old
+        ``pure_seed_sets`` dict required.
 
     Returns
     -------
@@ -149,85 +147,128 @@ def build_gate_cache(
     paths = [Path(p) for p in parquet_paths]
     writer = CacheWriter(out_dir, n_features=len(feat.GATE_FEATURES))
 
-    # Pure-seed filtering keys on (seed_id, branch_id), which the gate
-    # feature/label columns alone don't include -- pull them in too, but
-    # only when the caller actually asked for filtering, so a plain (no
-    # pure_seed_sets) run's column list -- and therefore its cache
-    # contents -- is unchanged from before this parameter existed.
     read_columns = _READ_COLUMNS
-    if pure_seed_sets is not None:
+    if pure_seeds_only:
+        from .seed_purity import _PURITY_COLUMNS
+
         read_columns = tuple(
-            dict.fromkeys((*_READ_COLUMNS, "seed_id", "branch_id"))
+            dict.fromkeys((*_READ_COLUMNS, *_PURITY_COLUMNS))
         )
 
     for path in paths:
         pf = pq.ParquetFile(path)
         available = set(pf.schema_arrow.names)
-        columns = [c for c in read_columns if c in available]
         missing = set(read_columns) - available
         if missing:
             raise ValueError(f"{path} is missing required columns: {sorted(missing)}")
 
-        for batch in pf.iter_batches(batch_size=batch_rows, columns=columns):
-            table = batch if hasattr(batch, "num_rows") else None
-            if table is None:  # pragma: no cover - defensive
-                continue
-            import pyarrow as pa
+        if pure_seeds_only:
+            _process_file_pure(path, read_columns, writer)
+        else:
+            _process_file_streaming(pf, read_columns, batch_rows, writer)
 
-            tbl = pa.Table.from_batches([batch])
-            derived = lab.derive_labels(tbl)
-            mask = derived["gate_row_mask"]
-            if not mask.any():
-                continue
+    return writer.close([str(p) for p in paths], pure_seeds_only=pure_seeds_only)
 
-            df = tbl.to_pandas()
-            df = df.loc[mask].reset_index(drop=True)
-            y = derived["label_same_particle"][mask]
-            ambiguous = derived["label_ambiguous"][mask]
 
-            if pure_seed_sets is not None:
-                pure_set = pure_seed_sets.get(path)
-                if pure_set is not None:
-                    # Vectorised membership test rather than a per-row
-                    # `(s, b) in pure_set` loop: at ~1M rows/batch a Python
-                    # loop dominates wall time, while a MultiIndex.isin is a
-                    # single vectorised hash-join.
-                    if pure_set:
-                        pure_index = pd.MultiIndex.from_tuples(
-                            pure_set, names=["seed_id", "branch_id"]
-                        )
-                        row_index = pd.MultiIndex.from_arrays(
-                            [df["seed_id"].to_numpy(), df["branch_id"].to_numpy()]
-                        )
-                        pure_mask = row_index.isin(pure_index)
-                    else:
-                        pure_mask = np.zeros(len(df), dtype=bool)
-                    df = df.loc[pure_mask].reset_index(drop=True)
-                    y = y[pure_mask]
-                    ambiguous = ambiguous[pure_mask]
-                    if len(df) == 0:
-                        continue
+def _process_file_streaming(
+    pf: pq.ParquetFile,
+    columns: tuple[str, ...],
+    batch_rows: int,
+    writer: CacheWriter,
+) -> None:
+    """Stream one Parquet file in batches (standard non-pure path)."""
+    import pyarrow as pa
 
-            X = feat.build_gate_features(df)
-            aux = np.column_stack(
-                [
-                    # NaN -> +inf (see module docstring, "aux.f32"): a NaN chi2_inc
-                    # means no residual to compute one, and +inf reads to the
-                    # hard-negative sampler as maximally easy rather than as a
-                    # missing value it would need to special-case.
-                    np.nan_to_num(
-                        df["chi2_inc"].to_numpy(dtype=np.float64), nan=np.inf
-                    ),
-                    df["n_window"].to_numpy(dtype=np.float64),
-                    feat.eta_from_theta(df["state_theta"].to_numpy(dtype=np.float64)),
-                ]
-            ).astype(np.float32)
+    for batch in pf.iter_batches(batch_size=batch_rows, columns=list(columns)):
+        if not hasattr(batch, "num_rows"):
+            continue
+        tbl = pa.Table.from_batches([batch])
+        derived = lab.derive_labels(tbl)
+        mask = derived["gate_row_mask"]
+        if not mask.any():
+            continue
 
-            writer.append(X, y, aux, ambiguous.astype(np.uint8))
+        df = tbl.to_pandas()
+        df = df.loc[mask].reset_index(drop=True)
+        y = derived["label_same_particle"][mask]
+        ambiguous = derived["label_ambiguous"][mask]
 
-    return writer.close(
-        [str(p) for p in paths], pure_seeds_only=pure_seed_sets is not None
+        _append_gate_batch(writer, df, y, ambiguous)
+
+
+def _process_file_pure(
+    path: Path,
+    columns: tuple[str, ...],
+    writer: CacheWriter,
+) -> None:
+    """Read one file in full, compute purity inline, filter, build features."""
+    from .seed_purity import classify_seed_purity
+
+    table = pq.read_table(path, columns=list(columns))
+    derived = lab.derive_labels(table)
+    gate_mask = derived["gate_row_mask"]
+    if not gate_mask.any():
+        print(f"  {path.name}: 0 trainable rows", flush=True)
+        return
+
+    df = table.to_pandas()
+    del table
+    df["label_same_particle"] = derived["label_same_particle"]
+
+    # Classify purity on rows with a defined majority (same filter as
+    # compute_pure_seed_set). This does NOT reset the index — the df
+    # stays aligned with gate_mask / derived arrays.
+    defined = df.loc[~df["majority_undefined"].astype(bool)]
+    purity = classify_seed_purity(defined)
+    pure = purity.loc[purity["seed_purity"] == "pure"]
+    pure_set = set(zip(pure["seed_id"].tolist(), pure["branch_id"].tolist()))
+    n_total = defined[["seed_id", "branch_id"]].drop_duplicates().shape[0]
+    print(
+        f"  {path.name}: {len(pure_set):,} pure branches "
+        f"({len(pure_set)/max(n_total, 1):.1%} of {n_total:,})",
+        flush=True,
     )
+
+    if not pure_set:
+        return
+
+    # Build combined mask: gate-trainable AND from a pure branch.
+    pure_index = pd.MultiIndex.from_tuples(
+        pure_set, names=["seed_id", "branch_id"]
+    )
+    row_index = pd.MultiIndex.from_arrays(
+        [df["seed_id"].to_numpy(), df["branch_id"].to_numpy()]
+    )
+    combined = gate_mask & row_index.isin(pure_index)
+    if not combined.any():
+        return
+
+    df = df.loc[combined].reset_index(drop=True)
+    y = derived["label_same_particle"][combined]
+    ambiguous = derived["label_ambiguous"][combined]
+
+    _append_gate_batch(writer, df, y, ambiguous)
+
+
+def _append_gate_batch(
+    writer: CacheWriter,
+    df: pd.DataFrame,
+    y: np.ndarray,
+    ambiguous: np.ndarray,
+) -> None:
+    """Build gate features and append to the cache writer."""
+    X = feat.build_gate_features(df)
+    aux = np.column_stack(
+        [
+            np.nan_to_num(
+                df["chi2_inc"].to_numpy(dtype=np.float64), nan=np.inf
+            ),
+            df["n_window"].to_numpy(dtype=np.float64),
+            feat.eta_from_theta(df["state_theta"].to_numpy(dtype=np.float64)),
+        ]
+    ).astype(np.float32)
+
+    writer.append(X, y, aux, ambiguous.astype(np.uint8))
 
 
 def load_cache(out_dir: Path | str) -> dict:

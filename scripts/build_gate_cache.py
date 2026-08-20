@@ -37,7 +37,6 @@ import pyarrow.parquet as pq
 
 from cckf import cache, features, splits
 from cckf.event_selection import resolve_requested_events
-from cckf.seed_purity import compute_pure_seed_set
 
 
 def resolve_split_events(split: str, only_events: str) -> tuple[int, ...]:
@@ -122,13 +121,7 @@ def main() -> None:
             raise FileNotFoundError(f"missing {path}")
         paths.append(path)
 
-    pure_seed_sets = None
     if args.pure_seeds_only:
-        # Seed purity (cckf.seed_purity) needs is_ckf_selected to find each
-        # branch's first 3 CKF-selected measurement hits -- only present in
-        # the *selected* Parquets (scripts/patch_is_selected.py), not the
-        # raw expanded ones. Fail fast with a clear pointer rather than
-        # letting compute_pure_seed_set raise a bare KeyError per file.
         schema_columns = set(pq.ParquetFile(paths[0]).schema_arrow.names)
         if "is_ckf_selected" not in schema_columns:
             raise ValueError(
@@ -139,20 +132,16 @@ def main() -> None:
                 f"(e.g. .../train32/selected), not the raw expanded dir."
             )
         print(
-            "NOTE: --pure-seeds-only is set. Computing pure seed sets from "
-            f"{len(paths)} file(s) -- --parquet-dir must be SELECTED_DIR "
-            "(is_ckf_selected present), which it is here."
+            "NOTE: --pure-seeds-only is set. Purity computed inline per file "
+            "(single-pass, no pre-read)."
         )
-        pure_seed_sets = {path: compute_pure_seed_set(str(path)) for path in paths}
-        n_pure = sum(len(s) for s in pure_seed_sets.values())
-        print(f"pure_seeds_only: {n_pure} pure (seed_id, branch_id) pairs total")
 
     print(f"split={args.split} events={list(events)} files={len(paths)}")
     meta = cache.build_gate_cache(
         paths,
         args.out_dir,
         batch_rows=args.batch_rows,
-        pure_seed_sets=pure_seed_sets,
+        pure_seeds_only=args.pure_seeds_only,
     )
 
     if is_staged:
