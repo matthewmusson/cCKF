@@ -78,6 +78,8 @@ class MlpInference {
     return calibrate(forward(raw_input), log_n_window);
   }
 
+  const WeightBlob& blob() const { return m_blob; }
+
  private:
   static void linear_silu(const float* W, const float* b, const float* x,
                           float* y, uint32_t in_dim, uint32_t out_dim) {

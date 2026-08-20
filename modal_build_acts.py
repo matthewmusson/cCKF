@@ -2941,13 +2941,14 @@ def generate_dummy_weights(seed: int = 0):
     volumes={BUILD_PATH: build_vol, DATA_PATH: data_vol},
     cpu=8,
     memory=65536,
-    timeout=3600,
+    timeout=7200,
 )
 def run_cckf(
     config: str = "cckf_envelope",
     events: int = 2,
     gate_threshold: float = 0.5,
-    value_threshold: float = 0.1,
+    value_threshold: float = 0.2,
+    gate_chi2_ceiling: float = 15.0,
 ):
     """End-to-end cCKF smoke test: patched CckfTrackFindingAlgorithm on real events.
 
@@ -3018,6 +3019,7 @@ def run_cckf(
         "cckf_value_weights": value_weights,
         "cckf_gate_threshold": gate_threshold,
         "cckf_value_threshold": value_threshold,
+        "cckf_gate_chi2_ceiling": gate_chi2_ceiling,
     })
     cfg = types.SimpleNamespace(**cfg_dict)
     cfg.seed = 42
@@ -3033,17 +3035,33 @@ def run_cckf(
 
     print(
         f"=== Running cCKF ({events} events, skip={getattr(cfg, 'skip', 0)}, "
-        f"gate_threshold={gate_threshold}, value_threshold={value_threshold}) ==="
+        f"gate_threshold={gate_threshold}, value_threshold={value_threshold}, "
+        f"chi2_ceiling={gate_chi2_ceiling}) ==="
     )
+
+    import faulthandler
+    faulthandler.enable()
+
     t0 = time.time()
     s = setup_acts_reconstruction(
         Path(f"{DATA_PATH}/events/edm4hep.root"),
         output_dir,
         cfg, rnd,
     )
-    s.run()
+    t_setup = time.time() - t0
+    print(f"Setup completed in {t_setup:.1f}s", flush=True)
+    print(f"Starting sequencer.run() ...", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        s.run()
+    except Exception as e:
+        print(f"\n!!! Sequencer crashed: {type(e).__name__}: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
     wall = time.time() - t0
-    print(f"Pipeline completed in {wall:.1f}s")
+    print(f"Pipeline completed in {wall:.1f}s (setup={t_setup:.1f}s, run={wall-t_setup:.1f}s)", flush=True)
 
     print("\n=== Output files ===")
     for f_out in sorted(output_dir.iterdir()):

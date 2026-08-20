@@ -176,7 +176,8 @@ cckf_block = '''
         stripVolumeIds, maxPixelHoles, maxStripHoles, trimTracks,
         useJosephFormulation, constrainToVolumeIds, endOfWorldVolumeIds,
         gateWeightsPath, valueWeightsPath, gateThreshold, valueThreshold,
-        gateMaxCandidates, inputClusters, outputTimingPath, digiConfigPath);
+        gateMaxCandidates, gateChi2Ceiling, inputClusters, outputTimingPath,
+        digiConfigPath);
   }
 '''
 

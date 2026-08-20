@@ -50,6 +50,10 @@ class CckfMeasurementSelector {
     std::size_t maxCandidates = 10;
     /// Chi2 outlier cutoff (fallback when no candidate passes the gate)
     float chi2OutlierCutoff = 100.0f;
+    /// Hard chi2 ceiling: reject any candidate above this regardless of gate
+    /// score. Prevents the gate from accepting high-residual garbage hits
+    /// due to train/inference distribution shift (DAgger §14).
+    float chi2Ceiling = 15.0f;
     /// Path to gate weight blob
     std::string gateWeightsPath;
   };
@@ -83,6 +87,15 @@ class CckfMeasurementSelector {
 
   /// Set the geometry context for coordinate transforms in buildFeatures.
   void setGeoContext(const Acts::GeometryContext& gc) { m_geoCtx = &gc; }
+
+  /// Set the current seed index (for diagnostic trace of first N seeds).
+  void setSeedIndex(uint32_t idx) { m_seedIndex = idx; }
+
+  /// Accessor for the loaded weight blob (for diagnostic logging of
+  /// standardization params, Platt params, etc.).
+  const WeightBlob& weightBlob() const {
+    return m_gateInference->blob();
+  }
 
   /// Look up the raw gate logit for a source-link index accepted in the most
   /// recent select() call. Returns std::nullopt if the index was not among
@@ -133,6 +146,9 @@ class CckfMeasurementSelector {
     // can read them via lastGateLogit() after measurement acceptance.
     std::vector<float> scores(candidates.size());
     std::vector<float> rawLogits(candidates.size());
+    std::vector<float> chi2s(candidates.size());
+    // Per-candidate feature cache for diagnostic sampling of accepted hits.
+    std::vector<std::array<float, 26>> featCache(candidates.size());
     for (std::size_t i = 0; i < candidates.size(); ++i) {
       auto& ts = candidates[i];
 
@@ -152,13 +168,24 @@ class CckfMeasurementSelector {
       auto t_feat_end = std::chrono::steady_clock::now();
       if (m_timers) {
         m_timers->gate_feature_build.record(t_feat_start, t_feat_end);
+        // Check for NaN/inf in feature vector
+        for (int j = 0; j < 26; ++j) {
+          if (!std::isfinite(features[j])) {
+            ++m_timers->gate_diag.n_nan_features;
+            break;
+          }
+        }
       }
+
+      // Cache raw features for diagnostic sampling
+      std::copy(features, features + 26, featCache[i].begin());
 
       // Gate inference: split forward + calibrate to capture raw logit
       auto t_gate_start = std::chrono::steady_clock::now();
       float logit = m_gateInference->forward(features);
       scores[i] = m_gateInference->calibrate(logit, log_n_window);
       rawLogits[i] = logit;
+      chi2s[i] = chi2;
       auto t_gate_end = std::chrono::steady_clock::now();
       if (m_timers) {
         m_timers->gate_inference.record(t_gate_start, t_gate_end);
@@ -177,6 +204,8 @@ class CckfMeasurementSelector {
           std::swap(candidates[passedCandidates], candidates[i]);
           std::swap(scores[passedCandidates], scores[i]);
           std::swap(rawLogits[passedCandidates], rawLogits[i]);
+          std::swap(chi2s[passedCandidates], chi2s[i]);
+          std::swap(featCache[passedCandidates], featCache[i]);
           if (minIndex == i) {
             minIndex = passedCandidates;
           } else if (minIndex == passedCandidates) {
@@ -187,6 +216,36 @@ class CckfMeasurementSelector {
       }
     }
 
+    // Accumulate chi2/score diagnostics for accepted vs rejected candidates.
+    if (m_timers) {
+      for (std::size_t i = 0; i < passedCandidates; ++i) {
+        m_timers->gate_diag.sum_chi2_accepted += chi2s[i];
+        m_timers->gate_diag.sum_score_accepted += scores[i];
+        if (chi2s[i] > m_timers->gate_diag.max_chi2_accepted) {
+          m_timers->gate_diag.max_chi2_accepted = chi2s[i];
+        }
+      }
+      m_timers->gate_diag.n_accepted += passedCandidates;
+      for (std::size_t i = passedCandidates; i < candidates.size(); ++i) {
+        m_timers->gate_diag.sum_chi2_rejected += chi2s[i];
+        m_timers->gate_diag.sum_score_rejected += scores[i];
+      }
+      m_timers->gate_diag.n_rejected +=
+          static_cast<int64_t>(candidates.size()) - passedCandidates;
+      // Per-step chi2 aggregation (all seeds)
+      for (std::size_t i = 0; i < candidates.size(); ++i) {
+        m_timers->per_step.recordAll(m_branchCtx.step_k, chi2s[i]);
+      }
+      for (std::size_t i = 0; i < passedCandidates; ++i) {
+        m_timers->per_step.recordAccepted(m_branchCtx.step_k, chi2s[i]);
+      }
+      // Track-level trace: log ALL candidates' features for first N seeds
+      m_timers->track_trace.addStep(
+          m_seedIndex, m_branchCtx.step_k,
+          featCache.data(), scores.data(), chi2s.data(),
+          candidates.size(), passedCandidates);
+    }
+
     if (passedCandidates == 0) {
       // No candidate passed the gate -- fall back to outlier logic.
       // Store the logit for the outlier candidate so the branch stopper
@@ -195,6 +254,7 @@ class CckfMeasurementSelector {
         isOutlier = true;
         storeAcceptedLogit(candidates[minIndex], rawLogits[minIndex]);
         if (m_timers) {
+          ++m_timers->gate_diag.n_outlier_fallback;
           m_timers->measurement_selection.record(
               t0, std::chrono::steady_clock::now());
         }
@@ -314,10 +374,36 @@ class CckfMeasurementSelector {
         clus_s_u = static_cast<float>(cluster.sizeLoc0);
         clus_s_v = static_cast<float>(cluster.sizeLoc1);
         clus_q_tot = static_cast<float>(cluster.sumActivations());
-        auto moments = ActsExamples::clusterChargeMoments(cluster);
-        clus_sigma_uu = static_cast<float>(moments.sigmaUU);
-        clus_sigma_uv = static_cast<float>(moments.sigmaUV);
-        clus_sigma_vv = static_cast<float>(moments.sigmaVV);
+        // Compute charge-weighted second moments in CHANNEL-INDEX units
+        // (matching expansion.py::compute_cluster_features). The shared
+        // clusterChargeMoments() uses cell.path2D (physical mm²); training
+        // data uses cell.bin (integer channel indices). Using the wrong
+        // coordinate system shifts features 9-11 by pitch² (~64-400×).
+        {
+          double qTot = 0, muU = 0, muV = 0;
+          for (const auto& cell : cluster.channels) {
+            if (!(cell.activation > 0)) continue;
+            qTot += cell.activation;
+            muU += cell.activation * static_cast<double>(cell.bin[0]);
+            muV += cell.activation * static_cast<double>(cell.bin[1]);
+          }
+          if (qTot > 0) {
+            muU /= qTot;
+            muV /= qTot;
+            double sUU = 0, sUV = 0, sVV = 0;
+            for (const auto& cell : cluster.channels) {
+              if (!(cell.activation > 0)) continue;
+              double du = static_cast<double>(cell.bin[0]) - muU;
+              double dv = static_cast<double>(cell.bin[1]) - muV;
+              sUU += cell.activation * du * du;
+              sUV += cell.activation * du * dv;
+              sVV += cell.activation * dv * dv;
+            }
+            clus_sigma_uu = static_cast<float>(sUU / qTot);
+            clus_sigma_uv = static_cast<float>(sUV / qTot);
+            clus_sigma_vv = static_cast<float>(sVV / qTot);
+          }
+        }
       }
     }
 
@@ -361,6 +447,7 @@ class CckfMeasurementSelector {
   BranchContext m_branchCtx;
   SensorProps m_sensorProps;
   const Acts::GeometryContext* m_geoCtx = nullptr;
+  uint32_t m_seedIndex = 0;
 
   /// Per-surface map from source-link index to the raw gate logit for
   /// each accepted candidate. Cleared at the start of each select() call.

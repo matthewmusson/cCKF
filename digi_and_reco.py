@@ -40,7 +40,7 @@ u = acts.UnitConstants
 # LOG_LEVEL = acts.logging.DEBUG
 # LOG_LEVEL = acts.logging.INFO
 # LOG_LEVEL = acts.logging.ERROR
-LOG_LEVEL = acts.logging.FATAL
+LOG_LEVEL = acts.logging.INFO
 
 
 def _is_disabled(value) -> bool:
@@ -187,6 +187,7 @@ def addCckfTracks(
     gate_threshold = float(getattr(config, "cckf_gate_threshold", 0.5))
     value_threshold = float(getattr(config, "cckf_value_threshold", 0.1))
     gate_max_candidates = int(getattr(config, "cckf_gate_max_candidates", 10))
+    gate_chi2_ceiling = float(getattr(config, "cckf_gate_chi2_ceiling", 15.0))
 
     timing_output = getattr(config, "cckf_timing_output", None)
     outputTimingPath = str(output_dir / timing_output) if timing_output else ""
@@ -242,6 +243,7 @@ def addCckfTracks(
         gateThreshold=gate_threshold,
         valueThreshold=value_threshold,
         gateMaxCandidates=gate_max_candidates,
+        gateChi2Ceiling=gate_chi2_ceiling,
         outputTimingPath=outputTimingPath,
         digiConfigPath=digiConfigPath,
         **acts.examples.defaultKWArgs(

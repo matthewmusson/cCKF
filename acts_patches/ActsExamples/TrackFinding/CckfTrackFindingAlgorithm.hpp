@@ -147,6 +147,8 @@ class CckfTrackFindingAlgorithm final : public IAlgorithm {
     float valueThreshold = 0.1f;
     /// Maximum candidates to keep per surface after the gate.
     std::size_t gateMaxCandidates = 10;
+    /// Hard chi2 ceiling: reject hits above this regardless of gate score.
+    float gateChi2Ceiling = 15.0f;
     /// Whiteboard key for the ClusterContainer (needed for gate
     /// features: cluster size, charge, second moments).
     std::string inputClusters;

@@ -192,6 +192,10 @@ class CckfMeasurementSelectorAdapter {
       uint32_t n_seq_holes = 0;
       uint32_t step = 0;
       bool firstNonHoleSeen = false;
+      float pathInX0 = 0.0f;
+      bool pathInX0Read = false;
+      static constexpr auto kPathInX0Key =
+          Acts::hashString("pathInX0_interval");
 
       while (prevIdx != Acts::kTrackIndexInvalid) {
         auto ts = m_trajectory->getTrackState(prevIdx);
@@ -201,6 +205,11 @@ class CckfMeasurementSelectorAdapter {
           ++n_hits;
           ++step;
           firstNonHoleSeen = true;
+          if (!pathInX0Read && ts.has(kPathInX0Key)) {
+            pathInX0 = static_cast<float>(
+                ts.template component<double, kPathInX0Key>());
+            pathInX0Read = true;
+          }
         } else if (flags.isHole()) {
           ++n_holes;
           ++step;
@@ -211,7 +220,6 @@ class CckfMeasurementSelectorAdapter {
           ++step;
           firstNonHoleSeen = true;
         }
-        // Material-only states don't count toward step_k.
 
         prevIdx = ts.previous();
       }
@@ -220,7 +228,7 @@ class CckfMeasurementSelectorAdapter {
       ctx.n_holes = n_holes;
       ctx.n_seq_holes = n_seq_holes;
       ctx.step_k = step;
-      ctx.pathInX0 = 0.0f;  // TODO(task5): accumulate from material
+      ctx.pathInX0 = pathInX0;
 
       m_selector->setBranchContext(ctx);
 
@@ -473,8 +481,18 @@ void writeTimingCsv(const std::string& path, std::size_t eventNumber,
         << "gate_inference_ns,gate_inference_calls,"
         << "gate_feature_ns,gate_feature_calls,"
         << "value_inference_ns,value_inference_calls,"
-        << "meas_selection_ns,meas_selection_calls\n";
+        << "meas_selection_ns,meas_selection_calls,"
+        << "gate_n_accepted,gate_n_rejected,gate_n_outlier_fallback,"
+        << "gate_sum_chi2_accepted,gate_sum_chi2_rejected,"
+        << "gate_max_chi2_accepted,"
+        << "gate_mean_score_accepted,gate_mean_score_rejected,"
+        << "gate_n_nan_features\n";
   }
+  const auto& gd = timers.gate_diag;
+  double mean_score_acc =
+      gd.n_accepted > 0 ? gd.sum_score_accepted / gd.n_accepted : 0.0;
+  double mean_score_rej =
+      gd.n_rejected > 0 ? gd.sum_score_rejected / gd.n_rejected : 0.0;
   out << eventNumber << "," << nSeeds << "," << nTracks << ","
       << timers.gate_inference.total_ns << ","
       << timers.gate_inference.n_calls << ","
@@ -483,7 +501,13 @@ void writeTimingCsv(const std::string& path, std::size_t eventNumber,
       << timers.value_inference.total_ns << ","
       << timers.value_inference.n_calls << ","
       << timers.measurement_selection.total_ns << ","
-      << timers.measurement_selection.n_calls << "\n";
+      << timers.measurement_selection.n_calls << ","
+      << gd.n_accepted << "," << gd.n_rejected << ","
+      << gd.n_outlier_fallback << ","
+      << gd.sum_chi2_accepted << "," << gd.sum_chi2_rejected << ","
+      << gd.max_chi2_accepted << ","
+      << mean_score_acc << "," << mean_score_rej << ","
+      << gd.n_nan_features << "\n";
 }
 
 // ============================================================================
@@ -668,8 +692,34 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
     selCfg.gateWeightsPath = m_cfg.gateWeightsPath;
     selCfg.gateThreshold = m_cfg.gateThreshold;
     selCfg.maxCandidates = m_cfg.gateMaxCandidates;
+    selCfg.chi2Ceiling = m_cfg.gateChi2Ceiling;
     cckfSelector = std::make_unique<cckf::CckfMeasurementSelector>(
         selCfg, clusters, &timers);
+    ACTS_INFO("cCKF gate loaded: threshold=" << m_cfg.gateThreshold
+              << ", maxCandidates=" << m_cfg.gateMaxCandidates
+              << ", chi2Ceiling=" << m_cfg.gateChi2Ceiling);
+    {
+      const auto& wb = cckfSelector->weightBlob();
+      ACTS_INFO("  Gate blob: n_features=" << wb.n_features
+                << " n_hidden=" << wb.n_hidden
+                << " n_layers=" << wb.n_layers);
+      ACTS_INFO("  Platt: a0=" << wb.platt_a0 << " a1=" << wb.platt_a1
+                << " b0=" << wb.platt_b0 << " b1=" << wb.platt_b1);
+      // Log ALL standardization params for diagnostic comparison
+      static const char* featNames[26] = {
+          "res0", "res1", "chol_S_00", "chol_S_10", "chol_S_11", "chi2",
+          "clus_s_u", "clus_s_v", "clus_q_tot",
+          "sigma_uu", "sigma_uv", "sigma_vv",
+          "kappa_u", "kappa_v", "q_tilde", "n_window",
+          "eta", "qop", "step_k", "pathInX0",
+          "pitch_u", "pitch_v", "thickness",
+          "n_hits", "n_holes", "n_seq_holes"};
+      for (uint32_t i = 0; i < wb.n_features && i < 26; ++i) {
+        ACTS_INFO("  std[" << i << " " << featNames[i]
+                  << "]: mean=" << wb.standardization_mean[i]
+                  << " std=" << wb.standardization_std[i]);
+      }
+    }
   } else {
     fallbackAdapter.emplace(
         Acts::MeasurementSelector(m_cfg.measurementSelectorCfg));
@@ -855,6 +905,9 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
 
   for (std::size_t iSeed = 0; iSeed < initialParameters.size(); ++iSeed) {
     m_nTotalSeeds++;
+    if (cckfSelector) {
+      cckfSelector->setSeedIndex(static_cast<uint32_t>(iSeed));
+    }
 
     if (seeds != nullptr) {
       const ConstSeedProxy seed = seeds->at(iSeed);
@@ -1063,6 +1116,96 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   // ---- Timing output ----
   writeTimingCsv(m_cfg.outputTimingPath, ctx.eventNumber, timers,
                  initialParameters.size(), tracks.size());
+
+  // ---- Gate diagnostics log ----
+  if (!m_cfg.gateWeightsPath.empty()) {
+    const auto& gd = timers.gate_diag;
+    double mean_chi2_acc =
+        gd.n_accepted > 0 ? gd.sum_chi2_accepted / gd.n_accepted : 0.0;
+    double mean_chi2_rej =
+        gd.n_rejected > 0 ? gd.sum_chi2_rejected / gd.n_rejected : 0.0;
+    double mean_score_acc =
+        gd.n_accepted > 0 ? gd.sum_score_accepted / gd.n_accepted : 0.0;
+    double mean_score_rej =
+        gd.n_rejected > 0 ? gd.sum_score_rejected / gd.n_rejected : 0.0;
+    ACTS_INFO("Gate diagnostics: accepted=" << gd.n_accepted
+              << " rejected=" << gd.n_rejected
+              << " outlier_fallback=" << gd.n_outlier_fallback
+              << " nan_features=" << gd.n_nan_features);
+    ACTS_INFO("  chi2 accepted: mean=" << mean_chi2_acc
+              << " max=" << gd.max_chi2_accepted);
+    ACTS_INFO("  chi2 rejected: mean=" << mean_chi2_rej);
+    ACTS_INFO("  gate score: mean_accepted=" << mean_score_acc
+              << " mean_rejected=" << mean_score_rej);
+
+    // Per-step chi2 aggregation — shows compound error building over depth
+    {
+      const auto& ps = timers.per_step;
+      ACTS_INFO("  Per-step chi2 of accepted hits:");
+      for (int k = 0; k < cckf::PerStepStats::MAX_STEPS; ++k) {
+        if (ps.n_accepted[k] == 0) continue;
+        double mean_acc = ps.sum_chi2_accepted[k] / ps.n_accepted[k];
+        double mean_all = ps.n_total_candidates[k] > 0
+                              ? ps.sum_chi2_all[k] / ps.n_total_candidates[k]
+                              : 0.0;
+        ACTS_INFO("    step " << k << ": accepted=" << ps.n_accepted[k]
+                  << " mean_chi2_acc=" << mean_acc
+                  << " total_cands=" << ps.n_total_candidates[k]
+                  << " mean_chi2_all=" << mean_all);
+      }
+    }
+
+    // Track-level feature traces — raw features at every step for first N seeds
+    if (!m_cfg.outputTimingPath.empty()) {
+      const auto& tt = timers.track_trace;
+      std::string tracePath = m_cfg.outputTimingPath;
+      auto dot = tracePath.rfind('.');
+      if (dot != std::string::npos) {
+        tracePath = tracePath.substr(0, dot) + "_traces.csv";
+      } else {
+        tracePath += "_traces.csv";
+      }
+      bool writeHdr = false;
+      {
+        std::ifstream probe(tracePath);
+        writeHdr = !probe.good() ||
+                   probe.peek() == std::ifstream::traits_type::eof();
+      }
+      std::ofstream fout(tracePath, std::ios::app);
+      if (fout) {
+        if (writeHdr) {
+          fout << "event,seed,step_k,cand_idx,accepted,chi2,score,"
+               << "n_cands_total,n_accepted,"
+               << "res0,res1,chol_S_00,chol_S_10,chol_S_11,chi2_feat,"
+               << "clus_s_u,clus_s_v,clus_q_tot,"
+               << "clus_sigma_uu,clus_sigma_uv,clus_sigma_vv,"
+               << "kappa_u,kappa_v,q_tilde,n_window,"
+               << "eta,qop,step_k_feat,pathInX0,"
+               << "pitch_u,pitch_v,thickness,"
+               << "n_hits,n_holes,n_seq_holes\n";
+        }
+        for (int t = 0; t < tt.n_tracks; ++t) {
+          for (int s = 0; s < tt.step_counts[t]; ++s) {
+            const auto& se = tt.entries[t][s];
+            for (int c = 0; c < se.n_cands_stored; ++c) {
+              const auto& ce = se.cands[c];
+              fout << ctx.eventNumber << "," << se.seed_idx << ","
+                   << se.step_k << "," << c << ","
+                   << (ce.accepted ? 1 : 0) << ","
+                   << ce.chi2 << "," << ce.score << ","
+                   << se.n_cands_total << "," << se.n_accepted;
+              for (int j = 0; j < 26; ++j) {
+                fout << "," << ce.features[j];
+              }
+              fout << "\n";
+            }
+          }
+        }
+      }
+      ACTS_INFO("  track traces: " << tt.n_tracks << " seeds, written to "
+                << tracePath);
+    }
+  }
 
   // ---- Build const output ----
   auto constTrackStateContainer =
