@@ -677,3 +677,245 @@ would silently accept them. **Awaiting explicit confirmation before deleting.**
 `train_value.py` streaming path (67c1d1d), `cckf/stage1_map.py` provenance map
 (82ade1e), value-cache staging with `--only-events` (00cfb35), and the
 `patch_event` write guard (9385520).
+
+---
+
+## 2026-08-18 — Value function V_φ training complete
+
+**Status:** Complete. Blocker resolved.
+
+The join-key blocker from Aug 17 was fixed by switching from `(seed_id,
+measurement_id)` to `(seed_id, geometry_id)`. Once the join succeeded,
+`patch_selected_all` ran on all 32 events, and V_φ training proceeded
+normally. Architecture: 11→128→128→1 SiLU, 18,177 params. Target:
+V^{π†} = min(completeness, purity) as a soft label ∈ [0, 1], trained
+with BCE. Identity Platt calibrator (raw sigmoid best calibrated).
+
+---
+
+## 2026-08-19 — ACTS C++ integration complete
+
+**Status:** Complete. Build passing and stable.
+
+All 10 SDD tasks implemented: hand-written MLP kernel, weight blob
+loader, gate measurement selector, value branch stopper, algorithm glue,
+sensor lookup table, instrumentation patch extension, Python bindings,
+per-event timing CSV, and Pareto sweep harness.
+
+6 build-fix commits post-SDD (726a7a5..c39d150):
+- Missing GainMatrixUpdater include
+- Constructor param shadowing logger()
+- GeometryContext private default constructor
+- `.template segment<3>()` in template context
+- sizeof incomplete type for SensorLookup
+- PRIVATE→PUBLIC include dirs for Python bindings
+
+Gate and value weights exported to CCKF binary blobs on Modal volume.
+
+---
+
+## 2026-08-19/20 — First cCKF inference runs (real weights)
+
+**Status:** In progress. Runs 5 and 6 active.
+
+First real-weights inference on Modal using tight_t79 MOTPE-optimized
+seeding (137,756 seeds per event at μ=200). Single validation event.
+
+### Key findings so far
+
+1. **Gate dominates wall time.** 57M gate calls per event, ~31 μs each
+   → 88% of CKF wall time. This is expected: μ=200 pileup means many
+   candidate hits per surface.
+
+2. **tight_t79 track selection was optimized for standard CKF, not
+   cCKF.** The learned gate rejects hits at many layers, creating holes.
+   The tight_t79 parameters (nMeasMin=9, maxHolesAndOutliers=1) were too
+   aggressive — every track found by the CKF failed selection.
+
+3. **Track selection ≠ CKF branch management.** `tracks.size()` in the
+   timing CSV counts *selected* tracks (post-selection in `addTrack`),
+   not *found* tracks. `m_nFoundTracks` in the finalize log counts all
+   tracks entering `addTrack`.
+
+### Run log
+
+| Run | Gate | Value | nMeasMin | maxHoles | ptMin | Ambi | Result |
+|-----|------|-------|----------|----------|-------|------|--------|
+| 1   | 0.5  | 0.2   | 9        | 1        | 0.46  | yes  | 249,675 found, 0 selected. nMeasMin=9 too strict for gate-induced holes. |
+| 2   | 0.3  | 0.15  | 7        | 1        | 0.46  | yes  | **Timed out** after 1h (3600s). Gate threshold 0.3 → massive branching (~10 seeds/sec vs ~5000/sec at gate=0.5). Seed 35472 alone produced 159+ tracks. |
+| 3   | 0.5  | 0.2   | 7        | 1        | 0.46  | yes  | 249,675 found, 0 selected. Root cause: maxHoles=1 killed every track (gate creates holes at many layers). |
+| 4   | 0.5  | 0.2   | 5        | 15       | 0.46  | yes  | Cancelled by Modal at ~50% (likely resource conflict with timed-out Run 2). |
+| 5   | 0.4  | 0.2   | 5        | 15       | 0.46  | yes  | 278K found, 12,631 selected. **ε=0.83%, f=30.0%.** Near-zero efficiency despite many selected tracks. |
+| 6   | 0.5  | 0.2   | disabled | disabled | off   | no   | 237K found, 235,996 selected. **ε=0.013%, f=7.0%.** All selection disabled; raw track quality is terrible. SIGABRT on exit (memory corruption in cleanup, after results written). |
+
+### Parameter catalog
+
+All CKF parameters that interact with gate/value decisions:
+
+**Gate parameters:**
+- `cckf_gate_threshold` (τ_g): P(same particle) cutoff. Lower → more candidates, more branching, much slower.
+- `cckf_gate_max_candidates`: Max candidates kept per surface (sorted by gate score). Default 10.
+- `ckf_chi2CutOffMeasurement`: χ² cutoff for window search. Gate operates on hits within this window.
+- `chi2OutlierCutoff` (hardcoded 100.0): When NO candidate passes gate, keeps min-χ² hit as outlier if χ² < 100.
+
+**Value parameters:**
+- `cckf_value_threshold` (τ_v): P(branch completes) cutoff. Lower → more branches survive.
+- `minMeasurementsBeforePrune` (hardcoded 3): Don't evaluate value until ≥3 measurements.
+- `minMeasurementsForKeep` (hardcoded 6): Stopped branches with <6 measurements → StopAndDrop.
+
+**Track selection (post-CKF filtering in `addTrack`):**
+- `ckf_nMeasurementsMin`: Min measurements for a track to pass selection.
+- `ckf_maxHolesAndOutliers`: Max holes + outliers allowed.
+- `ckf_ptMin`: Minimum pT.
+- `ckf_absEtaMax`: Pseudorapidity cut (not currently set).
+
+**CKF branch management:**
+- `maxPixelHoles`, `maxStripHoles` (not currently set — defaults in ACTS)
+- `twoWay`: Two-pass CKF (forward then backward). Enabled.
+- `trimTracks`: Trim final track. Default.
+- `seedDeduplication`: Remove duplicate seeds. Enabled.
+- `stayOnSeed`: CKF stays on seed measurements. Enabled.
+
+### Root cause investigation (Aug 19-20)
+
+Runs 5/6 find 200K+ tracks but almost none DM-match truth particles (ε ≈ 0%).
+Baseline standard CKF achieves 37.3%. Investigation findings:
+
+**Verified correct:**
+- Feature order (26-dim) matches between C++ and Python
+- Cholesky, kappa_u/v, q_tilde math matches Python exactly
+- SensorLookup loads valid data (9 ODD volumes, real pitch/thickness values)
+- Weight blob format matches between export_weights.py and WeightBlob.hpp
+- MLP forward pass and Platt calibration formulas are correct
+- Standardization pipeline: compute_norm_stats correctly sets mean=0,std=1 for
+  NO_STANDARDIZE features (n_hits, n_holes, n_seq_holes at indices 23-25)
+
+**Confirmed bug:** `pathInX0 = 0.0` hardcoded at CckfTrackFindingAlgorithm.cpp:223.
+Feature 19 (pathInX0_interval) is always zero in C++ but has real values in
+training data. Fix: read pathInX0_interval from most recent measurement track
+state's dynamic column (written by instrumentation.patch).
+
+**DAgger distribution shift:** Gate was trained on standard CKF track states but
+deployed with its own decisions feeding back into predicted state. Expected to
+cause some degradation but not 0% efficiency.
+
+**Missing diagnostic:** Chi² of gate-accepted hits was not logged. If the gate
+accepts hits with extremely large chi² (e.g. >100), it's essentially accepting
+random noise hits from other particles. This would explain why tracks have
+measurements from many different particles and can't be DM-matched.
+
+### Diagnostic changes (Aug 20)
+
+Added to C++ code for next rebuild:
+1. **Chi² + gate score diagnostics** — CckfTimers::GateDiagnostics accumulates
+   per-event: n_accepted, n_rejected, n_outlier_fallback, sum/max chi2 for
+   accepted, mean gate score for accepted vs rejected, n_nan_features
+2. **Timing CSV extended** — 9 new columns: gate_n_accepted, gate_n_rejected,
+   gate_n_outlier_fallback, gate_sum/max_chi2_accepted, gate_sum_chi2_rejected,
+   gate_mean_score_accepted/rejected, gate_n_nan_features
+3. **Standardization logging at startup** — dumps Platt params and std[23-25]
+   (the NO_STANDARDIZE features) to verify mean=0, std=1 at runtime
+4. **pathInX0 fix** — reads pathInX0_interval from most recent measurement
+   track state (previous interval's X/X0, reasonable proxy)
+
+---
+
+## 2026-08-21 — Training-data purity audit (all 32 events)
+
+**Status:** Complete. Two defects found, both confined to events 0-3.
+**Git hash:** fce31a3
+**Tooling:** `sweep_parquet_purity.py` (read-only Modal job, no volume commits).
+
+### Why this ran
+
+Chasing the nSigma window mismatch (below), the expanded Parquets turned out to
+contain rows with `S11 = NaN` on sensors that digitise 2D. `expand_trackstates`
+filters `S11.notna()`, so those rows should not exist. That prompted a full
+audit of all 32 events: 259,893,979 trainable gate rows
+(`gate_row_mask` per `cckf/labels.py`).
+
+### Result — two disjoint populations
+
+| group | events | S11 lost | long-strip | pos rate | n_window |
+|-------|--------|----------|------------|----------|----------|
+| A | 0, 1, 2, 3 | 34.3-35.0% | 9.6-9.9% | 3.09-3.45% | ~16 |
+| B | 4-31 (28 events) | 0% | 0% | 0.29-0.85% | 19-31 |
+
+Totals across all 32 events:
+
+| stratum | rows | share | pos rate |
+|---------|------|-------|----------|
+| clean | 244,894,282 | 94.23% | 0.553% |
+| corrupted (2D sensor, S11 lost) | 11,699,732 | 4.50% | 0.902% |
+| genuine 1D long-strip (vol 28/29/30) | 3,299,965 | 1.27% | 20.383% |
+
+**Defect 1 — S11 lost on 2D sensors (events 0-3 only).** Volumes 16/17/18 and
+23/24/25 all digitise `(0, 1)` per `configs/odd-digi-geometric-config.json`, so
+they have a real l1 coordinate. On 34-35% of events 0-3's trainable rows,
+`S11` and `residual_l1` are absent and `chi2_inc` was recomputed as the 1D form
+`r0^2/S00` (verified: matches to rel diff 0.0). Gate features 1, 3, 4, 5
+(`res1`, `chol_S_10`, `chol_S_11`, `chi2`) are therefore wrong on those rows.
+
+**Defect 2 — long strips absent from 28 of 32 events.** Volumes 28/29/30
+digitise `(0,)` and are genuinely 1D, so their `S11_prt` is NaN by design
+(`instrumentation.patch` only fills s01/s11 when `calibratedSize() >= 2`).
+`expand_trackstates`'s `S11.notna()` filter drops every one of them. Only
+events 0-3 retain long-strip rows; they are 1.27% of the training set, and the
+val and cal splits contain **none**. The gate meets volumes 28/29/30 at
+inference with effectively no training signal and no calibration coverage.
+
+### Split base rates
+
+| split | events | rows | pos rate | Group A share |
+|-------|--------|------|----------|---------------|
+| train | 24 | 191,412,582 | 0.9565% | 17.71% |
+| val | 4 | 24,108,662 | 0.5683% | 0% |
+| cal | 4 | 44,372,735 | 0.3699% | 0% |
+
+train/cal ratio **2.59x**; excluding events 0-3 from train it falls to 0.4729%,
+a ratio of **1.28x**.
+
+**Confound, stated explicitly:** within Group B the positive rate tracks
+occupancy inversely as expected (event 7, n_window 31.2 -> 0.285%; event 24,
+n_window 18.9 -> 0.852%). That is exactly what the occupancy-conditional Platt
+fit (spec §10.3) exists to absorb, so the residual 1.28x is likely benign. What
+is *not* explainable that way: Group A has **lower** occupancy (~16) yet a
+**higher** positive rate (3.2%) — backwards from the trend, driven by
+long-strip rows at 20.4% positive. No calibration event contains that
+population, so the calibrator cannot absorb it.
+
+### Clean results
+
+- **Box criterion confirmed at full scale.** Zero violations of
+  `|r0| <= 10*sqrt(S00)` and `|r1| <= 10*sqrt(S11)` across all 259.9M trainable
+  rows. The n=10 axis-aligned box is definitively the selection criterion used
+  to build the training set.
+- **`vstar_soft` is a dead column** — 0 finite cells in all 32 events. It is
+  never read: the value target is `vstar_t2` from `cckf/value_target.py`. Not a
+  defect.
+- **Value function is not exposed to defect 1.** `VALUE_SOURCE_COLUMNS` takes
+  `sigma2_l0`/`sigma2_l1` from `cov_00`/`cov_06` (the bound track covariance C),
+  not from the innovation S. The only indirect path is
+  `sum_gate_logodds`/`min_gate_logodds`, which inherit gate outputs on events
+  0-3 (17.7% of train rows).
+
+### Provenance — unresolved
+
+The current tree cannot produce either group. `expand_trackstates` has carried
+the `S11.notna()` filter since the original commit 416c39b (verified with
+`git log --all -S` across every ref), and `chi2_increment_batch` has no 1D path
+— with `s11 = NaN` its fallback yields NaN, not `r0^2/S00`. The Group A/B break
+falls exactly at the events 0-3 / 4-31 boundary, consistent with a code change
+landing between Stage 1 batch 2 and batch 3 (`expand_all_events` runs events in
+pairs). Settling it needs the Stage 3 patch-job source or the Aug 10-12 run
+logs.
+
+### Conclusion
+
+Recommendation: **drop events 0-3 from the train split** (one change in
+`cckf/splits.py`). Costs 17.7% of train rows, removes 100% of defect 1, and
+brings train/cal to 1.28x. Re-expanding 0-3 would not help — the `S11.notna()`
+filter would convert them to Group B. The proper fix (teach
+`expand_trackstates` to handle 1D measurements, re-expand all 32, retrain)
+restores long-strip coverage but costs a full re-expansion plus gate retrain.
+Not yet actioned.

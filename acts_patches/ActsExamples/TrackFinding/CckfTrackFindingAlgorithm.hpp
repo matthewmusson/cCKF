@@ -149,6 +149,10 @@ class CckfTrackFindingAlgorithm final : public IAlgorithm {
     std::size_t gateMaxCandidates = 10;
     /// Hard chi2 ceiling: reject hits above this regardless of gate score.
     float gateChi2Ceiling = 15.0f;
+    /// Spatial pre-filter window in units of sigma. Only candidates within
+    /// this bounding box of the predicted measurement are scored by the
+    /// gate MLP. 0 disables (all candidates on the surface are scored).
+    float gateWindowNSigma = 0.0f;
     /// Whiteboard key for the ClusterContainer (needed for gate
     /// features: cluster size, charge, second moments).
     std::string inputClusters;

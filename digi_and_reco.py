@@ -188,6 +188,7 @@ def addCckfTracks(
     value_threshold = float(getattr(config, "cckf_value_threshold", 0.1))
     gate_max_candidates = int(getattr(config, "cckf_gate_max_candidates", 10))
     gate_chi2_ceiling = float(getattr(config, "cckf_gate_chi2_ceiling", 15.0))
+    gate_window_nsigma = float(getattr(config, "cckf_gate_window_nsigma", 0.0))
 
     timing_output = getattr(config, "cckf_timing_output", None)
     outputTimingPath = str(output_dir / timing_output) if timing_output else ""
@@ -201,12 +202,13 @@ def addCckfTracks(
 
     logger.info(
         "cCKF enabled: gate_weights=%s value_weights=%s gateThreshold=%s "
-        "valueThreshold=%s gateMaxCandidates=%s",
+        "valueThreshold=%s gateMaxCandidates=%s windowNSigma=%s",
         gate_weights or "<none>",
         value_weights or "<none>",
         gate_threshold,
         value_threshold,
         gate_max_candidates,
+        gate_window_nsigma,
     )
 
     trackFinder = acts.examples.CckfTrackFindingAlgorithm(
@@ -244,6 +246,7 @@ def addCckfTracks(
         valueThreshold=value_threshold,
         gateMaxCandidates=gate_max_candidates,
         gateChi2Ceiling=gate_chi2_ceiling,
+        gateWindowNSigma=gate_window_nsigma,
         outputTimingPath=outputTimingPath,
         digiConfigPath=digiConfigPath,
         **acts.examples.defaultKWArgs(

@@ -60,6 +60,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <iostream>
 #include <ostream>
 #include <stdexcept>
 #include <unordered_map>
@@ -150,6 +151,7 @@ class CckfMeasurementSelectorAdapter {
                          std::vector<Traj::TrackStateProxy>::iterator>>
   select(std::vector<Traj::TrackStateProxy>& candidates, bool& isOutlier,
          const Acts::Logger& logger) const {
+    std::cerr << "DIAG gate-select: " << candidates.size() << " cands" << std::endl;
     // ---- stayOnSeed logic (same as TrackFindingAlgorithm) ----
     if (m_seed.has_value()) {
       std::vector<Traj::TrackStateProxy> newCandidates;
@@ -170,7 +172,7 @@ class CckfMeasurementSelectorAdapter {
       // Extract eta and q/p from the predicted bound parameters on this
       // surface. All candidates share the same predicted state (they are
       // on the same surface for the same branch).
-      const auto predicted = candidates[0].predicted();
+      const auto predicted = candidates[0].predicted().eval();
       constexpr float kThetaEps = 1e-6f;
       constexpr float kPi = 3.14159265358979323846f;
       float theta = static_cast<float>(predicted[Acts::eBoundTheta]);
@@ -373,6 +375,7 @@ class CckfBranchStopperWrapper {
   BranchStopperResult operator()(
       const TrackContainer::TrackProxy& track,
       const TrackContainer::TrackStateProxy& trackState) const {
+    std::cerr << "DIAG branchStopper: nMeas=" << track.nMeasurements() << std::endl;
     // Update step_k: count every sensitive surface (measurement, hole, or
     // outlier). The CKF actor calls the branch stopper for each of these.
     kStepKWriter(track) += 1.0f;
@@ -486,7 +489,12 @@ void writeTimingCsv(const std::string& path, std::size_t eventNumber,
         << "gate_sum_chi2_accepted,gate_sum_chi2_rejected,"
         << "gate_max_chi2_accepted,"
         << "gate_mean_score_accepted,gate_mean_score_rejected,"
-        << "gate_n_nan_features\n";
+        << "gate_n_nan_features,"
+        // Appended, not inserted: existing analysis scripts index the columns
+        // above positionally. gate_n_outlier_fallback is retained for the same
+        // reason but is now always 0 -- cCKF no longer emits outliers.
+        << "gate_n_window_prefiltered,"
+        << "hole_no_measurements,hole_window_failure,hole_gate_failure\n";
   }
   const auto& gd = timers.gate_diag;
   double mean_score_acc =
@@ -507,7 +515,10 @@ void writeTimingCsv(const std::string& path, std::size_t eventNumber,
       << gd.sum_chi2_accepted << "," << gd.sum_chi2_rejected << ","
       << gd.max_chi2_accepted << ","
       << mean_score_acc << "," << mean_score_rej << ","
-      << gd.n_nan_features << "\n";
+      << gd.n_nan_features << ","
+      << gd.n_window_prefiltered << ","
+      << gd.n_hole_no_measurements << "," << gd.n_hole_window_failure << ","
+      << gd.n_hole_gate_failure << "\n";
 }
 
 // ============================================================================
@@ -693,11 +704,13 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
     selCfg.gateThreshold = m_cfg.gateThreshold;
     selCfg.maxCandidates = m_cfg.gateMaxCandidates;
     selCfg.chi2Ceiling = m_cfg.gateChi2Ceiling;
+    selCfg.gateWindowNSigma = m_cfg.gateWindowNSigma;
     cckfSelector = std::make_unique<cckf::CckfMeasurementSelector>(
         selCfg, clusters, &timers);
     ACTS_INFO("cCKF gate loaded: threshold=" << m_cfg.gateThreshold
               << ", maxCandidates=" << m_cfg.gateMaxCandidates
-              << ", chi2Ceiling=" << m_cfg.gateChi2Ceiling);
+              << ", chi2Ceiling=" << m_cfg.gateChi2Ceiling
+              << ", windowNSigma=" << m_cfg.gateWindowNSigma);
     {
       const auto& wb = cckfSelector->weightBlob();
       ACTS_INFO("  Gate blob: n_features=" << wb.n_features
@@ -733,6 +746,13 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
     stopCfg.valueThreshold = m_cfg.valueThreshold;
     cckfStopper =
         std::make_unique<cckf::CckfBranchStopper>(stopCfg, &timers);
+    ACTS_INFO("cCKF value loaded: threshold=" << m_cfg.valueThreshold);
+    {
+      const auto& vb = cckfStopper->weightBlob();
+      ACTS_INFO("  Value blob: n_features=" << vb.n_features
+                << " n_hidden=" << vb.n_hidden
+                << " n_layers=" << vb.n_layers);
+    }
   }
 
   // ---- Track containers ----
@@ -871,6 +891,10 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   extrapolationOptions.endOfWorldVolumeIds = m_cfg.endOfWorldVolumeIds;
 
   // ---- Main seed loop ----
+  ACTS_INFO("cCKF setup complete. Starting seed loop with "
+            << initialParameters.size() << " seeds, "
+            << (cckfStopper ? "value ON" : "value OFF") << ", "
+            << (cckfSelector ? "gate ON" : "gate OFF"));
   ACTS_DEBUG("Invoke cCKF track finding with " << initialParameters.size()
                                                << " seeds.");
 
@@ -947,8 +971,10 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
     auto firstRootBranch = tracksTemp.makeTrack();
     initCckfColumns(firstRootBranch);
 
+    std::cerr << "DIAG findTracks enter seed=" << iSeed << std::endl;
     auto firstResult = (*m_cfg.findTracks)(firstInitialParameters, firstOptions,
                                            tracksTemp, firstRootBranch);
+    std::cerr << "DIAG findTracks exit seed=" << iSeed << " ok=" << firstResult.ok() << std::endl;
     nSeed++;
 
     if (!firstResult.ok()) {
@@ -1138,6 +1164,10 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
               << " rejected=" << gd.n_rejected
               << " outlier_fallback=" << gd.n_outlier_fallback
               << " nan_features=" << gd.n_nan_features);
+    ACTS_INFO("  window prefiltered=" << gd.n_window_prefiltered);
+    ACTS_INFO("  holes by cause: no_measurements=" << gd.n_hole_no_measurements
+              << " window_failure=" << gd.n_hole_window_failure
+              << " gate_failure=" << gd.n_hole_gate_failure);
     ACTS_INFO("  cluster feature path: ok=" << gd.n_cluster_ok
               << " no_clusters_ptr=" << gd.n_no_clusters_ptr
               << " no_uncal_sl=" << gd.n_no_uncal_sl

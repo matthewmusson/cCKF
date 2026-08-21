@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -89,6 +90,8 @@ class CckfBranchStopper {
         m_valueInference(
             std::make_unique<MlpInference>(WeightBlob::load(config.valueWeightsPath))) {}
 
+  const WeightBlob& weightBlob() const { return m_valueInference->blob(); }
+
   /// Number of branches this instance has stopped via the value function
   /// (diagnostic only). Plain counter, not atomic: BranchStopper instances
   /// are per-thread / per-event, so there is no concurrent writer -- an
@@ -121,8 +124,8 @@ class CckfBranchStopper {
     // the built-in accessor instead of hand-rolling the same fallback
     // avoids a std::hasFiltered()-ternary of two Eigen map types that must
     // otherwise be kept in lockstep by hand.
-    const auto params = trackState.parameters();
-    const auto cov = trackState.covariance();
+    const auto params = trackState.parameters().eval();
+    const auto cov = trackState.covariance().eval();
 
     // eta = -log(tan(theta/2)), theta clipped away from the poles. Matches
     // cckf/features.py::eta_from_theta exactly (_THETA_EPS = 1e-6) rather
@@ -179,10 +182,23 @@ class CckfBranchStopper {
 
     // Value inference: raw logit -> sigmoid. No Platt calibration -- the
     // value function is not calibrated the way the gate is (design note 4).
+    for (int fi = 0; fi < 11; ++fi) {
+      if (!std::isfinite(features[fi])) {
+        std::cerr << "DIAG value NaN/inf at feature[" << fi << "]=" << features[fi] << std::endl;
+      }
+    }
+    if (m_nValueCalls < 3) {
+      std::cerr << "DIAG value features[" << m_nValueCalls << "]:";
+      for (int fi = 0; fi < 11; ++fi) std::cerr << " " << features[fi];
+      std::cerr << std::endl;
+    }
+    std::cerr << "DIAG value fwd enter call=" << m_nValueCalls << std::endl;
     auto t0 = std::chrono::steady_clock::now();
     float logit = m_valueInference->forward(features);
     float prob = 1.0f / (1.0f + std::exp(-logit));
+    std::cerr << "DIAG value fwd exit logit=" << logit << " prob=" << prob << std::endl;
     auto t1 = std::chrono::steady_clock::now();
+    ++m_nValueCalls;
     if (m_timers != nullptr) {
       m_timers->value_inference.record(t0, t1);
     }
@@ -211,6 +227,7 @@ class CckfBranchStopper {
   std::unique_ptr<MlpInference> m_valueInference;
   CckfTimers* m_timers = nullptr;
   mutable std::size_t m_nStoppedBranches = 0;
+  mutable std::size_t m_nValueCalls = 0;
 };
 
 }  // namespace cckf

@@ -43,6 +43,17 @@ struct GateDiagnostics {
   int64_t n_index_oob = 0;
   int64_t n_cluster_ok = 0;
   int64_t n_no_geocontext = 0;
+  int64_t n_window_prefiltered = 0;
+
+  /// Mutually exclusive, exhaustive causes of a hole. Splitting them is what
+  /// tells us whether the gate or the geometry/seeding is driving efficiency:
+  /// only n_hole_gate_failure is attributable to the learned decision.
+  /// The first two mirror spec §7.4's ACTION_HOLE_NO_MEASUREMENTS and
+  /// ACTION_HOLE_WINDOW_FAILURE; the third has no training analogue because
+  /// expansion.py deferred the accept/reject decision offline.
+  int64_t n_hole_no_measurements = 0;  ///< zero candidates on the surface
+  int64_t n_hole_window_failure = 0;   ///< candidates existed, none in the box
+  int64_t n_hole_gate_failure = 0;     ///< in-box candidates, none passed tau_g
 };
 
 /// Per-step chi2/score aggregation across all seeds. Tells us whether
