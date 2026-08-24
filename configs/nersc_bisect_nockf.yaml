@@ -1,0 +1,48 @@
+# nersc_bisect_nockf.yaml
+# Phase 1 run C: CONTROL. Standard CKF, no cCKF at all. MUST pass or nothing downstream means anything.
+# Generated for docs/superpowers/plans/2026-08-24-sigsegv-systematic-debug.md
+# cCKF with tight_t79 seeding — learned gate + value, real weights
+# Seeding from joint MOTPE trial 79 (spec §4.2): high efficiency, low fakes
+digi: true
+reco: true
+ckf: false
+ambi: false
+
+# Use cCKF algorithm instead of standard CKF
+cckf: false
+cckf_gate_weights: ""
+cckf_value_weights: ""
+cckf_gate_threshold: 0.5
+cckf_value_threshold: 0.2
+cckf_gate_max_candidates: 6
+cckf_gate_window_nsigma: 10.0
+cckf_digi_config: odd-digi-geometric-config.json
+digi_config: odd-digi-geometric-config.json
+cckf_timing_output: timing.csv
+
+# tight_t79 seeding (MOTPE-optimized)
+num_seeds_per_spm: 16
+seed_minPt: 0.6876416997703818
+seed_impactMax: 2.5032955914538624
+seed_sigmaScattering: 2.3396240725684057
+
+# tight_t79 CKF params
+ckf_chi2CutOffMeasurement: 16.255929655134203
+ckf_chi2CutOffOutlier: 20.657664491030744
+ckf_numMeasurementsCutOff: 3
+
+# tight_t79 track selection
+ckf_nMeasurementsMin: 5
+ckf_maxHolesAndOutliers: 15
+ckf_ptMin: 0.4597609399152028
+
+# 1 val event (event 4; [32,64) stays sealed)
+events: 1
+skip: 4
+threads: 1
+
+# Writers
+ckf_finding_performance: true
+ambi_finding_performance: true
+write_track_states: false
+write_track_summary: true
