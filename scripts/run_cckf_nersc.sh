@@ -78,6 +78,29 @@ export PYTHONPATH="${ACTS_INSTALL}/python:${REPO_ROOT}:${PY_SITES%:}"
 export LD_LIBRARY_PATH="${ACTS_INSTALL}/lib:${ODD_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
 export ODD_PATH="${ODD_INSTALL}/share/OpenDataDetector"
 
+# edm4hep/podio ROOT dictionaries.
+#
+# Without these, ROOT cannot deserialise edm4hep classes and emits
+#   "no dictionary for class edm4hep::MCParticleData is available"
+# podio then builds collections out of garbage, and the failure mode depends
+# on what the garbage happens to be:
+#   - nonsense collection sizes -> enormous allocations -> OOM (476 GB on a
+#     single event)
+#   - garbage pointers -> SIGSEGV in
+#     edm4hep::MCParticleCollection::prepareAfterRead()
+# Both were observed on 2026-08-24 before this was added.
+#
+# ROOT locates dictionaries through the .rootmap files beside the libraries,
+# so the lib dirs must be on LD_LIBRARY_PATH and the headers on
+# ROOT_INCLUDE_PATH. scripts/subset_edm4hep.py does the equivalent from
+# Python via ROOT.gSystem.Load.
+_root_inc=""
+for p in /spack/opt/spack/linux-x86_64/edm4hep-*/ /spack/opt/spack/linux-x86_64/podio-*/; do
+    [[ -d "${p}lib" ]] && export LD_LIBRARY_PATH="${p}lib:${LD_LIBRARY_PATH}"
+    [[ -d "${p}include" ]] && _root_inc="${p}include:${_root_inc}"
+done
+export ROOT_INCLUDE_PATH="${_root_inc}${ROOT_INCLUDE_PATH:-}"
+
 PY=$(ls -d /spack/opt/spack/linux-x86_64/python-3.13*/bin/python3 | head -1)
 
 if [[ "${MALLOC_DEBUG}" == "1" ]]; then
