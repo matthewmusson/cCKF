@@ -52,14 +52,29 @@ shifter --image="${CCKF_IMAGE}" \
     -- bash -s <<'CONTAINER_EOF'
 set -euo pipefail
 
-# Our patched ACTS python bindings, plus the spack py-* packages (numpy,
-# pyyaml, ...). The py-* glob deliberately excludes spack's ACTS python
-# directory, whose json.py shadows stdlib json.
+# Source the dependency environment FIRST. dd4hep resolves its plugins
+# (libDDCorePlugins.so and the .components files beside it) through
+# LD_LIBRARY_PATH. Without this, geometry construction dies with
+#   "Failed to locate plugin to interprete files of type lccdd
+#    - no factory:lccdd_XML_reader"
+# long before any track finding. ROOT and podio need the same treatment.
+# nounset is disabled around it because the spack scripts reference
+# undefined variables (build_patched_acts.sh does the same).
+set +u
+for dd in /spack/opt/spack/linux-x86_64/dd4hep-*/bin/thisdd4hep.sh; do
+    [[ -f "$dd" ]] && source "$dd" 2>/dev/null || true
+done
+[[ -f "${ACTS_INSTALL}/bin/this_acts_withdeps.sh" ]] && \
+    source "${ACTS_INSTALL}/bin/this_acts_withdeps.sh" 2>/dev/null || true
+set -u
+
+# Now re-assert our paths so they take precedence over anything the setup
+# scripts prepended. Two things matter:
+#   - our ACTS libs must beat spack's stock ACTS (which has no cCKF)
+#   - the py-* glob excludes spack's ACTS python dir, whose json.py shadows
+#     stdlib json
 PY_SITES=$(ls -d /spack/opt/spack/linux-x86_64/py-*/lib/python*/site-packages 2>/dev/null | tr '\n' ':')
 export PYTHONPATH="${ACTS_INSTALL}/python:${REPO_ROOT}:${PY_SITES%:}"
-
-# ODD's factory library must precede everything so getOpenDataDetector finds
-# libOpenDataDetector.so, and our ACTS libs must precede spack's stock ACTS.
 export LD_LIBRARY_PATH="${ACTS_INSTALL}/lib:${ODD_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
 export ODD_PATH="${ODD_INSTALL}/share/OpenDataDetector"
 
