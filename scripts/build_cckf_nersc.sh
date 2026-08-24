@@ -143,50 +143,13 @@ if [[ "${DO_BOOTSTRAP}" == "1" || ! -f "${STAMP}" ]]; then
         echo "Source tree already present, reusing it."
     fi
 
-    # The CMakeLists patching lives in the original build script. Rather than
-    # duplicate that logic (and risk it drifting), reuse it: everything from
-    # the "Applying cCKF integration files" section onward is idempotent-safe
-    # only on a fresh tree, which is what we have here.
-    echo "=== Applying cCKF integration (headers + CMakeLists surgery) ==="
-    CCKF_FRAMEWORK_INC="${ACTS_SOURCE}/Examples/Framework/include/ActsExamples/cckf"
-    CCKF_TF_INC="${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/include/ActsExamples/TrackFinding"
-    CCKF_TF_SRC="${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/src"
-    mkdir -p "${CCKF_FRAMEWORK_INC}"
-    cp "${REPO_ROOT}"/acts_patches/cckf/*.hpp "${CCKF_FRAMEWORK_INC}/"
-    cp "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.hpp" "${CCKF_TF_INC}/"
-    cp "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.cpp" "${CCKF_TF_SRC}/"
-
-    TF_CMAKE="${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/CMakeLists.txt"
-    if ! grep -q "CckfTrackFindingAlgorithm.cpp" "${TF_CMAKE}"; then
-        sed -i.bak 's|src/TrackFindingAlgorithm\.cpp|src/TrackFindingAlgorithm.cpp\n    src/CckfTrackFindingAlgorithm.cpp|' "${TF_CMAKE}"
-        rm -f "${TF_CMAKE}.bak"
-        cat >> "${TF_CMAKE}" <<'CMAKE_EOF'
-
-# cCKF integration (see scripts/build_patched_acts.sh for the rationale).
-target_include_directories(
-    ActsExamplesTrackFinding
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/ActsExamples/TrackFinding
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../Framework/include/ActsExamples
-)
-target_link_libraries(
-    ActsExamplesTrackFinding PUBLIC nlohmann_json::nlohmann_json
-)
-CMAKE_EOF
-        echo "CMakeLists patched."
-    else
-        echo "CMakeLists already patched, skipping."
-    fi
-
-    # Python bindings registration lives in build_patched_acts.sh's PYEOF
-    # block. Mirror it only if not already applied.
-    PY_BINDINGS="${ACTS_SOURCE}/Examples/Python/src/TrackFinding.cpp"
-    if [[ -f "${PY_BINDINGS}" ]] && ! grep -q "CckfTrackFindingAlgorithm" "${PY_BINDINGS}"; then
-        echo "WARNING: Python bindings not registered in ${PY_BINDINGS}."
-        echo "         Run scripts/build_patched_acts.sh's binding step, or"
-        echo "         port its PYEOF block here. cCKF will not be importable"
-        echo "         from Python until this is done."
-    fi
+    # Headers, CMakeLists surgery and the pybind registration all live in
+    # scripts/apply_cckf_integration.sh, shared with build_patched_acts.sh.
+    # Keeping one copy matters most for the pybind block: it enumerates every
+    # Config field by name, and a field missing there is silently ignored at
+    # runtime rather than erroring.
+    ACTS_SOURCE="${ACTS_SOURCE}" CCKF_REPO="${REPO_ROOT}" \
+        bash "${REPO_ROOT}/scripts/apply_cckf_integration.sh"
 
     echo "=== cmake configure ==="
     mkdir -p "${ACTS_BUILD}"
