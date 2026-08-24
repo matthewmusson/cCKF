@@ -124,24 +124,25 @@ if [[ "${DO_BOOTSTRAP}" == "1" || ! -f "${STAMP}" ]]; then
     echo "=== BOOTSTRAP (one-time: clone + patch + configure) ==="
 
     if [[ "${DO_BOOTSTRAP}" == "1" ]]; then
-        # The CMakeLists surgery is not idempotent, so a re-bootstrap must
+
         # start from a clean source tree rather than re-patching in place.
         echo "--bootstrap given: removing existing source tree"
         rm -rf "${ACTS_SOURCE}"
         rm -f "${STAMP}"
     fi
 
+    # NOTE: the clone happens on the HOST, before this container runs. The
+    # image's git cannot do HTTPS -- git-remote-https resolves libcurl-gnutls
+    # against a spack nghttp2 that lacks
+    # nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_validation, and
+    # dies with a symbol lookup error. Nothing about cloning needs the
+    # container anyway; only cmake and make do.
     if [[ ! -d "${ACTS_SOURCE}/.git" ]]; then
-        echo "=== Cloning ACTS @ ${BASE_COMMIT} ==="
-        git clone --filter=blob:none https://github.com/acts-project/acts.git \
-            "${ACTS_SOURCE}"
-        git -C "${ACTS_SOURCE}" checkout "${BASE_COMMIT}"
-
-        echo "=== Applying instrumentation patch ==="
-        git -C "${ACTS_SOURCE}" apply "${REPO_ROOT}/instrumentation.patch"
-    else
-        echo "Source tree already present, reusing it."
+        echo "ERROR: ${ACTS_SOURCE} has no git clone. The host-side clone" >&2
+        echo "       step should have run before entering the container." >&2
+        exit 1
     fi
+    echo "Source tree present (cloned on host), reusing it."
 
     # Headers, CMakeLists surgery and the pybind registration all live in
     # scripts/apply_cckf_integration.sh, shared with build_patched_acts.sh.
@@ -233,6 +234,30 @@ echo
 if ! command -v shifter >/dev/null 2>&1; then
     echo "ERROR: shifter not found. Are you on a Perlmutter login/compute node?" >&2
     exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Host-side clone.
+#
+# Must NOT run inside shifter: the image's git-remote-https resolves
+# libcurl-gnutls against a spack nghttp2 missing
+# nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_validation, so any
+# HTTPS clone dies with a symbol lookup error. The host git is fine.
+# ---------------------------------------------------------------------------
+if [[ "${DO_BOOTSTRAP}" == "1" ]]; then
+    echo "--bootstrap: removing existing source tree"
+    rm -rf "${ACTS_SOURCE}" "${STAMP}"
+fi
+
+if [[ ! -d "${ACTS_SOURCE}/.git" ]]; then
+    echo "=== Cloning ACTS @ ${BASE_COMMIT} (host git) ==="
+    mkdir -p "$(dirname "${ACTS_SOURCE}")"
+    git clone --filter=blob:none https://github.com/acts-project/acts.git \
+        "${ACTS_SOURCE}"
+    git -C "${ACTS_SOURCE}" checkout "${BASE_COMMIT}"
+    echo "=== Applying instrumentation patch ==="
+    git -C "${ACTS_SOURCE}" apply "${REPO_ROOT}/instrumentation.patch"
+    echo "Clone + patch complete."
 fi
 
 run_in_container
