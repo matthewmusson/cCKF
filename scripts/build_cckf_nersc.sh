@@ -1,0 +1,275 @@
+#!/bin/bash
+# Incremental patched-ACTS build for cCKF on NERSC Perlmutter (shifter).
+#
+# WHY THIS EXISTS
+# ---------------
+# scripts/build_patched_acts.sh clones ACTS, re-runs cmake, and rebuilds from
+# scratch on EVERY invocation -- ~20 min per cycle. Since the only thing that
+# actually changes between cycles is a handful of header-only files under
+# acts_patches/cckf/ plus one .cpp, nearly all of that is wasted.
+#
+# This script splits the work in two:
+#
+#   bootstrap  (once)    clone + instrumentation patch + CMakeLists surgery +
+#                        cmake configure. Guarded by a stamp file because the
+#                        CMakeLists patching is NOT idempotent -- it appends a
+#                        target_include_directories() block and sed-inserts a
+#                        source entry, so running it twice corrupts the build.
+#   sync+build (each)    rsync only the cCKF files, then make the two targets
+#                        that include them.
+#
+# Touching acts_patches/cckf/*.hpp recompiles exactly the translation units
+# that include them (CckfTrackFindingAlgorithm.cpp and the pybind TU) plus a
+# relink: order 1-2 minutes rather than 20.
+#
+# USAGE
+#   # Grab an interactive node so SLURM queue wait does not dominate a
+#   # 2-minute build. Keep the window SHORT and exit when done: the CPU
+#   # allocation is 200 node-hours total (Iris, 2026-08-24) and an idle
+#   # salloc bills by wall clock whether or not you are compiling.
+#   salloc -N 1 -C cpu -q interactive -t 00:45:00 -A atlas
+#   ./scripts/build_cckf_nersc.sh              # sync + build (the fast path)
+#   ./scripts/build_cckf_nersc.sh --install    # also `make install`
+#   ./scripts/build_cckf_nersc.sh --bootstrap  # force full re-bootstrap
+#   ./scripts/build_cckf_nersc.sh --targets "ActsExamplesTrackFinding"
+#
+# Tier 3 (infrastructure).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+# Build on SCRATCH: Lustre handles the many-small-files compile pattern far
+# better than CFS/GPFS. SCRATCH is purge-eligible but only after weeks of no
+# access, which is irrelevant on this timescale. Install lands on SCRATCH too;
+# override CCKF_ACTS_ROOT to put it on CFS if you need it to outlive a purge.
+CCKF_ACTS_ROOT="${CCKF_ACTS_ROOT:-${SCRATCH}/cckf/acts}"
+ACTS_SOURCE="${ACTS_SOURCE:-${CCKF_ACTS_ROOT}/src}"
+ACTS_BUILD="${ACTS_BUILD:-${CCKF_ACTS_ROOT}/build}"
+ACTS_INSTALL="${ACTS_INSTALL:-${CCKF_ACTS_ROOT}/install}"
+STAMP="${ACTS_BUILD}/.cckf-bootstrap-complete"
+
+BASE_COMMIT="${BASE_COMMIT:-4de1dcbbb2b8d8b6f14ec2c974d9b3a622028c01}"
+CCKF_IMAGE="${CCKF_IMAGE:-ghcr.io/opendatadetector/sw:0.2.2_linux-ubuntu24.04_gcc-13.3.0}"
+
+# ActsExamplesTrackFinding holds CckfTrackFindingAlgorithm.cpp; the bindings
+# target re-includes our header through the PUBLIC include dirs the bootstrap
+# adds. If the bindings target name differs in this ACTS revision, discover it
+# with:  make help | grep -i python
+BUILD_TARGETS="${BUILD_TARGETS:-ActsExamplesTrackFinding ActsPythonBindings}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || echo 16)}"
+
+DO_BOOTSTRAP=0
+DO_INSTALL=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --bootstrap) DO_BOOTSTRAP=1; shift ;;
+        --install)   DO_INSTALL=1;   shift ;;
+        --targets)   BUILD_TARGETS="$2"; shift 2 ;;
+        --jobs)      JOBS="$2";          shift 2 ;;
+        -h|--help)   sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *) echo "unknown flag: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ ! -d "${REPO_ROOT}/acts_patches" ]]; then
+    echo "ERROR: ${REPO_ROOT}/acts_patches not found. Run from the cCKF repo." >&2
+    exit 1
+fi
+
+mkdir -p "${CCKF_ACTS_ROOT}"
+
+# ---------------------------------------------------------------------------
+# The container payload. Everything below runs INSIDE shifter.
+#
+# Passed via environment rather than string interpolation so paths containing
+# spaces or shell metacharacters cannot break out of the quoting.
+# ---------------------------------------------------------------------------
+run_in_container() {
+    shifter --image="${CCKF_IMAGE}" \
+        --env=ACTS_SOURCE="${ACTS_SOURCE}" \
+        --env=ACTS_BUILD="${ACTS_BUILD}" \
+        --env=ACTS_INSTALL="${ACTS_INSTALL}" \
+        --env=REPO_ROOT="${REPO_ROOT}" \
+        --env=BASE_COMMIT="${BASE_COMMIT}" \
+        --env=STAMP="${STAMP}" \
+        --env=BUILD_TARGETS="${BUILD_TARGETS}" \
+        --env=JOBS="${JOBS}" \
+        --env=DO_BOOTSTRAP="${DO_BOOTSTRAP}" \
+        --env=DO_INSTALL="${DO_INSTALL}" \
+        -- bash -s <<'CONTAINER_EOF'
+set -euo pipefail
+
+# ccache turns a re-bootstrap from ~20 min into ~3-4 min by reusing object
+# files across source trees. Absent in some image builds, so probe rather
+# than assume.
+if command -v ccache >/dev/null 2>&1; then
+    export CCACHE_DIR="${ACTS_BUILD}/../ccache"
+    mkdir -p "${CCACHE_DIR}"
+    export CMAKE_C_COMPILER_LAUNCHER=ccache
+    export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+    echo "ccache: enabled ($(ccache -s 2>/dev/null | head -1))"
+else
+    echo "ccache: not present, continuing without it"
+fi
+
+# -------------------------------------------------------------------------
+# BOOTSTRAP -- clone, patch, configure. Runs once.
+# -------------------------------------------------------------------------
+if [[ "${DO_BOOTSTRAP}" == "1" || ! -f "${STAMP}" ]]; then
+    echo "=== BOOTSTRAP (one-time: clone + patch + configure) ==="
+
+    if [[ "${DO_BOOTSTRAP}" == "1" ]]; then
+        # The CMakeLists surgery is not idempotent, so a re-bootstrap must
+        # start from a clean source tree rather than re-patching in place.
+        echo "--bootstrap given: removing existing source tree"
+        rm -rf "${ACTS_SOURCE}"
+        rm -f "${STAMP}"
+    fi
+
+    if [[ ! -d "${ACTS_SOURCE}/.git" ]]; then
+        echo "=== Cloning ACTS @ ${BASE_COMMIT} ==="
+        git clone --filter=blob:none https://github.com/acts-project/acts.git \
+            "${ACTS_SOURCE}"
+        git -C "${ACTS_SOURCE}" checkout "${BASE_COMMIT}"
+
+        echo "=== Applying instrumentation patch ==="
+        git -C "${ACTS_SOURCE}" apply "${REPO_ROOT}/instrumentation.patch"
+    else
+        echo "Source tree already present, reusing it."
+    fi
+
+    # The CMakeLists patching lives in the original build script. Rather than
+    # duplicate that logic (and risk it drifting), reuse it: everything from
+    # the "Applying cCKF integration files" section onward is idempotent-safe
+    # only on a fresh tree, which is what we have here.
+    echo "=== Applying cCKF integration (headers + CMakeLists surgery) ==="
+    CCKF_FRAMEWORK_INC="${ACTS_SOURCE}/Examples/Framework/include/ActsExamples/cckf"
+    CCKF_TF_INC="${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/include/ActsExamples/TrackFinding"
+    CCKF_TF_SRC="${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/src"
+    mkdir -p "${CCKF_FRAMEWORK_INC}"
+    cp "${REPO_ROOT}"/acts_patches/cckf/*.hpp "${CCKF_FRAMEWORK_INC}/"
+    cp "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.hpp" "${CCKF_TF_INC}/"
+    cp "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.cpp" "${CCKF_TF_SRC}/"
+
+    TF_CMAKE="${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/CMakeLists.txt"
+    if ! grep -q "CckfTrackFindingAlgorithm.cpp" "${TF_CMAKE}"; then
+        sed -i.bak 's|src/TrackFindingAlgorithm\.cpp|src/TrackFindingAlgorithm.cpp\n    src/CckfTrackFindingAlgorithm.cpp|' "${TF_CMAKE}"
+        rm -f "${TF_CMAKE}.bak"
+        cat >> "${TF_CMAKE}" <<'CMAKE_EOF'
+
+# cCKF integration (see scripts/build_patched_acts.sh for the rationale).
+target_include_directories(
+    ActsExamplesTrackFinding
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/ActsExamples/TrackFinding
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../Framework/include/ActsExamples
+)
+target_link_libraries(
+    ActsExamplesTrackFinding PUBLIC nlohmann_json::nlohmann_json
+)
+CMAKE_EOF
+        echo "CMakeLists patched."
+    else
+        echo "CMakeLists already patched, skipping."
+    fi
+
+    # Python bindings registration lives in build_patched_acts.sh's PYEOF
+    # block. Mirror it only if not already applied.
+    PY_BINDINGS="${ACTS_SOURCE}/Examples/Python/src/TrackFinding.cpp"
+    if [[ -f "${PY_BINDINGS}" ]] && ! grep -q "CckfTrackFindingAlgorithm" "${PY_BINDINGS}"; then
+        echo "WARNING: Python bindings not registered in ${PY_BINDINGS}."
+        echo "         Run scripts/build_patched_acts.sh's binding step, or"
+        echo "         port its PYEOF block here. cCKF will not be importable"
+        echo "         from Python until this is done."
+    fi
+
+    echo "=== cmake configure ==="
+    mkdir -p "${ACTS_BUILD}"
+    cd "${ACTS_BUILD}"
+    CMAKE_PREFIX_PATH=$(ls -d /spack/opt/spack/linux-x86_64/*/ | grep -v acts-main | tr '\n' ';')
+    export CMAKE_PREFIX_PATH
+    cmake "${ACTS_SOURCE}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="${ACTS_INSTALL}" \
+        -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}" \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DACTS_BUILD_UNITTESTS=OFF \
+        -DACTS_BUILD_EXAMPLES=ON \
+        -DACTS_BUILD_EXAMPLES_DD4HEP=ON \
+        -DACTS_BUILD_EXAMPLES_EDM4HEP=ON \
+        -DACTS_BUILD_EXAMPLES_GEANT4=ON \
+        -DACTS_BUILD_PLUGIN_DD4HEP=ON \
+        -DACTS_BUILD_PLUGIN_EDM4HEP=ON \
+        -DACTS_BUILD_PLUGIN_ROOT=ON \
+        -DACTS_BUILD_EXAMPLES_ROOT=ON \
+        -DACTS_BUILD_PLUGIN_JSON=ON \
+        -DACTS_BUILD_PLUGIN_GEANT4=ON \
+        -DACTS_BUILD_PYTHON_BINDINGS=ON \
+        -DACTS_BUILD_ODD=OFF \
+        -DACTS_BUILD_FATRAS=ON \
+        -DACTS_BUILD_FATRAS_GEANT4=ON \
+        -DACTS_BUILD_ALIGNMENT=OFF \
+        -DACTS_BUILD_BENCHMARKS=OFF
+
+    # ACTS_BUILD_UNITTESTS flipped to OFF relative to build_patched_acts.sh:
+    # nothing in cCKF consumes them and they are a large share of build time.
+
+    touch "${STAMP}"
+    echo "=== Bootstrap complete ==="
+fi
+
+# -------------------------------------------------------------------------
+# SYNC -- copy only changed cCKF files into the source tree.
+#
+# --checksum compares content, not timestamps: an unchanged header is skipped
+# entirely and keeps its old mtime, so make does not consider it dirty. Only
+# genuinely edited files get a fresh mtime and trigger recompilation.
+# -------------------------------------------------------------------------
+echo "=== Syncing cCKF sources ==="
+rsync -a --checksum --itemize-changes \
+    "${REPO_ROOT}"/acts_patches/cckf/*.hpp \
+    "${ACTS_SOURCE}/Examples/Framework/include/ActsExamples/cckf/"
+rsync -a --checksum --itemize-changes \
+    "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.hpp" \
+    "${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/include/ActsExamples/TrackFinding/"
+rsync -a --checksum --itemize-changes \
+    "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.cpp" \
+    "${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/src/"
+
+# -------------------------------------------------------------------------
+# BUILD
+# -------------------------------------------------------------------------
+cd "${ACTS_BUILD}"
+echo "=== make -j${JOBS} ${BUILD_TARGETS} ==="
+SECONDS=0
+make -j"${JOBS}" ${BUILD_TARGETS}
+echo "=== Build finished in ${SECONDS}s ==="
+
+if [[ "${DO_INSTALL}" == "1" ]]; then
+    echo "=== make install ==="
+    make -j"${JOBS}" install
+    echo "Installed to ${ACTS_INSTALL}"
+fi
+CONTAINER_EOF
+}
+
+echo "cCKF NERSC build"
+echo "  repo    : ${REPO_ROOT}"
+echo "  source  : ${ACTS_SOURCE}"
+echo "  build   : ${ACTS_BUILD}"
+echo "  install : ${ACTS_INSTALL}"
+echo "  image   : ${CCKF_IMAGE}"
+echo "  targets : ${BUILD_TARGETS}"
+echo
+
+if ! command -v shifter >/dev/null 2>&1; then
+    echo "ERROR: shifter not found. Are you on a Perlmutter login/compute node?" >&2
+    exit 1
+fi
+
+run_in_container
