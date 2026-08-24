@@ -157,10 +157,35 @@ if [[ "${DO_BOOTSTRAP}" == "1" || ! -f "${STAMP}" ]]; then
     cd "${ACTS_BUILD}"
     CMAKE_PREFIX_PATH=$(ls -d /spack/opt/spack/linux-x86_64/*/ | grep -v acts-main | tr '\n' ';')
     export CMAKE_PREFIX_PATH
+
+    # podio generates the ActsPodioEdm datamodel with a Python script that
+    # imports yaml. Two constraints, both learned the hard way:
+    #
+    #  1. PyYAML lives only in spack's py-pyyaml prefix, which is not on any
+    #     default path, so cmake's Python fails with ModuleNotFoundError.
+    #  2. PYTHONPATH must contain ONLY that path. spack's ACTS python
+    #     directory ships a json.py that shadows the stdlib json module and
+    #     breaks podio codegen (see build_patched_acts.sh).
+    #
+    # The site-packages is built for python3.13, so cmake must also be told to
+    # use spack's 3.13 rather than the container's system python.
+    YAML_SITE=$(ls -d /spack/opt/spack/linux-x86_64/py-pyyaml-*/lib/python*/site-packages 2>/dev/null | head -1)
+    SPACK_PY=$(ls -d /spack/opt/spack/linux-x86_64/python-3.13*/bin/python3 2>/dev/null | head -1)
+    if [[ -z "${YAML_SITE}" || -z "${SPACK_PY}" ]]; then
+        echo "ERROR: could not locate spack py-pyyaml or python3.13" >&2
+        echo "  YAML_SITE=${YAML_SITE:-<empty>}  SPACK_PY=${SPACK_PY:-<empty>}" >&2
+        exit 1
+    fi
+    export PYTHONPATH="${YAML_SITE}"
+    echo "  podio codegen python: ${SPACK_PY}"
+    echo "  PYTHONPATH (yaml only): ${PYTHONPATH}"
+
     cmake "${ACTS_SOURCE}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="${ACTS_INSTALL}" \
         -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}" \
+        -DPython_EXECUTABLE="${SPACK_PY}" \
+        -DPython3_EXECUTABLE="${SPACK_PY}" \
         -DCMAKE_CXX_STANDARD=20 \
         -DACTS_BUILD_UNITTESTS=OFF \
         -DACTS_BUILD_EXAMPLES=ON \
