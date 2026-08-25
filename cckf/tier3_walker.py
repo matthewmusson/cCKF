@@ -187,13 +187,21 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     work = work.merge(maj, on="seed_id", how="left")
 
     n0 = len(work)
-    work = work.loc[np.isfinite(work["eLOC0_flt"])
-                    & work["true_gid"].notna()].reset_index(drop=True)
-    if len(work) < 0.95 * n0:
+    bad_par = ~np.isfinite(work["eLOC0_flt"].to_numpy(dtype=np.float64))
+    bad_gid = work["true_gid"].isna().to_numpy()
+    bad_join = work["volume_id"].isna().to_numpy()  # ROOT merge missed entirely
+    keep = ~(bad_par | bad_gid)
+    if keep.sum() < 0.95 * n0:
+        sample = work.loc[bad_par | bad_gid,
+                          ["seed_id", "step_k", "volume_id", "layer_id",
+                           "module_id", "eLOC0_flt", "true_gid"]].head(5)
         raise ValueError(
-            f"worklist join lost {n0 - len(work):,} of {n0:,} states "
-            f"({1 - len(work)/n0:.2%}); refusing to emit a silently "
-            "truncated worklist.")
+            f"worklist join lost {n0 - int(keep.sum()):,} of {n0:,} states "
+            f"({1 - keep.sum()/n0:.2%}). Breakdown: root-join-miss "
+            f"{int(bad_join.sum()):,}, param-NaN {int(bad_par.sum()):,}, "
+            f"gid-miss {int(bad_gid.sum()):,}. Sample lost rows:\n"
+            f"{sample.to_string()}")
+    work = work.loc[keep].reset_index(drop=True)
 
     out = pd.DataFrame({
         "rollout_id": np.arange(len(work), dtype=np.int64),
