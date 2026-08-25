@@ -168,6 +168,9 @@ SCHEMA_COLUMNS = [
     "S01",
     "S11",
     "chi2_inc",
+    "var_local0",
+    "var_local1",
+    "is_1d",
     "clus_s_u",
     "clus_s_v",
     "clus_q_tot",
@@ -549,6 +552,40 @@ def load_measurements(csv_dir: str, event_id: int) -> pd.DataFrame:
     return out
 
 
+def load_predicted_cov(csv_dir: str, event_id: int) -> pd.DataFrame:
+    """Load ``event{N:09d}-predicted-cov.csv`` for one event.
+
+    This is the predicted covariance projected into local surface coordinates,
+    i.e. the ``H C H^T`` term of the innovation covariance, written per track
+    state by ``utils/predicted_cov_writer.PredictedCovWriter``.
+
+    It is what makes a *per-candidate* ``S`` possible. The full innovation
+    covariance is ``S = V + H C H^T``, where ``H C H^T`` is shared by every
+    candidate on a surface (they share the predicted state) and ``V`` is the
+    candidate's own measurement variance. Reading ``P`` here and ``V`` from
+    :func:`load_measurements` lets :func:`expand_trackstates` build ``S`` from
+    first principles rather than reading the ``S11_prt`` column, which is
+    corrupted for 34-35% of rows in events 0-3.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``track_nr, state_idx, P00, P01, P11``. ``state_idx`` is the
+        CSV's ``step_k``, renamed to match the trackstates join key.
+    """
+    path = Path(csv_dir) / f"event{event_id:09d}-predicted-cov.csv"
+    df = pd.read_csv(path, comment="#",
+                     usecols=["track_nr", "step_k", "P00", "P01", "P11"])
+    df.columns = [c.strip() for c in df.columns]
+    return pd.DataFrame({
+        "track_nr": df["track_nr"].to_numpy(dtype=np.int64),
+        "state_idx": df["step_k"].to_numpy(dtype=np.int64),
+        "P00": df["P00"].to_numpy(dtype=np.float64),
+        "P01": df["P01"].to_numpy(dtype=np.float64),
+        "P11": df["P11"].to_numpy(dtype=np.float64),
+    })
+
+
 def load_cells(csv_dir: str, event_id: int) -> pd.DataFrame:
     """Load ``event{N:09d}-cells.csv`` for one event.
 
@@ -667,6 +704,7 @@ def expand_trackstates(
     measurements: pd.DataFrame,
     n: float = WINDOW_N_DEFAULT,
     r_geom_mm: float = R_GEOM_MM_DEFAULT,
+    predicted_cov: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Match candidate measurements to trackstates within the n-sigma window.
 
@@ -712,26 +750,62 @@ def expand_trackstates(
         plus: ``cand_hit_id, residual_l0, residual_l1, S00, S01, S11,
         n_window, geometric_density, action_taken``.
     """
+    # NOTE: `S11.notna()` is deliberately NOT part of this mask.
+    #
+    # Volumes 28/29/30 are genuinely 1D, so instrumentation.patch writes
+    # S11_prt = NaN for them by design. Filtering on it dropped every
+    # long-strip state, leaving them in only 4 of 32 events -- and the gate
+    # trained on that set accepts 0.000% of long-strip candidates, on the
+    # surfaces with the HIGHEST base positive rate in the detector.
+    # See experiments/LOG.md 2026-08-24.
+    #
+    # S00 is kept: it exists for any measurement regardless of dimension.
     valid = states[
         states["is_predicted"]
         & states["pred_l0"].notna()
-        & states["pred_l1"].notna()
         & states["S00"].notna()
-        & states["S11"].notna()
     ].copy()
     valid = valid.reset_index(drop=True)
     valid["_state_row"] = valid.index.to_numpy()
 
-    delta_l0, delta_l1 = compute_window_bounds(
-        valid["S00"].to_numpy(), valid["S11"].to_numpy(), n
-    )
-    valid["_delta_l0"] = delta_l0
-    valid["_delta_l1"] = delta_l1
+    # Predicted covariance in local coords (the H C H^T term), per state.
+    # Joined here so S can be rebuilt per candidate below.
+    if predicted_cov is not None:
+        valid = valid.merge(
+            predicted_cov, on=["track_nr", "state_idx"], how="left"
+        )
+        valid["_state_row"] = valid.index.to_numpy()
 
     cand_cols = ["measurement_id", "geometry_id", "local0", "local1", "var_local0", "var_local1"]
     merged = valid.merge(
         measurements[cand_cols], on="geometry_id", how="left", suffixes=("", "_cand")
     )
+
+    # Per-candidate innovation covariance, from first principles:
+    #     S = V + H C H^T
+    # with V = diag(var_local0, var_local1) belonging to THIS candidate and
+    # H C H^T = (P00, P01, P11) shared across the surface.
+    #
+    # Two consequences beyond correctness:
+    #   - the corrupted S11_prt column is never read, so the events 0-3
+    #     corruption drops out of the pipeline entirely;
+    #   - `is_1d` becomes exact. A 1D sensor has no var_local1. Deriving it
+    #     this way does NOT conflate genuine-1D with corrupted-2D, which
+    #     S11.isna() does.
+    if predicted_cov is not None:
+        merged["S00"] = merged["var_local0"] + merged["P00"]
+        merged["S01"] = merged["P01"]
+        merged["S11"] = merged["var_local1"] + merged["P11"]
+    merged["is_1d"] = merged["var_local1"].isna()
+
+    # Dimension-aware n-sigma box. The l1 leg is only testable when l1 was
+    # measured; on a 1D strip the box reduces to the l0 leg, where it
+    # coincides exactly with the chi2 ellipse.
+    delta_l0, delta_l1 = compute_window_bounds(
+        merged["S00"].to_numpy(), merged["S11"].to_numpy(), n
+    )
+    merged["_delta_l0"] = delta_l0
+    merged["_delta_l1"] = delta_l1
 
     has_cand = merged["measurement_id"].notna()
     r0 = merged["local0"] - merged["pred_l0"]
@@ -739,9 +813,9 @@ def expand_trackstates(
     in_window = (
         has_cand
         & (r0.abs() <= merged["_delta_l0"])
-        & (r1.abs() <= merged["_delta_l1"])
+        & (merged["is_1d"] | (r1.abs() <= merged["_delta_l1"]))
     )
-    geom_ok = has_cand & (np.hypot(r0, r1) <= r_geom_mm)
+    geom_ok = has_cand & (np.hypot(r0, np.where(merged["is_1d"], 0.0, r1)) <= r_geom_mm)
 
     merged["_in_window"] = in_window
     merged["_geom_ok"] = geom_ok
@@ -753,7 +827,12 @@ def expand_trackstates(
     candidates = merged.loc[in_window].copy()
     candidates["cand_hit_id"] = candidates["measurement_id"].astype(np.int64)
     candidates["residual_l0"] = candidates["local0"] - candidates["pred_l0"]
-    candidates["residual_l1"] = candidates["local1"] - candidates["pred_l1"]
+    # A 1D measurement has no l1, so the residual is undefined rather than
+    # zero. Keeping it NaN stops build_gate_features' zero-fill from making
+    # every long-strip row look identical.
+    candidates["residual_l1"] = np.where(
+        candidates["is_1d"], np.nan,
+        candidates["local1"] - candidates["pred_l1"])
     candidates["action_taken"] = ACTION_CANDIDATE
 
     # Hole rows: one per state with zero in-window candidates. Distinguish
@@ -777,9 +856,13 @@ def expand_trackstates(
         hole_rows["_had_meas"], ACTION_HOLE_WINDOW_FAILURE, ACTION_HOLE_NO_MEASUREMENTS
     )
 
-    keep_cols = [c for c in valid.columns if not c.startswith("_")] + [
+    _stale = {"S00", "S01", "S11", "P00", "P01", "P11"}
+    keep_cols = [c for c in valid.columns
+                 if not c.startswith("_") and c not in _stale] + [
         "cand_hit_id", "residual_l0", "residual_l1", "n_window",
         "geometric_density", "action_taken",
+        # per-candidate S and its provenance
+        "S00", "S01", "S11", "var_local0", "var_local1", "is_1d",
     ]
     out = pd.concat(
         [candidates[keep_cols], hole_rows[keep_cols]], ignore_index=True, sort=False
@@ -833,12 +916,26 @@ def compute_candidate_features(
 
 
 def chi2_increment_batch(
-    r0: np.ndarray, r1: np.ndarray, S00: np.ndarray, S01: np.ndarray, S11: np.ndarray
+    r0: np.ndarray, r1: np.ndarray, S00: np.ndarray, S01: np.ndarray,
+    S11: np.ndarray, is_1d: np.ndarray | None = None
 ) -> np.ndarray:
-    """Vectorized chi2_inc = r^T S^-1 r using the full 2x2 S (incl. S01).
+    """Vectorized ``chi2_inc = r^T S^-1 r``, dimension-aware.
 
-    ``S01`` entries that are NaN (1D-measurement states, per the
-    instrumentation reference doc) are treated as 0.
+    A 1D measurement has no l1 coordinate at all: ``S`` is 1x1 and ``S(1,1)``
+    does not exist. The correct statistic is then ``r0^2 / S00``, which is a
+    chi2 with one degree of freedom, not a degenerate 2x2 inverse.
+
+    Getting this wrong is why the gate rejects 100% of long strips today:
+    every long-strip row received the same degenerate value, so the network
+    could not tell them apart and -- at 1.27% of the training set under
+    unweighted BCE -- learned to reject them all.
+
+    Parameters
+    ----------
+    is_1d : array of bool, optional
+        True where the measurement has no l1 coordinate. When omitted, falls
+        back to treating non-finite ``S11`` as 1D, which is the historical
+        behaviour and is ambiguous where ``S11`` is merely corrupt.
     """
     r0 = np.asarray(r0, dtype=np.float64)
     r1 = np.asarray(r1, dtype=np.float64)
@@ -846,14 +943,23 @@ def chi2_increment_batch(
     s01 = np.nan_to_num(np.asarray(S01, dtype=np.float64), nan=0.0)
     s11 = np.asarray(S11, dtype=np.float64)
 
-    det = s00 * s11 - s01 * s01
-    diag_chi2 = np.where(s00 > 0, (r0 * r0) / np.where(s00 > 0, s00, 1.0), np.nan) + np.where(
-        s11 > 0, (r1 * r1) / np.where(s11 > 0, s11, 1.0), np.nan
-    )
+    if is_1d is None:
+        is_1d = ~np.isfinite(s11)
+    is_1d = np.asarray(is_1d, dtype=bool)
+
     with np.errstate(divide="ignore", invalid="ignore"):
-        full_chi2 = (s11 * r0 * r0 - 2.0 * s01 * r0 * r1 + s00 * r1 * r1) / det
+        chi2_1d = np.where(s00 > 0, (r0 * r0) / np.where(s00 > 0, s00, 1.0), np.nan)
+        det = s00 * s11 - s01 * s01
+        chi2_2d = (s11 * r0 * r0 - 2.0 * s01 * r0 * r1 + s00 * r1 * r1) / det
+        # Degenerate 2D S (non-positive determinant): fall back to the
+        # independent-coordinate form rather than emitting a negative chi2.
+        chi2_2d_fallback = chi2_1d + np.where(
+            s11 > 0, (r1 * r1) / np.where(s11 > 0, s11, 1.0), np.nan
+        )
+
     valid_det = np.isfinite(det) & (det > 0)
-    return np.where(valid_det, full_chi2, diag_chi2)
+    chi2_2d = np.where(valid_det, chi2_2d, chi2_2d_fallback)
+    return np.where(is_1d, chi2_1d, chi2_2d)
 
 
 # ---------------------------------------------------------------------------
@@ -1445,7 +1551,10 @@ def run_expansion(
     simhits = load_simhits(csv_dir, event_id)
     meas_map = load_measurement_simhit_map(csv_dir, event_id)
 
-    expanded = expand_trackstates(states, measurements, n=window_n, r_geom_mm=r_geom_mm)
+    predicted_cov = load_predicted_cov(csv_dir, event_id)
+    expanded = expand_trackstates(states, measurements, n=window_n,
+                                  r_geom_mm=r_geom_mm,
+                                  predicted_cov=predicted_cov)
     expanded = compute_branch_history(expanded)
 
     cluster_table = compute_cluster_features_table(cells)
@@ -1481,6 +1590,7 @@ def run_expansion(
         expanded["S00"].to_numpy(),
         expanded["S01"].to_numpy(),
         expanded["S11"].to_numpy(),
+        expanded["is_1d"].to_numpy(),
     )
 
     majority = compute_branch_majority_pid(states)
