@@ -115,6 +115,17 @@ _FLT_BRANCHES = [
     "err_eQOP_flt", "err_eT_flt",
 ]
 
+#: Predicted fallbacks, same order. A hole state has no measurement update,
+#: so its filtered state IS the predicted state -- coalescing flt-else-prt
+#: is exact, not an approximation. Without it 60% of divergence/tip states
+#: (those whose action was a hole) have NaN parameters and the worklist
+#: guard refuses to emit.
+_PRT_BRANCHES = [
+    "eLOC0_prt", "eLOC1_prt", "ePHI_prt", "eTHETA_prt", "eQOP_prt", "eT_prt",
+    "err_eLOC0_prt", "err_eLOC1_prt", "err_ePHI_prt", "err_eTHETA_prt",
+    "err_eQOP_prt", "err_eT_prt",
+]
+
 
 def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
                   detectors_csv: str, parquet_path: str,
@@ -132,7 +143,8 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
 
     with uproot.open(trackstates_root) as fh:
         tree = fh["trackstates"]
-        fields = _FLT_BRANCHES + ["volume_id", "layer_id", "module_id"]
+        fields = _FLT_BRANCHES + _PRT_BRANCHES + [
+            "volume_id", "layer_id", "module_id"]
         if "event_nr" in set(tree.keys()):
             fields = fields + ["event_nr"]
         arrays = tree.arrays(fields, library="ak")
@@ -145,9 +157,13 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
         ak.flatten(ak.local_index(arrays["volume_id"], axis=1), axis=1)
     ).astype(np.int64)
     root = pd.DataFrame({"seed_id": seed_id, "step_k": state_idx})
-    for b in _FLT_BRANCHES + ["volume_id", "layer_id", "module_id"]:
+    for b in _FLT_BRANCHES + _PRT_BRANCHES + [
+            "volume_id", "layer_id", "module_id"]:
         root[b] = ak.to_numpy(
             ak.flatten(ak.fill_none(arrays[b], np.nan), axis=1))
+    for flt, prt in zip(_FLT_BRANCHES, _PRT_BRANCHES):
+        root[flt] = np.where(
+            np.isfinite(root[flt].to_numpy()), root[flt], root[prt])
 
     det = pd.read_csv(detectors_csv)
     gcol = [c for c in det.columns if "geometry" in c][0]
