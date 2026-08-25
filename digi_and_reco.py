@@ -135,6 +135,44 @@ def _add_track_writers(
         s.addWriter(RootTrackFinderPerformanceWriter(**writer_kwargs))
 
 
+def addTruthRollout(
+    s,
+    trackingGeometry,
+    field,
+    worklist_dir: str,
+    output_dir: str,
+    csv_dir: str,
+    max_rollouts: int = 0,
+    prefix: str = "",
+    logLevel=None,
+):
+    """Tier-3 rollout executor: truth-greedy CKF from each worklist state.
+
+    Replaces the CKF stage; consumes the same digitized measurement subset.
+    See docs/superpowers/specs/2026-08-25-tier3-rollout-design.md.
+    """
+    import acts
+    import acts.examples
+
+    customLogLevel = acts.examples.defaultLogging(s, logLevel)
+    rollout = acts.examples.TruthRolloutAlgorithm(
+        level=customLogLevel(),
+        inputMeasurements=f"{prefix}measurement_subset",
+        outputTracks=f"{prefix}rollout_tracks",
+        worklistDir=worklist_dir,
+        outputDir=output_dir,
+        csvDir=csv_dir,
+        trackingGeometry=trackingGeometry,
+        magneticField=field,
+        findTracks=acts.examples.CckfTrackFindingAlgorithm.makeTrackFinderFunction(
+            trackingGeometry, field, customLogLevel()
+        ),
+        maxRollouts=max_rollouts,
+    )
+    s.addAlgorithm(rollout)
+    return rollout
+
+
 def addCckfTracks(
     s,
     trackingGeometry,
@@ -752,6 +790,23 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
         # "track_particle_matching" / "particle_track_matching" whiteboard
         # aliases, so everything downstream (ambiguity resolution, writers)
         # is unaffected by which one ran.
+        # truth_rollout: true swaps the whole track-finding stage for the
+        # tier-3 rollout executor (TruthRolloutAlgorithm). Terminal stage:
+        # nothing downstream of it runs (no ambiguity, no perf writers) --
+        # its products are the per-rollout hit sequences + rollout_tracks.
+        if getattr(config, "truth_rollout", False):
+            logger.info("truth_rollout enabled — running TruthRolloutAlgorithm")
+            addTruthRollout(
+                s,
+                trackingGeometry,
+                field,
+                worklist_dir=getattr(config, "rollout_worklist_dir"),
+                output_dir=getattr(config, "rollout_output_dir"),
+                csv_dir=getattr(config, "rollout_csv_dir"),
+                max_rollouts=int(getattr(config, "rollout_max", 0)),
+            )
+            return s
+
         cckf_enabled = getattr(config, "cckf", False)
         if cckf_enabled:
             logger.info("cCKF enabled (cckf: true) — using CckfTrackFindingAlgorithm")
