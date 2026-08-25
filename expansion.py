@@ -792,11 +792,31 @@ def expand_trackstates(
     #   - `is_1d` becomes exact. A 1D sensor has no var_local1. Deriving it
     #     this way does NOT conflate genuine-1D with corrupted-2D, which
     #     S11.isna() does.
+    has_cand = merged["measurement_id"].notna()
+
+    # ODD writes var_local1 == 0.0 for a 1D measurement -- NOT NaN. Verified
+    # against event*-measurements.csv: n_nan = 0, n_zero = 36,184 / 188,144
+    # (19.2%), matching the long-strip share.
+    #
+    # `.isna()` was wrong twice over: it never fired on a real 1D candidate,
+    # and it DID fire on hole rows, where var_local1 is NaN simply because the
+    # left join found no candidate. Hence `has_cand` -- is_1d is a property of
+    # a measurement, and a hole has none.
+    merged["is_1d"] = has_cand & (
+        merged["var_local1"].isna() | (merged["var_local1"] <= 0.0)
+    )
+
     if predicted_cov is not None:
         merged["S00"] = merged["var_local0"] + merged["P00"]
         merged["S01"] = merged["P01"]
-        merged["S11"] = merged["var_local1"] + merged["P11"]
-    merged["is_1d"] = merged["var_local1"].isna()
+        # S11 is left NaN on 1D rows rather than set to P11. A long strip has
+        # no l1 measurement, so V has no (1,1) entry and S is genuinely 1x1.
+        # Using P11 alone would claim the predicted covariance IS the l1
+        # uncertainty, giving a window far tighter than the strip length and
+        # rejecting nearly every long-strip candidate.
+        merged["S11"] = np.where(
+            merged["is_1d"], np.nan, merged["var_local1"] + merged["P11"])
+        merged["S01"] = np.where(merged["is_1d"], np.nan, merged["S01"])
 
     # Dimension-aware n-sigma box. The l1 leg is only testable when l1 was
     # measured; on a 1D strip the box reduces to the l0 leg, where it
@@ -807,7 +827,6 @@ def expand_trackstates(
     merged["_delta_l0"] = delta_l0
     merged["_delta_l1"] = delta_l1
 
-    has_cand = merged["measurement_id"].notna()
     r0 = merged["local0"] - merged["pred_l0"]
     r1 = merged["local1"] - merged["pred_l1"]
     in_window = (
