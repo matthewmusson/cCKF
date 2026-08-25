@@ -1554,8 +1554,17 @@ def run_expansion(
     r_geom_mm: float = R_GEOM_MM_DEFAULT,
     digi_config_path: str | None = None,
     env_config: dict | None = None,
+    n_chunks: int = 1,
+    chunk_idx: int = 0,
 ) -> pd.DataFrame:
     """Run the full expansion pipeline for one event and write Parquet.
+
+    ``n_chunks``/``chunk_idx`` partition the work by ``track_nr`` so a single
+    event can be expanded in bounded memory. The largest events (7, 5, 14)
+    OOM a 503 GB node outright once the valid-mask fix quadrupled the state
+    count, and Perlmutter exposes no largemem partition here. Each chunk is a
+    self-contained Parquet; the gate cache builder already accepts a list of
+    files per split, so parts need no merging.
 
     Ties together Steps 1-6. Intended as the single entry point for a
     caller (e.g. a future Modal function in ``modal_build_acts.py``) that
@@ -1587,6 +1596,12 @@ def run_expansion(
         The final expanded DataFrame, as written to ``output_path``.
     """
     states = load_trackstates(trackstates_root, event_id)
+    if n_chunks > 1:
+        # Partition by track_nr, not by row: a branch's states must stay
+        # together or the backward history walk in compute_branch_history
+        # would see a truncated branch and emit wrong n_hits/n_holes.
+        _tn = states["track_nr"].to_numpy()
+        states = states[(_tn % n_chunks) == chunk_idx].copy()
     measurements = load_measurements(csv_dir, event_id)
     cells = load_cells(csv_dir, event_id)
     simhits = load_simhits(csv_dir, event_id)
