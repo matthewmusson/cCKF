@@ -759,12 +759,20 @@ def expand_trackstates(
     # surfaces with the HIGHEST base positive rate in the detector.
     # See experiments/LOG.md 2026-08-24.
     #
-    # S00 is kept: it exists for any measurement regardless of dimension.
-    valid = states[
-        states["is_predicted"]
-        & states["pred_l0"].notna()
-        & states["S00"].notna()
-    ].copy()
+    # `S00.notna()` is ALSO dropped when predicted_cov is supplied.
+    #
+    # S00_prt is only filled where the CKF had a calibrated measurement, i.e.
+    # for the selected hit. It is finite on just 23.78% of states, so keeping
+    # the filter discarded three quarters of them and skewed the survivors
+    # hard toward barrel volumes -- the re-expansion produced volumes 17/24/29
+    # only, with every endcap missing.
+    #
+    # It is redundant now: S is rebuilt from var_local0 + P00, and the
+    # predicted-cov join covers 100% of states (19,445,455 / 19,445,455).
+    _mask = states["is_predicted"] & states["pred_l0"].notna()
+    if predicted_cov is None:
+        _mask = _mask & states["S00"].notna()
+    valid = states[_mask].copy()
     valid = valid.reset_index(drop=True)
     valid["_state_row"] = valid.index.to_numpy()
 
