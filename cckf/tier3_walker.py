@@ -81,8 +81,11 @@ def classify_event(parquet_path: str) -> pd.DataFrame:
     st["sel_hit"] = st["sel_hit_real"].fillna(-1).astype(np.int64)
     st = st.drop(columns=["sel_hit_real"])
 
-    # pi-dagger pick per state: single-truth states vectorized; multi-truth
-    # states (module overlaps / shared clusters) through pi_dagger_pick.
+    # pi-dagger pick per state, vectorized. THIS IS THE SAME RULE AS
+    # pi_dagger_pick above (lowest chi2_inc, ties to lowest cand_hit_id);
+    # the sort keys ARE the rule. If either site changes, change both --
+    # tests/test_tier3_walker.py::test_pick_rule_sites_agree fails if they
+    # diverge.
     tdf = df.loc[df["is_truth"],
                  ["seed_id", "step_k", "cand_hit_id", "chi2_inc"]]
     tdf = tdf.sort_values(["seed_id", "step_k", "chi2_inc", "cand_hit_id"])
