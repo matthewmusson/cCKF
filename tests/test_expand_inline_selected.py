@@ -147,9 +147,13 @@ def test_state_without_accepted_hit_selects_nothing():
 
 
 def test_hole_rows_are_never_selected():
-    """A state with no in-window candidate emits a hole row; the flag is
-    False there by construction."""
+    """A CKF hole state (no accepted hit, no measurements on the surface)
+    emits a hole row with the flag False. sel_l0 must be NaN here: an
+    accepted hit with zero candidates is the endcap-bug signature and now
+    trips the guard by design (see the guard tests below)."""
     states, meas = _base_case()
+    states["sel_l0"] = np.nan
+    states["sel_l1"] = np.nan
     meas = meas.iloc[:0]  # no measurements at all -> hole row
     out = expand_trackstates(states, meas, predicted_cov=_pcov(states))
     assert (out["cand_hit_id"] == -1).all()
@@ -179,10 +183,12 @@ def test_guard_raises_when_accepted_hits_never_match():
         expand_trackstates(states, meas, predicted_cov=_pcov(states))
 
 
-def test_guard_ignores_states_without_candidates():
-    """The guard denominator is states whose accepted hit could have been
-    found (>= 1 in-window candidate). A state whose surface has no
-    measurements must not count against it."""
+def test_guard_counts_accepted_states_with_no_candidates():
+    """The guard denominator is EVERY state where ROOT says the CKF accepted
+    a hit -- including states that produced zero in-window candidates. This
+    is the exact signature of the endcap geometry_id bug (accepted hit, hole
+    row); a guard that only counts candidate-bearing states would have
+    passed straight through it."""
     states, meas = _base_case()
     lonely = _states(
         [
@@ -195,6 +201,24 @@ def test_guard_ignores_states_without_candidates():
         ]
     )
     states = pd.concat([states, lonely], ignore_index=True)
+    # 1 of 2 accepted-hit states findable -> 50% < 95% -> refuse.
+    with pytest.raises(ValueError, match="is_ckf_selected"):
+        expand_trackstates(states, meas, predicted_cov=_pcov(states))
+
+
+def test_written_parquet_preserves_the_flag(tmp_path):
+    """write_expanded_parquet projects onto SCHEMA_COLUMNS; a column missing
+    from that list is dropped silently -- which is precisely what happened to
+    the first inline run (event 1, 2026-08-25). The flag and its provenance
+    must survive the round trip."""
+    import pyarrow.parquet as pq_mod
+    from expansion import write_expanded_parquet
+
+    states, meas = _base_case()
     out = expand_trackstates(states, meas, predicted_cov=_pcov(states))
-    sel_rows = out.loc[out["is_ckf_selected"]]
-    assert len(sel_rows) == 1 and sel_rows["cand_hit_id"].iloc[0] == 1
+    path = tmp_path / "e.parquet"
+    write_expanded_parquet(out, str(path), "testhash")
+    cols = set(pq_mod.read_schema(str(path)).names)
+    assert {"is_ckf_selected", "sel_l0", "sel_l1"} <= cols
+    rt = pq_mod.read_table(str(path), columns=["is_ckf_selected"]).to_pandas()
+    assert rt["is_ckf_selected"].sum() == 1

@@ -200,6 +200,9 @@ SCHEMA_COLUMNS = [
     "n_holes",
     "n_seq_holes",
     "action_taken",
+    "is_ckf_selected",
+    "sel_l0",
+    "sel_l1",
     "prune_reason",
     "contrib_pids",
     "contrib_charge_frac",
@@ -945,24 +948,26 @@ def expand_trackstates(
         _idx = candidates.index.to_numpy()[_winners["_orig"].to_numpy()]
         candidates.loc[_idx, "is_ckf_selected"] = True
 
-    # Guard: among states where ROOT says the CKF accepted a hit AND at least
-    # one candidate landed in the window, the accepted hit must be found
-    # almost always. An all-False column is schema-identical to a valid one
-    # and would silently train V_phi on "the CKF never accepted anything" --
-    # the 2026-08-17 incident. Fail loudly instead.
-    _states_with_sel = candidates.loc[
-        np.isfinite(candidates["sel_l0"]), "_state_row"
-    ].drop_duplicates()
-    if len(_states_with_sel) > 0:
-        _matched = candidates.loc[candidates["is_ckf_selected"], "_state_row"]
-        _frac = len(_matched) / len(_states_with_sel)
+    # Guard: among ALL states where ROOT says the CKF accepted a hit, the
+    # accepted hit must be found among this state's candidates almost always.
+    # The denominator deliberately includes accepted-hit states with ZERO
+    # in-window candidates: that is the exact signature of the endcap
+    # geometry_id bug (accepted hit, hole row, 39.46% of event 1), and a
+    # candidate-only denominator sails straight past it. An all-False column
+    # is schema-identical to a valid one and would silently train V_phi on
+    # "the CKF never accepted anything" -- the 2026-08-17 incident. Fail
+    # loudly instead.
+    _n_accepted = int(np.isfinite(valid["sel_l0"].to_numpy(dtype=np.float64)).sum())
+    if _n_accepted > 0:
+        _n_matched = int(candidates["is_ckf_selected"].sum())
+        _frac = _n_matched / _n_accepted
         if _frac < 0.95:
             raise ValueError(
-                f"is_ckf_selected: only {_frac:.2%} of "
-                f"{len(_states_with_sel):,} states with an accepted hit and "
-                f">=1 in-window candidate matched it by position "
-                f"(SEL_MATCH_TOL={SEL_MATCH_TOL}); refusing to emit an "
-                f"almost-all-False column."
+                f"is_ckf_selected: only {_frac:.2%} of {_n_accepted:,} "
+                f"accepted-hit states matched a candidate by position "
+                f"(SEL_MATCH_TOL={SEL_MATCH_TOL}); {_n_accepted - _n_matched:,} "
+                f"accepted hits were never joined or fell outside the window. "
+                f"Refusing to emit an almost-all-False column."
             )
 
     # Hole rows: one per state with zero in-window candidates. Distinguish
@@ -1596,6 +1601,7 @@ def write_expanded_parquet(
         "dead_module_flag", "layer_embed_idx", "volume_id",
     }
     bool_defaults = {"majority_undefined"}
+    bool_false_defaults = {"is_ckf_selected"}
 
     for col in SCHEMA_COLUMNS:
         if col in df.columns:
@@ -1606,6 +1612,8 @@ def write_expanded_parquet(
             df[col] = -1
         elif col in bool_defaults:
             df[col] = True
+        elif col in bool_false_defaults:
+            df[col] = False
         else:
             df[col] = np.nan
 
