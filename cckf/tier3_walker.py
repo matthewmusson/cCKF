@@ -181,6 +181,29 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     work = work.merge(trip, on=["volume_id", "layer_id", "module_id"],
                       how="left")
 
+    # Rollout starts on PASSIVE surfaces (module_id == 0: layer/approach
+    # material surfaces, absent from detectors.csv) are launched from the
+    # branch's most recent SENSITIVE state instead. Equivalent by
+    # construction: between that sensor and the passive surface there are no
+    # decision points (a sensitive surface there would itself be a logged
+    # state), so the propagator carries the same filtered state through the
+    # same material and reaches the first decision surface identically.
+    # 60.03% of event-1 starts are such states; without this they were all
+    # refused by the guard.
+    par_cols = _FLT_BRANCHES + ["true_gid"]
+    donor = root.merge(trip, on=["volume_id", "layer_id", "module_id"],
+                       how="left")
+    donor = donor.sort_values(["seed_id", "step_k"])
+    sens = donor["true_gid"].notna()
+    for c in par_cols:
+        donor[f"_ff_{c}"] = donor[c].where(sens)
+        donor[f"_ff_{c}"] = donor.groupby("seed_id")[f"_ff_{c}"].ffill()
+    ff = donor[["seed_id", "step_k"] + [f"_ff_{c}" for c in par_cols]]
+    work = work.merge(ff, on=["seed_id", "step_k"], how="left")
+    passive = work["true_gid"].isna()
+    for c in par_cols:
+        work.loc[passive, c] = work.loc[passive, f"_ff_{c}"]
+
     maj = pq.read_table(
         parquet_path, columns=["seed_id", "branch_majority_pid"]
     ).to_pandas().drop_duplicates("seed_id")
