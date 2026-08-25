@@ -100,6 +100,11 @@ BARREL_VOLUMES_DEFAULT = frozenset({16, 23, 28})
 # ROOT trackstate branches this module reads. Missing branches are dropped
 # with a warning rather than raising, so the pipeline degrades gracefully on
 # older/newer ACTS builds.
+#: Absolute tolerance (mm) for matching a candidate's measurement position to
+#: the CKF-accepted hit position (l_x_hit) when marking is_ckf_selected.
+#: Measured agreement on real data is exact to 1e-6.
+SEL_MATCH_TOL = 1e-4
+
 _TRACKSTATE_SCALAR_BRANCHES = [
     "volume_id",
     "layer_id",
@@ -122,6 +127,8 @@ _TRACKSTATE_SCALAR_BRANCHES = [
     "S01_prt",
     "S11_prt",
     "pathInX0_interval",
+    "l_x_hit",
+    "l_y_hit",
     "clus_size_u",
     "clus_size_v",
     "clus_qtot",
@@ -398,9 +405,10 @@ def load_trackstates(root_path: str, event_id: int) -> pd.DataFrame:
         "layer_id", "module_id", "is_predicted", "pred_l0", "pred_l1",
         "pred_phi", "pred_theta", "pred_qop", "pred_t", "err_l0", "err_l1",
         "err_phi", "err_theta", "err_qop", "err_t", "S00", "S01", "S11",
-        "eta", "pathInX0_interval", "clus_s_u", "clus_s_v", "clus_q_tot",
-        "clus_sigma_uu", "clus_sigma_uv", "clus_sigma_vv", "alpha_u",
-        "alpha_v", "state_primary_pid", "state_n_contribs",
+        "eta", "pathInX0_interval", "sel_l0", "sel_l1", "clus_s_u",
+        "clus_s_v", "clus_q_tot", "clus_sigma_uu", "clus_sigma_uv",
+        "clus_sigma_vv", "alpha_u", "alpha_v", "state_primary_pid",
+        "state_n_contribs",
     ]
 
     with uproot.open(root_path) as f:
@@ -484,6 +492,12 @@ def load_trackstates(root_path: str, event_id: int) -> pd.DataFrame:
         "S11": flat.get("S11_prt", np.full(len(track_nr), np.nan)).astype(np.float64),
         "eta": flat.get("eta_prt", np.full(len(track_nr), np.nan)).astype(np.float64),
         "pathInX0_interval": flat.get("pathInX0_interval", np.full(len(track_nr), np.nan)).astype(np.float64),
+        # The CKF-selected measurement's local position at this state
+        # (all-state branches; NaN at holes / material states). This is what
+        # marks is_ckf_selected inline in expand_trackstates -- see the
+        # SEL_MATCH_TOL comment there.
+        "sel_l0": flat.get("l_x_hit", np.full(len(track_nr), np.nan)).astype(np.float64),
+        "sel_l1": flat.get("l_y_hit", np.full(len(track_nr), np.nan)).astype(np.float64),
         "clus_s_u": flat.get("clus_size_u", np.full(len(track_nr), np.nan)).astype(np.float64),
         "clus_s_v": flat.get("clus_size_v", np.full(len(track_nr), np.nan)).astype(np.float64),
         "clus_q_tot": flat.get("clus_qtot", np.full(len(track_nr), np.nan)).astype(np.float64),
@@ -899,6 +913,58 @@ def expand_trackstates(
         candidates["local1"] - candidates["pred_l1"])
     candidates["action_taken"] = ACTION_CANDIDATE
 
+    # is_ckf_selected: the candidate whose measurement position equals the
+    # accepted hit's position recorded by ROOT at this state (sel_l0/sel_l1
+    # from the all-state l_x_hit/l_y_hit branches). Done inline because every
+    # offline reconstruction of this flag failed (LOG 2026-08-17/-18/-25):
+    # there is no second join here, so there is no key to get wrong.
+    # Position agreement measured on real event 1: 100.0000% of states at
+    # 1e-6 mm, so SEL_MATCH_TOL = 1e-4 carries three orders of slack.
+    _d0 = (candidates["local0"] - candidates["sel_l0"]).abs()
+    _d1 = (candidates["local1"] - candidates["sel_l1"]).abs()
+    # l1 constrains the match only where the accepted hit has one; a 1D long
+    # strip does not, and requiring it would unflag every long-strip state.
+    _pos_ok = (
+        (_d0 <= SEL_MATCH_TOL)
+        & (candidates["is_1d"] | ~np.isfinite(candidates["sel_l1"]) | (_d1 <= SEL_MATCH_TOL))
+        & np.isfinite(candidates["sel_l0"])
+    ).to_numpy(dtype=bool)
+    candidates["is_ckf_selected"] = False
+    if _pos_ok.any():
+        _close = candidates.loc[_pos_ok, ["_state_row", "cand_hit_id"]].copy()
+        _close["_d0"] = _d0.to_numpy()[_pos_ok]
+        _close["_orig"] = np.flatnonzero(_pos_ok)
+        # closest wins; exact ties break to the lowest cand_hit_id, so at
+        # most one candidate per state is ever flagged, deterministically.
+        _winners = (
+            _close.sort_values(["_state_row", "_d0", "cand_hit_id"])
+            .groupby("_state_row", as_index=False)
+            .first()
+        )
+        _sel = candidates["is_ckf_selected"].to_numpy(dtype=bool)
+        _idx = candidates.index.to_numpy()[_winners["_orig"].to_numpy()]
+        candidates.loc[_idx, "is_ckf_selected"] = True
+
+    # Guard: among states where ROOT says the CKF accepted a hit AND at least
+    # one candidate landed in the window, the accepted hit must be found
+    # almost always. An all-False column is schema-identical to a valid one
+    # and would silently train V_phi on "the CKF never accepted anything" --
+    # the 2026-08-17 incident. Fail loudly instead.
+    _states_with_sel = candidates.loc[
+        np.isfinite(candidates["sel_l0"]), "_state_row"
+    ].drop_duplicates()
+    if len(_states_with_sel) > 0:
+        _matched = candidates.loc[candidates["is_ckf_selected"], "_state_row"]
+        _frac = len(_matched) / len(_states_with_sel)
+        if _frac < 0.95:
+            raise ValueError(
+                f"is_ckf_selected: only {_frac:.2%} of "
+                f"{len(_states_with_sel):,} states with an accepted hit and "
+                f">=1 in-window candidate matched it by position "
+                f"(SEL_MATCH_TOL={SEL_MATCH_TOL}); refusing to emit an "
+                f"almost-all-False column."
+            )
+
     # Hole rows: one per state with zero in-window candidates. Distinguish
     # "no measurements on surface" (has_cand all False for that state, i.e.
     # the left-merge produced exactly one all-NaN candidate row) from
@@ -919,12 +985,13 @@ def expand_trackstates(
     hole_rows["action_taken"] = np.where(
         hole_rows["_had_meas"], ACTION_HOLE_WINDOW_FAILURE, ACTION_HOLE_NO_MEASUREMENTS
     )
+    hole_rows["is_ckf_selected"] = False
 
     _stale = {"S00", "S01", "S11", "P00", "P01", "P11"}
     keep_cols = [c for c in valid.columns
                  if not c.startswith("_") and c not in _stale] + [
         "cand_hit_id", "residual_l0", "residual_l1", "n_window",
-        "geometric_density", "action_taken",
+        "geometric_density", "action_taken", "is_ckf_selected",
         # per-candidate S and its provenance
         "S00", "S01", "S11", "var_local0", "var_local1", "is_1d",
     ]
