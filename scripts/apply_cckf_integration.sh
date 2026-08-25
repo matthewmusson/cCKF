@@ -180,4 +180,38 @@ with open(path, "w") as f:
 print("TrackFinding.cpp patched: include + CckfTrackFindingAlgorithm binding added.")
 PYEOF
 
+
+# --- TruthRolloutAlgorithm binding (tier-3 rollout executor) ---
+python3 - "${ACTS_SOURCE}/Python/Examples/src/TrackFinding.cpp" <<'PYEOF2'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+if "TruthRolloutAlgorithm" in text:
+    print("TrackFinding.cpp: TruthRolloutAlgorithm already bound, skipping")
+    sys.exit(0)
+inc_anchor = '#include "ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.hpp"'
+if inc_anchor not in text:
+    raise SystemExit("ERROR: Cckf include anchor missing (apply Cckf block first)")
+text = text.replace(
+    inc_anchor,
+    inc_anchor + '\n#include "ActsExamples/TrackFinding/TruthRolloutAlgorithm.hpp"',
+    1)
+anchor = "        outputTimingPath, digiConfigPath);\n  }\n"
+if anchor not in text:
+    raise SystemExit("ERROR: Cckf binding block anchor not found")
+block = (
+    "\n  {\n"
+    "    using RAlg = TruthRolloutAlgorithm;\n"
+    "    auto [ralg, rc] = declareAlgorithm<RAlg, IAlgorithm>(mex, \"TruthRolloutAlgorithm\");\n"
+    "    ACTS_PYTHON_STRUCT(rc, inputMeasurements, outputTracks, worklistDir,\n"
+    "        outputDir, csvDir, trackingGeometry, magneticField, findTracks,\n"
+    "        maxSteps, maxRollouts);\n"
+    "  }\n")
+text = text.replace(anchor, anchor + block, 1)
+with open(path, "w") as f:
+    f.write(text)
+print("TrackFinding.cpp patched: TruthRolloutAlgorithm binding added.")
+PYEOF2
+
 echo "=== cCKF integration complete ==="
