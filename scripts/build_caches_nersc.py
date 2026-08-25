@@ -11,6 +11,8 @@ import argparse, json, sys, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import numpy as np
+from cckf import cache as cache_mod, features
 from cckf.cache import build_gate_cache
 from cckf.splits import TRAIN_EVENTS, VAL_EVENTS, CAL_EVENTS
 
@@ -47,6 +49,21 @@ def main() -> None:
         t0 = time.time()
         meta = build_gate_cache(paths, odir / split, batch_rows=args.batch_rows)
         print(f"[{split}] events={len(events)} secs={time.time()-t0:.1f} meta={json.dumps(meta)[:300]}")
+
+        # Normalisation statistics come from the TRAIN split only and are
+        # reused verbatim for val/cal/test (spec 2.3) -- fitting per split
+        # would leak split-specific distribution information into the inputs.
+        # train_gate.py loads this file directly, so the cache is unusable
+        # without it.
+        if split == "train":
+            loaded = cache_mod.load_cache(odir / split)
+            mu, sigma = cache_mod.compute_norm_stats(
+                loaded["X"], skip=features.NO_STANDARDIZE,
+                names=features.GATE_FEATURES)
+            np.savez(odir / split / "norm_stats.npz", mu=mu, sigma=sigma,
+                     feature_names=np.array(features.GATE_FEATURES))
+            print(f"[{split}] wrote norm_stats.npz "
+                  f"(mu[0]={mu[0]:.4g}, sigma[0]={sigma[0]:.4g})")
 
 
 if __name__ == "__main__":
