@@ -238,6 +238,29 @@ def decode_geometry_id(geometry_id: np.ndarray | pd.Series) -> tuple[np.ndarray,
     return volume, layer, sensitive
 
 
+def normalize_geometry_id(geometry_id: np.ndarray | pd.Series) -> np.ndarray:
+    """Zero the ``extra`` byte (bits 0-7) of a packed ACTS ``GeometryIdentifier``.
+
+    ODD endcap volumes (16, 18, 23, 25, 28, 30) carry a nonzero ``extra``
+    field -- the ring index, 1-3 -- in the geometry_id written to the
+    digitization CSVs. Barrel volumes are all ``extra = 0``. The trackstates
+    ROOT tree stores only ``volume_id / layer_id / module_id``, so any
+    geometry_id reconstructed from it (:func:`encode_geometry_id`) has
+    ``extra = 0`` and can never equal a raw endcap CSV gid.
+
+    This is exactly why the 2026-08 re-expansion produced zero endcap
+    candidates: the states-to-measurements merge on geometry_id matched only
+    barrels (volumes 17/24/29), and every endcap state -- 39.46% of ROOT
+    measurement states on event 1, 1.82M states -- degenerated to a hole row.
+
+    Dropping ``extra`` loses nothing: ``(volume, layer, sensitive)`` is unique
+    over all 18,918 surfaces in detectors.csv. Every CSV loader applies this
+    at read time so the entire pipeline operates in ``extra = 0`` space.
+    """
+    gid = np.asarray(geometry_id, dtype=np.int64)
+    return gid & ~np.int64(0xFF)
+
+
 def encode_geometry_id(
     volume_id: np.ndarray | pd.Series,
     layer_id: np.ndarray | pd.Series,
@@ -543,7 +566,7 @@ def load_measurements(csv_dir: str, event_id: int) -> pd.DataFrame:
     )
     out = pd.DataFrame({
         "measurement_id": measurement_id,
-        "geometry_id": df["geometry_id"].to_numpy(dtype=np.int64),
+        "geometry_id": normalize_geometry_id(df["geometry_id"]),
         "local0": df["local0"].to_numpy(dtype=np.float64),
         "local1": df["local1"].to_numpy(dtype=np.float64),
         "var_local0": df["var_local0"].to_numpy(dtype=np.float64),
@@ -612,7 +635,7 @@ def load_cells(csv_dir: str, event_id: int) -> pd.DataFrame:
     df = pd.read_csv(path, comment="#")
     df.columns = [c.strip() for c in df.columns]
     out = pd.DataFrame({
-        "geometry_id": df["geometry_id"].to_numpy(dtype=np.int64),
+        "geometry_id": normalize_geometry_id(df["geometry_id"]),
         "measurement_id": df["measurement_id"].to_numpy(dtype=np.int64),
         "channel0": df["channel0"].to_numpy(dtype=np.float64),
         "channel1": df["channel1"].to_numpy(dtype=np.float64),
@@ -653,7 +676,7 @@ def load_simhits(csv_dir: str, event_id: int) -> pd.DataFrame:
     )
     out = pd.DataFrame({
         "hit_id": np.arange(len(df), dtype=np.int64),
-        "geometry_id": df["geometry_id"].to_numpy(dtype=np.int64) if "geometry_id" in df.columns else np.zeros(len(df), dtype=np.int64),
+        "geometry_id": normalize_geometry_id(df["geometry_id"]) if "geometry_id" in df.columns else np.zeros(len(df), dtype=np.int64),
         "particle_id": particle_id,
         "tx": df["tx"].to_numpy(dtype=np.float64) if "tx" in df.columns else np.full(len(df), np.nan),
         "ty": df["ty"].to_numpy(dtype=np.float64) if "ty" in df.columns else np.full(len(df), np.nan),
