@@ -919,3 +919,76 @@ filter would convert them to Group B. The proper fix (teach
 `expand_trackstates` to handle 1D measurements, re-expand all 32, retrain)
 restores long-strip coverage but costs a full re-expansion plus gate retrain.
 Not yet actioned.
+
+---
+
+## 2026-08-24 — Gate rejects 100% of long strips (offline scoring by volume)
+
+**Status:** Confirmed defect. Root cause identified. Not yet fixed.
+
+Scored archived Parquet rows with the **deployed** `gate.bin` blob
+(WeightBlob/MlpInference reimplemented in numpy, so the diagnosis uses the
+exact weights the C++ runs) and stratified by `volume_id`.
+
+### Events 0-3 (the only events containing long strips)
+
+| vol | type | rows | base pos% | gate acc% | purity | recall |
+|-----|------|------|-----------|-----------|--------|--------|
+| 16 | pixel | 284,017 | 4.59% | 0.77% | 64.3% | 10.8% |
+| 17 | pixel | 615,804 | 0.48% | 1.69% | 10.6% | 37.4% |
+| 18 | pixel | 6,601 | 4.05% | 0.44% | 37.9% | 4.1% |
+| 23 | sstrip | 139,305 | 3.22% | 5.51% | 25.1% | 42.9% |
+| 24 | sstrip | 156,937 | 0.90% | 1.94% | 13.7% | 29.6% |
+| 25 | sstrip | 39,762 | 1.93% | 2.55% | 18.1% | 23.9% |
+| **28** | **lstrip** | 72,820 | **18.91%** | **0.000%** | **0%** | **0%** |
+| **29** | **lstrip** | 7,417 | **36.98%** | **0.000%** | **0%** | **0%** |
+| **30** | **lstrip** | 28,754 | **18.33%** | **0.000%** | **0%** | **0%** |
+
+### Val events 4/12/20/28 (Group B, clean, no long strips present)
+
+| vol | type | rows | base pos% | gate acc% | purity | recall |
+|-----|------|------|-----------|-----------|--------|--------|
+| 17 | pixel | 1,256,081 | 0.581% | 0.391% | 89.5% | 60.3% |
+| 24 | sstrip | 224,858 | 1.585% | 1.160% | 90.5% | 66.3% |
+
+### Findings
+
+1. **The gate accepts zero long-strip candidates**, on the surfaces with the
+   *highest* base positive rate in the detector (18-37%). Mean predicted
+   probability is 0.000.
+
+   Mechanism: long strips are genuinely 1D, so `S11` is NaN by design
+   (`instrumentation.patch` only fills s01/s11 when `calibratedSize() >= 2`).
+   `build_gate_features` zero-fills non-finite values, so every long-strip row
+   receives identical degenerate `res1`/`chol_S_10`/`chol_S_11` and a garbage
+   chi2. The gate cannot separate them. With unweighted BCE and long strips at
+   1.27% of the training set, rejecting all of them minimises the loss.
+
+   Long strips are the outermost layers, so this removes the outer hits from
+   every track.
+
+2. **Clean vs corrupted data changes gate quality by ~8x.** Volume 17 purity is
+   89.5% on clean val events and 10.6% on events 0-3 (34-35% corrupted S11).
+   Long strips exist *only* in events 0-3, so the gate's only long-strip
+   training data was also the corrupted subset.
+
+3. **The deployed blob has an IDENTITY Platt calibrator**: `platt=(1.0, 0.0,
+   0.0, 0.0)`, i.e. `calibrate(logit) = sigmoid(logit)`. Spec §10.3 requires
+   the 4-parameter occupancy-conditional fit. Calibration is the headline
+   result; the deployed weights are uncalibrated.
+
+4. **Separate inference-side bug.** Offline, strips score *better* than pixels
+   (90.5% vs 89.5% purity). In ACTS the traced run accepted 22.6% on pixels and
+   0.5% on strips, a 45x inversion. Offline and inference disagree, so there is
+   a train/inference feature mismatch on top of the training defect.
+
+### Implied fix order
+
+1. Make 1D measurements representable: stop zero-filling NaN `S11`; add an
+   explicit `is_1d` feature and a 1D-appropriate chi2, so the gate can
+   distinguish long-strip candidates at all.
+2. Fix `expand_trackstates`' `S11.notna()` filter and re-expand so long strips
+   exist in all 32 events rather than 4.
+3. Retrain, dropping the corrupted events 0-3 or repairing them.
+4. Export with the real occupancy-conditional Platt fit.
+5. Separately, find the train/inference feature mismatch behind finding 4.
