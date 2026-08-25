@@ -28,10 +28,22 @@ def main() -> None:
 
     for split in args.splits.split(","):
         events = groups[split]
-        paths = [pdir / f"expanded_event{e:09d}.parquet" for e in events]
-        missing = [p.name for p in paths if not p.exists()]
+        # Memory-bound events (5, 7, 14) are expanded in track_nr chunks and
+        # land as ..._p0.parquet ... _p3.parquet. build_gate_cache takes a list
+        # of files per split, so parts need no merging -- just collect them.
+        paths, missing = [], []
+        for e in events:
+            whole = pdir / f"expanded_event{e:09d}.parquet"
+            parts = sorted(pdir.glob(f"expanded_event{e:09d}_p*.parquet"))
+            if whole.exists():
+                paths.append(whole)
+            elif parts:
+                paths.extend(parts)
+            else:
+                missing.append(f"event{e:09d}")
         if missing:
-            raise SystemExit(f"{split}: missing {len(missing)} parquet(s): {missing[:5]}")
+            raise SystemExit(f"{split}: missing {len(missing)} event(s): {missing[:5]}")
+        print(f"[{split}] {len(events)} events -> {len(paths)} parquet file(s)")
         t0 = time.time()
         meta = build_gate_cache(paths, odir / split, batch_rows=args.batch_rows)
         print(f"[{split}] events={len(events)} secs={time.time()-t0:.1f} meta={json.dumps(meta)[:300]}")
