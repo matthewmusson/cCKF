@@ -9,7 +9,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from cckf.cache import build_gate_cache
-from cckf.seed_purity import compute_pure_seed_set
 
 
 def _make_parquet_with_selected(tmp_path, n_pure=10, n_majority=30):
@@ -78,26 +77,25 @@ def test_pure_seed_filter_reduces_rows(tmp_path):
     out_pure = tmp_path / "cache_pure"
 
     meta_all = build_gate_cache([path], out_all)
-    pure_set = {path: compute_pure_seed_set(str(path))}
-    meta_pure = build_gate_cache([path], out_pure, pure_seed_sets=pure_set)
+    meta_pure = build_gate_cache([path], out_pure, pure_seeds_only=True)
 
     assert meta_pure["n_rows"] < meta_all["n_rows"]
     assert meta_pure["n_rows"] == 10  # only pure seed's 10 rows
     assert meta_pure.get("pure_seeds_only") is True
 
 
-def test_no_pure_seed_sets_records_false(tmp_path):
-    """Without pure_seed_sets, meta.json records pure_seeds_only=False."""
+def test_no_pure_seed_flag_records_false(tmp_path):
+    """Without pure_seeds_only, meta.json records pure_seeds_only=False."""
     path = _make_parquet_with_selected(tmp_path, n_pure=10, n_majority=30)
     out = tmp_path / "cache_all"
     meta = build_gate_cache([path], out)
     assert meta.get("pure_seeds_only") is False
 
 
-def test_pure_seed_filter_empty_set_yields_no_rows(tmp_path):
-    """A file present in the dict with an empty pure set contributes zero rows."""
-    path = _make_parquet_with_selected(tmp_path, n_pure=10, n_majority=30)
+def test_pure_seed_filter_no_pure_seeds_yields_no_rows(tmp_path):
+    """A file whose branches are all majority (2/3) contributes zero rows."""
+    path = _make_parquet_with_selected(tmp_path, n_pure=0, n_majority=30)
     out = tmp_path / "cache_empty"
-    meta = build_gate_cache([path], out, pure_seed_sets={path: set()})
+    meta = build_gate_cache([path], out, pure_seeds_only=True)
     assert meta["n_rows"] == 0
     assert meta.get("pure_seeds_only") is True
