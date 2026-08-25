@@ -32,12 +32,8 @@ _COLS = [
 
 
 def pi_dagger_pick(cands: pd.DataFrame) -> int:
-    """pi-dagger's choice among the truth candidates of ONE state.
-
-    TODO(human): this tie-break is part of the pi-dagger definition
-    (spec section 11.1) and is Matthew's to fix. Provisional rule, for the
-    divergence-statistics run only: lowest chi2_inc, ties to lowest
-    cand_hit_id. If the rule changes, re-run the walker before any rollout.
+    """pi-dagger's choice among the truth candidates of ONE state. Breaks the rare instance of a 
+    tie by choosing the measurement with the lowest chi^2 among those with the majority particle contributing. 
 
     Parameters
     ----------
