@@ -90,7 +90,10 @@ class TruthRolloutAlgorithm final : public IAlgorithm {
 
   Config m_cfg;
 
-  ReadDataHandle<MeasurementContainer> m_inputMeasurements{
+  // MeasurementSubset (not MeasurementContainer): same type the cCKF
+  // algorithm reads -- the patched tree's subset wrapper exposing
+  // .container() and .orderedIndices().
+  ReadDataHandle<MeasurementSubset> m_inputMeasurements{
       this, "InputMeasurements"};
   WriteDataHandle<ConstTrackContainer> m_outputTracks{this, "OutputTracks"};
 
