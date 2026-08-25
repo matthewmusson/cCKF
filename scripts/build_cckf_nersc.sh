@@ -238,6 +238,15 @@ rsync -a --checksum --itemize-changes \
 # BUILD
 # -------------------------------------------------------------------------
 cd "${ACTS_BUILD}"
+# The fast path normally skips cmake, but any CMakeLists change makes the
+# first `make` re-run the configure step (cmake_check_build_system), and
+# configure reaches podio codegen, which imports yaml/jinja2. Export the
+# same spack py-* PYTHONPATH the bootstrap path uses so a re-configure
+# inside `make` cannot die on ModuleNotFoundError (observed 2026-08-25 when
+# the znver3 per-source flag was appended to TrackFinding/CMakeLists.txt).
+PY_SITES=$(ls -d /spack/opt/spack/linux-x86_64/py-*/lib/python*/site-packages 2>/dev/null | tr '\n' ':')
+[ -n "${PY_SITES}" ] && export PYTHONPATH="${PY_SITES}"
+
 echo "=== make -j${JOBS} ${BUILD_TARGETS} ==="
 SECONDS=0
 make -j"${JOBS}" ${BUILD_TARGETS}
