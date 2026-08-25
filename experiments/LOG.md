@@ -992,3 +992,59 @@ exact weights the C++ runs) and stratified by `volume_id`.
 3. Retrain, dropping the corrupted events 0-3 or repairing them.
 4. Export with the real occupancy-conditional Platt fit.
 5. Separately, find the train/inference feature mismatch behind finding 4.
+
+---
+
+## 2026-08-25 — Incident: re-expanded Parquets had zero endcap candidates
+
+**Symptom chain.** `patch_is_selected` refused to write on re-expanded event 1
+(0.00% matched). Fixing the join key exposed the real defect: candidate rows
+existed for exactly the three barrel volumes (17/24/29), and all 1,824,998
+endcap measurement states — 39.46% of ROOT's 4,624,999 — were hole rows in the
+Parquet while ROOT shows the CKF accepted a hit at every one.
+
+**Two independent defects, fixed separately.**
+
+1. **`is_ckf_selected` join (commit 95606d5 side, `1c311b2`..`95606d5`).**
+   The `(seed_id, geometry_id)` join is one-to-many, so the accepted hit was
+   recovered by a 1e-4 mm residual coincidence — 0.03% of states matched on
+   the re-expanded data. The 2026-08-17 attempt at an exact
+   `(seed_id, state_idx)` key failed because the index was computed on the
+   measurement-only branch group (`res_*_prt`, max 17) instead of the
+   all-state group (`step_k` reaches 38). Computing `state_idx` on the
+   all-state arrays and masking to measurement states aligns keys 2,800,001 /
+   2,800,001. The residual comparison then still failed: `res_eLOC0_prt` is
+   **not** `l_x_hit − eLOC0_prt`. The fix matches the measurement *position*:
+   Parquet `residual_l0 + pred_l0` against ROOT `l_x_hit` (all-state, no
+   reindexing). Verified event 1: `pred_l0 == eLOC0_prt` at 100.0000%;
+   position match fires on 100.0000% of joinable states at 1e-6.
+   The write guard's denominator is now the states the Parquet actually
+   carries (raw ROOT coverage still reported): expansion legitimately emits
+   no row for a state with no prediction or no in-window candidate, so the
+   old floor capped at 60.5% and could never pass.
+
+2. **`geometry_id` extra byte (commit 95606d5).** ODD endcap volumes
+   (16/18/23/25/28/30) write a nonzero `extra` field — the ring index, 1–3 —
+   into the CSVs' geometry_id; barrels are all `extra = 0`. The ROOT tree
+   stores only (volume, layer, module), so `encode_geometry_id` output can
+   never equal a raw endcap CSV gid, and the states→measurements merge
+   silently matched barrels only. The original pilot Parquets were immune:
+   `scripts/expand_pilot.py` keys measurements by a *decoded* (vol, lay, mod)
+   triple; `expansion.py`'s packed-gid merge had never met an endcap before
+   re-expansion. `(volume, layer, sensitive)` is unique across all 18,918
+   surfaces in detectors.csv, so all three CSV loaders now zero the extra
+   byte at read time (`normalize_geometry_id`); candidate joins, cluster
+   joins, and `compute_truth_labels`' simhit comparisons all operate in
+   `extra = 0` space.
+
+**Blast radius.** Every re-expanded Parquet (all 32 events) is barrel-only.
+The gate caches built from them (train 185.8M rows) contain no endcap rows,
+so the `g_ψ^maj` training run (job 57593265, ~1h in) was training a gate that
+had never seen an endcap — killed, along with the in-flight rx jobs.
+Re-expansion of all 32 events restarted with the fixed loaders
+(`wave_driver.sh` + chunked jobs for events 5/7/14/17/18); caches and gate
+training to be redone after validation.
+
+**Validation gates for the redo (event 1 first):** candidate rows in all 9
+volumes with shares comparable to the original Parquet; hole-only fraction
+near the original; `patch_is_selected` passes its ≥95% joinable floor.
