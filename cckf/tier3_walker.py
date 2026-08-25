@@ -27,7 +27,7 @@ import pyarrow.parquet as pq
 _COLS = [
     "seed_id", "step_k", "cand_hit_id", "is_ckf_selected", "chi2_inc",
     "contrib_pids", "branch_majority_pid", "majority_undefined",
-    "action_taken",
+    "action_taken", "volume_id", "layer_id",
 ]
 
 
@@ -72,6 +72,8 @@ def classify_event(parquet_path: str) -> pd.DataFrame:
     g = df.groupby(["seed_id", "step_k"], sort=False)
     st = g.agg(
         n_truth=("is_truth", "sum"),
+        volume_id=("volume_id", "first"),
+        layer_id=("layer_id", "first"),
         sel_hit=("cand_hit_id",
                  lambda s: -1),  # placeholder, filled vectorized below
     ).reset_index()
@@ -126,6 +128,20 @@ def main() -> None:
           f"(vs {n:,} naive; saving {1 - n_rollouts / n:.2%})")
     print(f"multi-truth states (tie-break exercised): {multi_truth:,} "
           f"({multi_truth / n:.4%})")
+    # Where do branches end? A tip on the outermost long-strip layer is at
+    # the detector edge: pi-dagger has nowhere to continue and the rollout
+    # is length zero, so it should not count toward propagation cost.
+    tips = st.loc[st["state_class"] == "tip"]
+    print("tip volume distribution:")
+    print(tips["volume_id"].value_counts().sort_index().to_string())
+    outer = tips.groupby("volume_id")["layer_id"].max()
+    at_edge = 0
+    for vol in (28, 29, 30):
+        if vol in outer.index:
+            at_edge += int(((tips["volume_id"] == vol) &
+                            (tips["layer_id"] == outer[vol])).sum())
+    print(f"tips on outermost long-strip layer (zero-rollout): {at_edge:,} "
+          f"({at_edge / max(len(tips),1):.2%} of tips)")
 
 
 if __name__ == "__main__":
