@@ -47,6 +47,10 @@ cp "${CCKF_REPO}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorith
    "${CCKF_TF_INC}/"
 cp "${CCKF_REPO}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.cpp" \
    "${CCKF_TF_SRC}/"
+cp "${CCKF_REPO}/acts_patches/ActsExamples/TrackFinding/TruthRolloutAlgorithm.hpp" \
+   "${CCKF_TF_INC}/"
+cp "${CCKF_REPO}/acts_patches/ActsExamples/TrackFinding/TruthRolloutAlgorithm.cpp" \
+   "${CCKF_TF_SRC}/"
 echo "Copied cCKF headers/sources into ACTS source tree."
 
 # ---------------------------------------------------------------------------
@@ -61,7 +65,7 @@ if grep -q "CckfTrackFindingAlgorithm.cpp" "${TRACKFINDING_CMAKE}"; then
 else
     echo "=== Patching Examples/Algorithms/TrackFinding/CMakeLists.txt ==="
     # -i.bak / rm rather than bare -i: portable across BSD and GNU sed.
-    sed -i.bak 's|src/TrackFindingAlgorithm\.cpp|src/TrackFindingAlgorithm.cpp\n    src/CckfTrackFindingAlgorithm.cpp|' \
+    sed -i.bak 's|src/TrackFindingAlgorithm\.cpp|src/TrackFindingAlgorithm.cpp\n    src/CckfTrackFindingAlgorithm.cpp\n    src/TruthRolloutAlgorithm.cpp|' \
         "${TRACKFINDING_CMAKE}"
     rm -f "${TRACKFINDING_CMAKE}.bak"
 
