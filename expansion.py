@@ -574,8 +574,22 @@ def load_predicted_cov(csv_dir: str, event_id: int) -> pd.DataFrame:
         CSV's ``step_k``, renamed to match the trackstates join key.
     """
     path = Path(csv_dir) / f"event{event_id:09d}-predicted-cov.csv"
-    df = pd.read_csv(path, comment="#",
-                     usecols=["track_nr", "step_k", "P00", "P01", "P11"])
+    # This file is ~2.5 GB per event and pandas' parser dominates the
+    # expansion wall time. pyarrow's threaded CSV reader is several times
+    # faster; fall back to pandas if it is unavailable.
+    try:
+        from pyarrow import csv as _pacsv
+
+        tbl = _pacsv.read_csv(
+            str(path),
+            convert_options=_pacsv.ConvertOptions(
+                include_columns=["track_nr", "step_k", "P00", "P01", "P11"]
+            ),
+        )
+        df = tbl.to_pandas()
+    except Exception:
+        df = pd.read_csv(path, comment="#",
+                         usecols=["track_nr", "step_k", "P00", "P01", "P11"])
     df.columns = [c.strip() for c in df.columns]
     return pd.DataFrame({
         "track_nr": df["track_nr"].to_numpy(dtype=np.int64),
