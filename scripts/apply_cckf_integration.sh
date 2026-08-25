@@ -72,6 +72,15 @@ else
     # Python bindings target (which includes our header) inherits them.
     cat >> "${TRACKFINDING_CMAKE}" <<'CMAKE_EOF'
 
+# cCKF: the gate/value MLP kernel (MlpInference.hpp, Eigen products) is
+# instantiated only in this translation unit. Perlmutter CPU nodes are
+# EPYC 7763 (Zen 3): AVX2+FMA. Eigen's x86-64 baseline is SSE2, so without
+# an arch flag the vectorized kernel runs at less than half throughput.
+# Per-source rather than global: a global flag change would force a full
+# ACTS rebuild; this recompiles one file.
+set_source_files_properties(src/CckfTrackFindingAlgorithm.cpp
+    PROPERTIES COMPILE_OPTIONS "-march=znver3")
+
 # cCKF integration: CckfTrackFindingAlgorithm.hpp transitively includes
 # cckf headers (SensorLookup.hpp, etc.) that live under Framework/include.
 target_include_directories(
