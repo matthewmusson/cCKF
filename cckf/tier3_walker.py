@@ -55,11 +55,13 @@ def classify_event(parquet_path: str) -> pd.DataFrame:
     {collapse, divergence, tip}, plus sel_hit / truth_pick for audit.
     """
     tbl = pq.read_table(parquet_path, columns=_COLS)
-    df = tbl.to_pandas()
+    df = tbl.drop_columns(["contrib_pids"]).to_pandas()
 
     # is_truth per candidate row: branch majority pid among contributors.
-    # awkward broadcast, no python loop over 46M lists.
-    contribs = ak.Array(df["contrib_pids"].to_numpy())
+    # awkward broadcast, no python loop over 46M lists. The list column goes
+    # through arrow -> awkward directly; a pandas object column of ndarrays
+    # is not a valid ak.to_layout input.
+    contribs = ak.from_arrow(tbl.column("contrib_pids").combine_chunks())
     majority = df["branch_majority_pid"].to_numpy()
     is_truth = ak.to_numpy(ak.any(contribs == majority[:, None], axis=1))
     is_truth &= ~df["majority_undefined"].to_numpy(dtype=bool)
