@@ -211,41 +211,62 @@ class CckfMeasurementSelector {
     std::vector<float> chi2s(candidates.size(), 0.0f);
     // Per-candidate feature cache for diagnostic sampling of accepted hits.
     std::vector<std::array<float, 26>> featCache(candidates.size());
+    // Indices of in-window candidates, in the order their feature rows are
+    // packed into the batch below.
+    std::vector<std::uint32_t> batchIdx;
+    batchIdx.reserve(candidates.size());
     for (std::size_t i = 0; i < candidates.size(); ++i) {
       if (!inWindow[i]) continue;
       auto& ts = candidates[i];
 
       const float chi2 = inns[i].chi2;
       ts.chi2() = chi2;
+      chi2s[i] = chi2;
 
-      // Build feature vector
-      float features[26];
+      // Build feature vector directly into the cache row (it doubles as the
+      // batch input row below).
       auto t_feat_start = std::chrono::steady_clock::now();
-      buildFeatures(ts, inns[i], n_window, features);
+      buildFeatures(ts, inns[i], n_window, featCache[i].data());
       auto t_feat_end = std::chrono::steady_clock::now();
       if (m_timers) {
         m_timers->gate_feature_build.record(t_feat_start, t_feat_end);
         // Check for NaN/inf in feature vector
         for (int j = 0; j < 26; ++j) {
-          if (!std::isfinite(features[j])) {
+          if (!std::isfinite(featCache[i][j])) {
             ++m_timers->gate_diag.n_nan_features;
             break;
           }
         }
       }
+      batchIdx.push_back(static_cast<std::uint32_t>(i));
+    }
 
-      // Cache raw features for diagnostic sampling
-      std::copy(features, features + 26, featCache[i].begin());
-
-      // Gate inference: split forward + calibrate to capture raw logit
+    // Batched gate inference: one matrix-matrix forward pass for every
+    // in-window candidate on this surface, instead of one matrix-vector
+    // pass per candidate. The weights stream from memory once per surface
+    // (~7 candidates on event 4), which with the Eigen kernel is where the
+    // vector units earn their keep. Timer semantics: gate_inference now
+    // records one call per SURFACE batch, not per candidate -- the
+    // per-candidate count lives in gate_feature_calls.
+    if (!batchIdx.empty()) {
+      m_batchRows.resize(batchIdx.size() * 26);
+      m_batchLogits.resize(batchIdx.size());
+      for (std::size_t k = 0; k < batchIdx.size(); ++k) {
+        const auto& row = featCache[batchIdx[k]];
+        std::copy(row.begin(), row.end(), m_batchRows.begin() + k * 26);
+      }
       auto t_gate_start = std::chrono::steady_clock::now();
-      float logit = m_gateInference->forward(features);
-      scores[i] = m_gateInference->calibrate(logit, log_n_window);
-      rawLogits[i] = logit;
-      chi2s[i] = chi2;
+      m_gateInference->forwardBatch(m_batchRows.data(),
+                                    static_cast<std::uint32_t>(batchIdx.size()),
+                                    m_batchLogits.data());
       auto t_gate_end = std::chrono::steady_clock::now();
       if (m_timers) {
         m_timers->gate_inference.record(t_gate_start, t_gate_end);
+      }
+      for (std::size_t k = 0; k < batchIdx.size(); ++k) {
+        const std::uint32_t i = batchIdx[k];
+        rawLogits[i] = m_batchLogits[k];
+        scores[i] = m_gateInference->calibrate(m_batchLogits[k], log_n_window);
       }
     }
 
@@ -536,6 +557,11 @@ class CckfMeasurementSelector {
       }
     }
   }
+
+  // Batched-inference scratch, reused across select() calls (same
+  // one-instance-per-thread contract as the MLP scratch buffers).
+  mutable std::vector<float> m_batchRows;
+  mutable std::vector<float> m_batchLogits;
 
   Config m_config;
   const ActsExamples::ClusterContainer* m_clusters = nullptr;
