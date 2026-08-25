@@ -139,6 +139,23 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     mod = ak.to_numpy(ak.flatten(arrays["module_id"], axis=1)).astype(np.int64)
     gid = encode_geometry_id(vol, lay, mod)
 
+    # Global state index for each measurement state. The res_*_prt branches are
+    # measurement-only, so they carry no state index of their own -- but the
+    # same hit_mask_jagged that selects the measurement subset from the
+    # all-state geometry arrays also selects it from a local index. This gives
+    # an EXACT (track_nr, state_idx) key, which is what the Parquet stores as
+    # (seed_id, step_k). See expansion.py's rename map.
+    #
+    # Why this matters: matching on (seed_id, geometry_id) is one-to-many --
+    # one selected state against every candidate on that surface -- so the
+    # selected hit had to be identified by a 1e-4 mm residual coincidence.
+    # That is fragile by construction and has failed twice on this project
+    # (LOG 2026-08-17/18, and again after re-expansion widened the candidate
+    # set, where it matched 0.03% of states).
+    sidx = ak.to_numpy(
+        ak.flatten(ak.local_index(arrays["volume_id"], axis=1)[hit_mask_jagged], axis=1)
+    ).astype(np.int64)
+
     # Drop the per-track nesting only -- each element is now one (possibly
     # empty) jagged contributor list per state, in (track, state) order.
     per_state = {name: ak.flatten(arrays[name], axis=1) for name in _PARTICLE_ID_FIELDS}
@@ -260,7 +277,8 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
         event_mask = ak.to_numpy(arrays["event_nr"]) == int(event_id)
         arrays = arrays[event_mask]
 
-    empty = pd.DataFrame(columns=["seed_id", "geometry_id", "res_l0", "res_l1"])
+    empty = pd.DataFrame(
+        columns=["seed_id", "state_idx", "geometry_id", "res_l0", "res_l1"])
     n_tracks = len(arrays)
     if n_tracks == 0:
         return empty
@@ -286,17 +304,36 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     mod = ak.to_numpy(ak.flatten(arrays["module_id"][hit_mask_jagged], axis=1)).astype(np.int64)
     gid = encode_geometry_id(vol, lay, mod)
 
+    # Global state index for each measurement state. The res_*_prt branches are
+    # measurement-only, so they carry no state index of their own -- but the
+    # same hit_mask_jagged that selects the measurement subset from the
+    # all-state geometry arrays also selects it from a local index. This gives
+    # an EXACT (track_nr, state_idx) key, which is what the Parquet stores as
+    # (seed_id, step_k). See expansion.py's rename map.
+    #
+    # Why this matters: matching on (seed_id, geometry_id) is one-to-many --
+    # one selected state against every candidate on that surface -- so the
+    # selected hit had to be identified by a 1e-4 mm residual coincidence.
+    # That is fragile by construction and has failed twice on this project
+    # (LOG 2026-08-17/18, and again after re-expansion widened the candidate
+    # set, where it matched 0.03% of states).
+    sidx = ak.to_numpy(
+        ak.flatten(ak.local_index(arrays["volume_id"], axis=1)[hit_mask_jagged], axis=1)
+    ).astype(np.int64)
+
     df = pd.DataFrame(
         {
             "seed_id": track_nr,
+            "state_idx": sidx,
             "geometry_id": gid,
             "res_l0": res0,
             "res_l1": res1,
         }
     )
-    return df.loc[np.isfinite(df["res_l0"]) & np.isfinite(df["res_l1"])].reset_index(
-        drop=True
-    )
+    # res_l1 is NaN on 1D measurements by construction (no l1 coordinate), so
+    # requiring it finite would silently drop every long-strip state. Only l0
+    # is required.
+    return df.loc[np.isfinite(df["res_l0"])].reset_index(drop=True)
 
 
 def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
@@ -352,7 +389,17 @@ def match_selected(
         smallest ``cand_hit_id`` so the result is deterministic.
     """
     work = cand.reset_index(drop=True)
-    merged = work.merge(root_res, on=["seed_id", "geometry_id"], how="left")
+    # Exact (seed_id, state_idx) join when the ROOT side carries the state
+    # index -- one selected hit per state, no residual coincidence needed.
+    # Falls back to the historical (seed_id, geometry_id) + tolerance path for
+    # ROOT files written before state_idx was recovered.
+    if "state_idx" in root_res.columns and "step_k" in work.columns:
+        work = work.rename(columns={"step_k": "state_idx"}) \
+            if "state_idx" not in work.columns else work
+        merged = work.merge(root_res, on=["seed_id", "state_idx"], how="left",
+                            suffixes=("", "_root"))
+    else:
+        merged = work.merge(root_res, on=["seed_id", "geometry_id"], how="left")
 
     close = (
         (merged["residual_l0"] - merged["res_l0"]).abs().le(tol)
@@ -420,6 +467,7 @@ def patch_event(
         parquet_path,
         columns=[
             "seed_id",
+            "step_k",
             "volume_id",
             "layer_id",
             "surface_id",
