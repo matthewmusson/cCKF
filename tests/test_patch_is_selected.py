@@ -424,3 +424,102 @@ def test_root_and_contributor_parsing_agree_on_geometry_id_layout():
         encode_geometry_id(np.array([16]), np.array([2]), np.array([101]))[0]
     )
     assert (0, hole_gid) in contrib_states and (0, hole_gid) not in resid_states
+
+
+# --- Exact route: (seed_id, state_idx) + measurement position --------------
+#
+# The legacy route above joins one ROOT state against every candidate on the
+# surface and identifies the accepted hit by a residual coincidence. Measured
+# against the re-expanded event 1 it matched 0.36% of states. These cover the
+# replacement: an exact state key, and a match on the measurement position
+# (residual + prediction) against ROOT's l_x_hit.
+
+
+def _exact_cands() -> pd.DataFrame:
+    """Two states on the SAME surface -- the case the legacy route conflates.
+
+    Both states have geometry_id 1001, so a surface-level join cannot tell
+    them apart; state_idx can.
+    """
+    return pd.DataFrame(
+        {
+            "seed_id": [0, 0, 0, 0],
+            "state_idx": [3, 3, 7, 7],
+            "geometry_id": [1001, 1001, 1001, 1001],
+            "cand_hit_id": [10, 11, 20, 21],
+            "pred_l0": [1.0, 1.0, 5.0, 5.0],
+            "pred_l1": [2.0, 2.0, 6.0, 6.0],
+            "residual_l0": [0.25, -0.75, 0.50, 1.50],
+            "residual_l1": [0.10, 0.30, 0.20, 0.40],
+        }
+    )
+
+
+def _exact_root() -> pd.DataFrame:
+    # State 3 accepted the hit at local (1.25, 2.10) = cand 10.
+    # State 7 accepted the hit at local (6.50, 6.40) = cand 21.
+    return pd.DataFrame(
+        {
+            "seed_id": [0, 0],
+            "state_idx": [3, 7],
+            "geometry_id": [1001, 1001],
+            "res_l0": [np.nan, np.nan],
+            "res_l1": [np.nan, np.nan],
+            "sel_l0": [1.25, 6.50],
+            "sel_l1": [2.10, 6.40],
+        }
+    )
+
+
+def test_exact_route_distinguishes_two_states_on_one_surface():
+    sel = match_selected(_exact_cands(), _exact_root())
+    assert sel.tolist() == [True, False, False, True]
+
+
+def test_exact_route_accepts_step_k_as_the_state_key():
+    """expansion.py names the column step_k; ROOT parsing names it state_idx."""
+    cands = _exact_cands().rename(columns={"state_idx": "step_k"})
+    sel = match_selected(cands, _exact_root())
+    assert sel.tolist() == [True, False, False, True]
+
+
+def test_exact_route_ignores_l1_on_one_dimensional_sensors():
+    """Long strips (ODD volumes 28/29/30) digitise local0 only, so sel_l1 is
+    NaN. Requiring it would reject every long-strip state -- the defect that
+    removed long strips from the training set entirely."""
+    root = _exact_root()
+    root["sel_l1"] = np.nan
+    sel = match_selected(_exact_cands(), root)
+    assert sel.tolist() == [True, False, False, True]
+
+
+def test_exact_route_flags_at_most_one_candidate_per_state():
+    cands = _exact_cands()
+    cands["is_sel"] = match_selected(cands, _exact_root())
+    assert (cands.groupby(["seed_id", "state_idx"])["is_sel"].sum() == 1).all()
+
+
+def test_exact_route_marks_none_for_a_state_absent_from_root():
+    root = _exact_root().iloc[:1]  # drop state 7
+    sel = match_selected(_exact_cands(), root)
+    assert sel.tolist() == [True, False, False, False]
+
+
+def test_exact_route_respects_tolerance():
+    root = _exact_root().copy()
+    root.loc[0, "sel_l0"] = 1.25 + 1e-2
+    sel = match_selected(_exact_cands(), root, tol=1e-4)
+    assert sel.tolist() == [False, False, False, True]
+
+
+def test_root_residuals_emits_the_selected_measurement_position():
+    """sel_l0 comes from the all-state l_x_hit branch, masked to measurement
+    states -- no cross-length reindexing against the measurement-only
+    res_*_prt branches."""
+    from scripts.patch_is_selected import _root_residuals_from_arrays
+
+    df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
+    df = df.sort_values(["seed_id", "state_idx"]).reset_index(drop=True)
+    # Track 0 measurements sit at all-state positions 0 and 3; track 1 at 0.
+    assert df["state_idx"].tolist() == [0, 3, 0]
+    np.testing.assert_allclose(df["sel_l0"].tolist(), [1.0, -2.0, 3.0])

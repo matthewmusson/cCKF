@@ -7,6 +7,7 @@
 #include "cckf/TruthRolloutSelector.hpp"
 
 #include "Acts/Definitions/TrackParametrization.hpp"
+#include "Acts/EventData/ProxyAccessor.hpp"
 #include "Acts/EventData/SourceLink.hpp"
 #include "Acts/EventData/VectorMultiTrajectory.hpp"
 #include "Acts/EventData/VectorTrackContainer.hpp"
@@ -78,23 +79,16 @@ class TruthSelectorAdapter {
   }
 
  private:
-  /// Plain chi2 of one candidate against its predicted state. Follows the
-  /// .eval() discipline (see cCKF/CLAUDE.md, Eigen expression-template UB).
+  /// Plain chi2 of one candidate against its predicted state. Same
+  /// dynamic-size pattern as CckfMeasurementSelector::computeInnovation,
+  /// same .eval() discipline (cCKF/CLAUDE.md, Eigen expression-template UB).
   static double candidateChi2(Traj::TrackStateProxy& ts) {
-    return Acts::visit_measurement(
-        ts.calibratedSize(), [&](auto N) -> double {
-          constexpr std::size_t kM = decltype(N)::value;
-          const auto meas = ts.template calibrated<kM>().eval();
-          const auto measCov = ts.template calibratedCovariance<kM>().eval();
-          const auto H = ts.projectorSubspaceHelper()
-                             .template projector<kM>()
-                             .eval();
-          const auto predicted = ts.predicted().eval();
-          const auto predictedCov = ts.predictedCovariance().eval();
-          const auto res = (meas - H * predicted).eval();
-          const auto S = (measCov + H * predictedCov * H.transpose()).eval();
-          return (res.transpose() * S.inverse() * res).eval()(0, 0);
-        });
+    const auto H = ts.projectorSubspaceHelper().fullProjector().topLeftCorner(
+        ts.calibratedSize(), Acts::eBoundSize).eval();
+    const auto V = ts.effectiveCalibratedCovariance().eval();
+    const auto S = (V + H * ts.predictedCovariance() * H.transpose()).eval();
+    const auto res = (ts.effectiveCalibrated() - H * ts.predicted()).eval();
+    return (res.transpose() * S.inverse() * res).eval()(0, 0);
   }
 
   const cckf::TruthRolloutContext* m_ctx;
@@ -120,9 +114,10 @@ std::string eventFile(const std::string& dir, const std::string& stem,
 
 }  // namespace
 
-TruthRolloutAlgorithm::TruthRolloutAlgorithm(Config cfg,
-                                             Acts::Logging::Level lvl)
-    : IAlgorithm("TruthRolloutAlgorithm", lvl), m_cfg(std::move(cfg)) {
+TruthRolloutAlgorithm::TruthRolloutAlgorithm(
+    Config cfg, std::unique_ptr<const Acts::Logger> lgr)
+    : IAlgorithm("TruthRolloutAlgorithm", std::move(lgr)),
+      m_cfg(std::move(cfg)) {
   if (m_cfg.inputMeasurements.empty()) {
     throw std::invalid_argument("Missing input measurements");
   }
@@ -252,7 +247,8 @@ ProcessCode TruthRolloutAlgorithm::execute(const AlgorithmContext& ctx) const {
     }
 
     Acts::BoundVector par;
-    Acts::BoundSquareMatrix cov = Acts::BoundSquareMatrix::Zero();
+    Acts::BoundTrackParameters::CovarianceMatrix cov =
+        Acts::BoundTrackParameters::CovarianceMatrix::Zero();
     for (int i = 0; i < 6; ++i) {
       par[i] = row.par[i];
       // Guard degenerate logged variances (e.g. time unmeasured).

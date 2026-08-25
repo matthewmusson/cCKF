@@ -77,7 +77,8 @@ class TruthRolloutAlgorithm final : public IAlgorithm {
     std::size_t maxRollouts = 0;
   };
 
-  TruthRolloutAlgorithm(Config cfg, Acts::Logging::Level lvl);
+  TruthRolloutAlgorithm(Config cfg,
+                        std::unique_ptr<const Acts::Logger> lgr);
 
   ProcessCode execute(const AlgorithmContext& ctx) const final;
   ProcessCode finalize() final;

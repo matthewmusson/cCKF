@@ -117,7 +117,10 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
         arrays = arrays[event_mask]
 
     empty = pd.DataFrame(
-        columns=["seed_id", "geometry_id", "sel_contrib_pids", "sel_has_hit"]
+        columns=[
+            "seed_id", "state_idx", "geometry_id", "sel_contrib_pids",
+            "sel_has_hit",
+        ]
     )
     n_tracks = len(arrays)
     if n_tracks == 0:
@@ -139,21 +142,13 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     mod = ak.to_numpy(ak.flatten(arrays["module_id"], axis=1)).astype(np.int64)
     gid = encode_geometry_id(vol, lay, mod)
 
-    # Global state index for each measurement state. The res_*_prt branches are
-    # measurement-only, so they carry no state index of their own -- but the
-    # same hit_mask_jagged that selects the measurement subset from the
-    # all-state geometry arrays also selects it from a local index. This gives
-    # an EXACT (track_nr, state_idx) key, which is what the Parquet stores as
-    # (seed_id, step_k). See expansion.py's rename map.
-    #
-    # Why this matters: matching on (seed_id, geometry_id) is one-to-many --
-    # one selected state against every candidate on that surface -- so the
-    # selected hit had to be identified by a 1e-4 mm residual coincidence.
-    # That is fragile by construction and has failed twice on this project
-    # (LOG 2026-08-17/18, and again after re-expansion widened the candidate
-    # set, where it matched 0.03% of states).
+    # Per-track state index, matching the Parquet's step_k. Every branch read
+    # here is all-state (contributors exist for holes too, as an empty list),
+    # so this is a plain local index with no measurement mask -- unlike
+    # _root_residuals_from_arrays, which must mask because res_*_prt is
+    # measurement-only.
     sidx = ak.to_numpy(
-        ak.flatten(ak.local_index(arrays["volume_id"], axis=1)[hit_mask_jagged], axis=1)
+        ak.flatten(ak.local_index(arrays["volume_id"], axis=1), axis=1)
     ).astype(np.int64)
 
     # Drop the per-track nesting only -- each element is now one (possibly
@@ -173,6 +168,7 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     df = pd.DataFrame(
         {
             "seed_id": track_nr,
+            "state_idx": sidx,
             "geometry_id": gid,
             "sel_contrib_pids": ak.to_list(nested),
         }
@@ -321,6 +317,24 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
         ak.flatten(ak.local_index(arrays["volume_id"], axis=1)[hit_mask_jagged], axis=1)
     ).astype(np.int64)
 
+    # The SELECTED measurement's local coordinates at each state.
+    #
+    # This, not res_eLOC0_prt, is what identifies which candidate the CKF
+    # accepted. res_*_prt is a measurement-only branch (4.62M entries on
+    # event 1 against 19.45M all-state) and is NOT l_x_hit - eLOC0_prt:
+    # measured against the real files, |residual| agreement between Parquet
+    # candidates and res_eLOC0_prt peaks at 0.36% of states even on an exact
+    # (seed_id, state_idx) join, while l_x_hit matches a Parquet candidate at
+    # 100.0000% of states to 1e-6. l_x_hit/l_y_hit are all-state branches, so
+    # they need no cross-length reindexing at all.
+    lx_flat = ak.to_numpy(ak.flatten(lx, axis=1))
+    sel_l0 = lx_flat[hit_mask].astype(np.float64)
+    if "l_y_hit" in arrays.fields:
+        ly = ak.fill_none(arrays["l_y_hit"], np.nan)
+        sel_l1 = ak.to_numpy(ak.flatten(ly, axis=1))[hit_mask].astype(np.float64)
+    else:
+        sel_l1 = np.full(sel_l0.shape, np.nan, dtype=np.float64)
+
     df = pd.DataFrame(
         {
             "seed_id": track_nr,
@@ -328,12 +342,15 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
             "geometry_id": gid,
             "res_l0": res0,
             "res_l1": res1,
+            "sel_l0": sel_l0,
+            "sel_l1": sel_l1,
         }
     )
-    # res_l1 is NaN on 1D measurements by construction (no l1 coordinate), so
-    # requiring it finite would silently drop every long-strip state. Only l0
-    # is required.
-    return df.loc[np.isfinite(df["res_l0"])].reset_index(drop=True)
+    # Keep any state that carries a selected measurement. sel_l0 is finite by
+    # construction here (hit_mask is exactly isfinite(l_x_hit)); res_l0 is
+    # retained only for the legacy residual path and must not gate the rows,
+    # or states usable by the measurement join would be dropped before it runs.
+    return df.loc[np.isfinite(df["sel_l0"])].reset_index(drop=True)
 
 
 def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
@@ -352,6 +369,8 @@ def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
         tree = fh["trackstates"]
         available = set(tree.keys())
         fields = list(_RESIDUAL_FIELDS) + list(_GEOMETRY_FIELDS) + ["l_x_hit"]
+        if "l_y_hit" in available:
+            fields = fields + ["l_y_hit"]
         if "event_nr" in available:
             fields = fields + ["event_nr"]
         # uproot's `cut=` filtering silently no-ops in this environment (see
@@ -366,17 +385,26 @@ def load_root_residuals(root_path: str, event_id: int) -> pd.DataFrame:
 def match_selected(
     cand: pd.DataFrame, root_res: pd.DataFrame, tol: float = DEFAULT_TOL
 ) -> np.ndarray:
-    """Flag the CKF-selected candidate within each ``(seed_id, geometry_id)``
-    state.
+    """Flag the candidate the CKF accepted at each state.
+
+    Two routes, chosen by which columns are present:
+
+    * **exact** -- ``(seed_id, state_idx)`` join, selected candidate found by
+      matching the measurement position ``residual_l0 + pred_l0`` against the
+      ROOT state's ``l_x_hit``. Requires ``state_idx``/``step_k`` and
+      ``pred_l0`` on ``cand`` and ``sel_l0`` on ``root_res``. Grouping is per
+      state.
+    * **legacy** -- ``(seed_id, geometry_id)`` join with a residual tolerance.
+      Grouping is per surface. Kept for older ROOT files and the fixtures.
 
     Parameters
     ----------
     cand : pandas.DataFrame
         Candidate rows with ``seed_id``, ``geometry_id``, ``cand_hit_id``,
-        ``residual_l0``, ``residual_l1``.
+        ``residual_l0``, ``residual_l1``; plus ``step_k`` (or ``state_idx``)
+        and ``pred_l0``/``pred_l1`` to enable the exact route.
     root_res : pandas.DataFrame
-        Per-state selected residuals with ``seed_id``, ``geometry_id``,
-        ``res_l0``, ``res_l1``.
+        Per-state selected hit from :func:`load_root_residuals`.
     tol : float
         Absolute match tolerance in mm on each residual component.
 
@@ -389,33 +417,73 @@ def match_selected(
         smallest ``cand_hit_id`` so the result is deterministic.
     """
     work = cand.reset_index(drop=True)
-    # Exact (seed_id, state_idx) join when the ROOT side carries the state
-    # index -- one selected hit per state, no residual coincidence needed.
-    # Falls back to the historical (seed_id, geometry_id) + tolerance path for
-    # ROOT files written before state_idx was recovered.
-    if "state_idx" in root_res.columns and "step_k" in work.columns:
-        work = work.rename(columns={"step_k": "state_idx"}) \
-            if "state_idx" not in work.columns else work
-        merged = work.merge(root_res, on=["seed_id", "state_idx"], how="left",
-                            suffixes=("", "_root"))
-    else:
-        merged = work.merge(root_res, on=["seed_id", "geometry_id"], how="left")
+    if "state_idx" not in work.columns and "step_k" in work.columns:
+        work = work.rename(columns={"step_k": "state_idx"})
 
-    close = (
-        (merged["residual_l0"] - merged["res_l0"]).abs().le(tol)
-        & (merged["residual_l1"] - merged["res_l1"]).abs().le(tol)
-    ).to_numpy(dtype=bool)
-    close = close & np.isfinite(merged["res_l0"].to_numpy(dtype=np.float64))
+    exact = (
+        "state_idx" in work.columns
+        and {"state_idx", "sel_l0"} <= set(root_res.columns)
+        and {"pred_l0", "residual_l0"} <= set(work.columns)
+    )
+
+    if exact:
+        # PRIMARY ROUTE. Join on (seed_id, state_idx) -- one ROOT state to its
+        # own candidates, never one state against a whole surface -- then
+        # identify the accepted candidate by its MEASUREMENT position.
+        #
+        # Both halves of this were wrong before and each failed on its own:
+        #   - (seed_id, geometry_id) is one-to-many, so the selected hit had to
+        #     be recovered by a 1e-4 mm residual coincidence (LOG 2026-08-17).
+        #   - the exact key alone still failed, because the residual it was
+        #     compared against, res_eLOC0_prt, is a measurement-only branch
+        #     that is not l_x_hit - eLOC0_prt.
+        # Verified on event 1: pred_l0 == eLOC0_prt at 100.0000%, and the
+        # measurement match below fires on 100.0000% of joinable states.
+        work = work.copy()
+        work["_loc0"] = work["residual_l0"] + work["pred_l0"]
+        if {"residual_l1", "pred_l1"} <= set(work.columns):
+            work["_loc1"] = work["residual_l1"] + work["pred_l1"]
+        else:
+            work["_loc1"] = np.nan
+        merged = work.merge(
+            root_res[["seed_id", "state_idx", "sel_l0", "sel_l1"]],
+            on=["seed_id", "state_idx"],
+            how="left",
+        )
+        d0 = (merged["_loc0"] - merged["sel_l0"]).abs().to_numpy(dtype=np.float64)
+        d1 = (merged["_loc1"] - merged["sel_l1"]).abs().to_numpy(dtype=np.float64)
+        # l1 is absent on 1D sensors (volumes 28/29/30 digitise (0,) only), so
+        # it constrains the match where it exists and is ignored where it does
+        # not. Requiring it outright would reject every long strip.
+        close = (d0 <= tol) & (~np.isfinite(d1) | (d1 <= tol))
+        close &= np.isfinite(merged["sel_l0"].to_numpy(dtype=np.float64))
+        group_keys = ["seed_id", "state_idx"]
+        rank = d0
+    else:
+        # LEGACY ROUTE, retained for ROOT files written before l_x_hit was
+        # recovered and for the unit fixtures. Fragile by construction: it
+        # compares one state's residual against every candidate on the surface.
+        merged = work.merge(root_res, on=["seed_id", "geometry_id"], how="left")
+        close = (
+            (merged["residual_l0"] - merged["res_l0"]).abs().le(tol)
+            & (merged["residual_l1"] - merged["res_l1"]).abs().le(tol)
+        ).to_numpy(dtype=bool)
+        close = close & np.isfinite(merged["res_l0"].to_numpy(dtype=np.float64))
+        group_keys = ["seed_id", "geometry_id"]
+        rank = np.zeros(len(merged), dtype=np.float64)
 
     selected = np.zeros(len(work), dtype=bool)
     if not close.any():
         return selected
 
-    cands_close = merged.loc[close, ["seed_id", "geometry_id", "cand_hit_id"]].copy()
+    cands_close = merged.loc[close, group_keys + ["cand_hit_id"]].copy()
     cands_close["_row"] = np.flatnonzero(close)
+    cands_close["_rank"] = rank[close]
+    # Closest measurement wins; cand_hit_id breaks exact ties so the result is
+    # deterministic and at most one candidate per state is ever flagged.
     winners = (
-        cands_close.sort_values(["seed_id", "geometry_id", "cand_hit_id"])
-        .groupby(["seed_id", "geometry_id"], as_index=False)
+        cands_close.sort_values(group_keys + ["_rank", "cand_hit_id"])
+        .groupby(group_keys, as_index=False)
         .first()
     )
     selected[winners["_row"].to_numpy()] = True
@@ -474,6 +542,11 @@ def patch_event(
             "cand_hit_id",
             "residual_l0",
             "residual_l1",
+            # pred_* reconstructs the measurement position
+            # (local = residual + prediction), which is what match_selected's
+            # exact route compares against ROOT's l_x_hit/l_y_hit.
+            "pred_l0",
+            "pred_l1",
         ],
     ).to_pandas()
     df["geometry_id"] = encode_geometry_id(
@@ -484,17 +557,37 @@ def patch_event(
 
     n_states = len(root_res)
     n_selected = int(selected.sum())
+
+    # Denominator. Expansion does not emit a row for every ROOT state: a state
+    # is absent when it has no predicted parameters or no candidate inside the
+    # n-sigma box. On event 1 that is 2.80M of 4.62M states, so n_selected /
+    # n_states caps at 60.5% and a 0.95 floor on it can never pass however
+    # correct the join is. The health metric is therefore conditional on the
+    # states the Parquet actually contains; raw coverage is reported alongside
+    # so a collapse in expansion output is still visible.
+    if "state_idx" in root_res.columns and "step_k" in df.columns:
+        pq_states = set(map(tuple, df[["seed_id", "step_k"]].drop_duplicates().to_numpy()))
+        root_states = set(map(tuple, root_res[["seed_id", "state_idx"]].to_numpy()))
+    else:
+        pq_states = set(map(tuple, df[["seed_id", "geometry_id"]].drop_duplicates().to_numpy()))
+        root_states = set(map(tuple, root_res[["seed_id", "geometry_id"]].to_numpy()))
+    n_joinable = len(pq_states & root_states)
+
     frac = (n_selected / n_states) if n_states else 0.0
+    frac_joinable = (n_selected / n_joinable) if n_joinable else 0.0
     report = {
         "event_id": event_id,
         "n_rows": len(df),
         "n_selected": n_selected,
         "n_states": n_states,
+        "n_joinable_states": n_joinable,
         "frac_states_matched": frac,
+        "frac_joinable_matched": frac_joinable,
     }
-    if frac < min_frac_matched:
+    if frac_joinable < min_frac_matched:
         raise ValueError(
-            f"event {event_id}: only {frac:.2%} of {n_states:,} ROOT states "
+            f"event {event_id}: only {frac_joinable:.2%} of {n_joinable:,} "
+            f"joinable ROOT states "
             f"matched a candidate within the residual tolerance "
             f"(need >= {min_frac_matched:.0%}); refusing to write "
             f"{out_path}. is_ckf_selected would be almost entirely False, "
