@@ -109,9 +109,103 @@ def classify_event(parquet_path: str) -> pd.DataFrame:
     return st
 
 
+_FLT_BRANCHES = [
+    "eLOC0_flt", "eLOC1_flt", "ePHI_flt", "eTHETA_flt", "eQOP_flt", "eT_flt",
+    "err_eLOC0_flt", "err_eLOC1_flt", "err_ePHI_flt", "err_eTHETA_flt",
+    "err_eQOP_flt", "err_eT_flt",
+]
+
+
+def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
+                  detectors_csv: str, parquet_path: str,
+                  out_csv: str) -> int:
+    """Write the C++ executor's worklist: divergence + tip states with their
+    FILTERED parameters and variance diagonals from the trackstates ROOT.
+
+    Joins on the proven (seed_id, all-state state_idx) key. geometry_id is
+    translated to the TRUE surface id via detectors.csv -- the walker's
+    (vol, lay, sen) triple has extra=0, but real endcap surface ids carry
+    the ring index in the extra byte, and TrackingGeometry::findSurface
+    needs the real id (the extra-byte bug in reverse).
+    """
+    import uproot
+
+    with uproot.open(trackstates_root) as fh:
+        tree = fh["trackstates"]
+        fields = _FLT_BRANCHES + ["volume_id", "layer_id", "module_id"]
+        if "event_nr" in set(tree.keys()):
+            fields = fields + ["event_nr"]
+        arrays = tree.arrays(fields, library="ak")
+    if "event_nr" in arrays.fields:
+        arrays = arrays[ak.to_numpy(arrays["event_nr"]) == int(event_id)]
+
+    n_states = ak.to_numpy(ak.num(arrays["volume_id"], axis=1))
+    seed_id = np.repeat(np.arange(len(arrays), dtype=np.int64), n_states)
+    state_idx = ak.to_numpy(
+        ak.flatten(ak.local_index(arrays["volume_id"], axis=1), axis=1)
+    ).astype(np.int64)
+    root = pd.DataFrame({"seed_id": seed_id, "step_k": state_idx})
+    for b in _FLT_BRANCHES + ["volume_id", "layer_id", "module_id"]:
+        root[b] = ak.to_numpy(
+            ak.flatten(ak.fill_none(arrays[b], np.nan), axis=1))
+
+    det = pd.read_csv(detectors_csv)
+    gcol = [c for c in det.columns if "geometry" in c][0]
+    g = det[gcol].astype(np.uint64).to_numpy()
+    trip = pd.DataFrame({
+        "volume_id": (g >> 56) & 0xFF,
+        "layer_id": (g >> 36) & 0xFFF,
+        "module_id": (g >> 8) & 0xFFFFF,
+        "true_gid": g.astype(np.int64),
+    })
+
+    work = st.loc[st["state_class"].isin(["divergence", "tip"]),
+                  ["seed_id", "step_k"]].copy()
+    work = work.merge(root, on=["seed_id", "step_k"], how="left")
+    work = work.merge(trip, on=["volume_id", "layer_id", "module_id"],
+                      how="left")
+
+    maj = pq.read_table(
+        parquet_path, columns=["seed_id", "branch_majority_pid"]
+    ).to_pandas().drop_duplicates("seed_id")
+    work = work.merge(maj, on="seed_id", how="left")
+
+    n0 = len(work)
+    work = work.loc[np.isfinite(work["eLOC0_flt"])
+                    & work["true_gid"].notna()].reset_index(drop=True)
+    if len(work) < 0.95 * n0:
+        raise ValueError(
+            f"worklist join lost {n0 - len(work):,} of {n0:,} states "
+            f"({1 - len(work)/n0:.2%}); refusing to emit a silently "
+            "truncated worklist.")
+
+    out = pd.DataFrame({
+        "rollout_id": np.arange(len(work), dtype=np.int64),
+        "seed_id": work["seed_id"],
+        "step_k": work["step_k"],
+        "geometry_id": work["true_gid"].astype(np.int64),
+    })
+    for i, b in enumerate(
+            ["eLOC0_flt", "eLOC1_flt", "ePHI_flt", "eTHETA_flt",
+             "eQOP_flt", "eT_flt"]):
+        out[f"par{i}"] = work[b]
+    for i, b in enumerate(
+            ["err_eLOC0_flt", "err_eLOC1_flt", "err_ePHI_flt",
+             "err_eTHETA_flt", "err_eQOP_flt", "err_eT_flt"]):
+        out[f"var{i}"] = work[b].to_numpy() ** 2
+    out["majority_pid"] = work["branch_majority_pid"].fillna(0).astype(
+        np.uint64)
+    out.to_csv(out_csv, index=False)
+    return len(out)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--parquet", required=True)
+    p.add_argument("--trackstates-root", default="")
+    p.add_argument("--event-id", type=int, default=-1)
+    p.add_argument("--detectors-csv", default="")
+    p.add_argument("--worklist-out", default="")
     args = p.parse_args()
 
     st = classify_event(args.parquet)
@@ -127,6 +221,11 @@ def main() -> None:
           f"(vs {n:,} naive; saving {1 - n_rollouts / n:.2%})")
     print(f"multi-truth states (tie-break exercised): {multi_truth:,} "
           f"({multi_truth / n:.4%})")
+    if args.worklist_out:
+        n_rows = emit_worklist(st, args.trackstates_root, args.event_id,
+                               args.detectors_csv, args.parquet,
+                               args.worklist_out)
+        print(f"worklist: {n_rows:,} rows -> {args.worklist_out}")
     # Where do branches end? A tip on the outermost long-strip layer is at
     # the detector edge: pi-dagger has nowhere to continue and the rollout
     # is length zero, so it should not count toward propagation cost.
