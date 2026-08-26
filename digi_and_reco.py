@@ -676,6 +676,24 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
     reco_enabled = getattr(config, "reco", False)  # Default False
     if reco_enabled:
         logger.info("Adding reconstruction chain")
+        # truth_rollout: true swaps the whole track-finding stage for the
+        # tier-3 rollout executor (TruthRolloutAlgorithm). Terminal stage:
+        # nothing downstream of it runs (no ambiguity, no perf writers) --
+        # its products are the per-rollout hit sequences + rollout_tracks.
+        if getattr(config, "truth_rollout", False):
+            logger.info("truth_rollout enabled — running TruthRolloutAlgorithm")
+            addTruthRollout(
+                s,
+                trackingGeometry,
+                field,
+                worklist_dir=getattr(config, "rollout_worklist_dir"),
+                output_dir=getattr(config, "rollout_output_dir"),
+                csv_dir=getattr(config, "rollout_csv_dir"),
+                max_rollouts=int(getattr(config, "rollout_max", 0)),
+            )
+            return s
+
+
         # Add seeding
         # ROOT output for seeding performance (purely controlled by config flag)
         seeds_root_dir = output_dir if output_seeds_root else None
@@ -804,23 +822,6 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
         # "track_particle_matching" / "particle_track_matching" whiteboard
         # aliases, so everything downstream (ambiguity resolution, writers)
         # is unaffected by which one ran.
-        # truth_rollout: true swaps the whole track-finding stage for the
-        # tier-3 rollout executor (TruthRolloutAlgorithm). Terminal stage:
-        # nothing downstream of it runs (no ambiguity, no perf writers) --
-        # its products are the per-rollout hit sequences + rollout_tracks.
-        if getattr(config, "truth_rollout", False):
-            logger.info("truth_rollout enabled — running TruthRolloutAlgorithm")
-            addTruthRollout(
-                s,
-                trackingGeometry,
-                field,
-                worklist_dir=getattr(config, "rollout_worklist_dir"),
-                output_dir=getattr(config, "rollout_output_dir"),
-                csv_dir=getattr(config, "rollout_csv_dir"),
-                max_rollouts=int(getattr(config, "rollout_max", 0)),
-            )
-            return s
-
         cckf_enabled = getattr(config, "cckf", False)
         if cckf_enabled:
             logger.info("cCKF enabled (cckf: true) — using CckfTrackFindingAlgorithm")
