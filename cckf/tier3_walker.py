@@ -179,7 +179,12 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
             "volume_id": ((g >> np.uint64(56)) & np.uint64(0xFF)).astype(np.int64),
             "layer_id": ((g >> np.uint64(36)) & np.uint64(0xFFF)).astype(np.int64),
             "module_id": ((g >> np.uint64(8)) & np.uint64(0xFFFFF)).astype(np.int64),
-            "true_gid": g.astype(np.int64),
+            # Nullable Int64, NOT int64: a left-merge with misses coerces
+            # plain int64 to float64, and float64 cannot represent these
+            # 19-digit ids -- they round to multiples of 256, silently
+            # zeroing the ring byte. That single coercion produced every
+            # "extra=0" symptom including the 26.4% surface-miss rate.
+            "true_gid": pd.array(g.astype(np.int64), dtype="Int64"),
         })
         # sensitive == 0 rows are layer/approach surfaces (detectors.csv
         # lists them); mapping passive states to them hands findSurface an
@@ -208,7 +213,8 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
         work[_k] = work[_k].fillna(-1).astype(np.int64)
     work = work.merge(trip, on=["volume_id", "layer_id", "module_id"],
                       how="left")
-    _wg = work["true_gid"].fillna(0).to_numpy().astype(np.uint64)
+    _wg = work["true_gid"].fillna(0).astype("Int64").to_numpy(
+        dtype=np.int64).astype(np.uint64)
     _wv = (_wg >> np.uint64(56)) & np.uint64(0xFF)
     _we = _wg & np.uint64(0xFF)
     _ec = np.isin(_wv, [16, 18, 23, 25, 28, 30])
@@ -224,7 +230,7 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     # same material and reaches the first decision surface identically.
     # 60.03% of event-1 starts are such states; without this they were all
     # refused by the guard.
-    par_cols = _FLT_BRANCHES + ["true_gid"]
+    par_cols = _FLT_BRANCHES + ["true_gid"]  # true_gid stays Int64 end-to-end
     donor = root.copy()
     for _k in ("volume_id", "layer_id", "module_id"):
         donor[_k] = donor[_k].fillna(-1).astype(np.int64)
@@ -275,7 +281,7 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
         "rollout_id": np.arange(len(work), dtype=np.int64),
         "seed_id": work["seed_id"],
         "step_k": work["step_k"],
-        "geometry_id": work["true_gid"].astype(np.int64),
+        "geometry_id": work["true_gid"].astype("Int64").astype(np.int64),
     })
     for i, b in enumerate(
             ["eLOC0_flt", "eLOC1_flt", "ePHI_flt", "eTHETA_flt",
