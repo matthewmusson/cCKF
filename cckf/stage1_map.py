@@ -122,7 +122,15 @@ def pilot_dir_for(event_id: int) -> str:
         why an uncovered event is not silently guessed at).
     """
     try:
-        return _EVENT_TO_DIR[event_id]
+        directory = _EVENT_TO_DIR[event_id]
+        # Modal mounted the pilot dirs at /data/results; on NERSC the same
+        # tree lives under $SCRATCH/cckf/modal_backup/results. Set
+        # CCKF_STAGE1_BASE to relocate without editing the map.
+        import os
+        base = os.environ.get("CCKF_STAGE1_BASE")
+        if base:
+            directory = directory.replace("/data/results", base.rstrip("/"))
+        return directory
     except KeyError:
         raise KeyError(
             f"event {event_id} is not covered by the stage1 pilot-directory "
