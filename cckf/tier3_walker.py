@@ -165,15 +165,31 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
         root[flt] = np.where(
             np.isfinite(root[flt].to_numpy()), root[flt], root[prt])
 
+    # Surface-id map. PRIMARY source: the event's measurements.csv, whose
+    # geometry_ids are the REAL surface ids (ring byte included) -- the same
+    # ids source links carry, so TrackingGeometry::findSurface resolves them.
+    # detectors.csv writes endcap gids with extra=0 (measured 2026-08-26:
+    # all 110,753 rollout surface-misses were extra=0 endcap ids), so it is
+    # only a fallback for surfaces without hits this event.
+    def _triples(g: np.ndarray) -> pd.DataFrame:
+        return pd.DataFrame({
+            "volume_id": (g >> 56) & 0xFF,
+            "layer_id": (g >> 36) & 0xFFF,
+            "module_id": (g >> 8) & 0xFFFFF,
+            "true_gid": g.astype(np.int64),
+        })
+
+    import os
+    meas_csv = os.path.join(os.path.dirname(detectors_csv),
+                            f"event{event_id:09d}-measurements.csv")
+    gm = pd.read_csv(meas_csv, usecols=["geometry_id"])["geometry_id"]
+    trip_m = _triples(gm.astype(np.uint64).to_numpy()).drop_duplicates(
+        ["volume_id", "layer_id", "module_id"])
     det = pd.read_csv(detectors_csv)
     gcol = [c for c in det.columns if "geometry" in c][0]
-    g = det[gcol].astype(np.uint64).to_numpy()
-    trip = pd.DataFrame({
-        "volume_id": (g >> 56) & 0xFF,
-        "layer_id": (g >> 36) & 0xFFF,
-        "module_id": (g >> 8) & 0xFFFFF,
-        "true_gid": g.astype(np.int64),
-    })
+    trip_d = _triples(det[gcol].astype(np.uint64).to_numpy())
+    trip = pd.concat([trip_m, trip_d]).drop_duplicates(
+        ["volume_id", "layer_id", "module_id"], keep="first")
 
     work = st.loc[st["state_class"].isin(["divergence", "tip"]),
                   ["seed_id", "step_k"]].copy()
