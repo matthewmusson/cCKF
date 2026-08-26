@@ -90,10 +90,11 @@ class TruthRolloutAlgorithm final : public IAlgorithm {
 
   Config m_cfg;
 
-  // MeasurementSubset (not MeasurementContainer): same type the cCKF
-  // algorithm reads -- the patched tree's subset wrapper exposing
-  // .container() and .orderedIndices().
-  ReadDataHandle<MeasurementSubset> m_inputMeasurements{
+  // Plain MeasurementContainer (from CsvMeasurementReader -- Stage 1's
+  // measurements, so indices match the truth map by construction). The
+  // MeasurementSubset the CKF plumbing wants is built in execute() over all
+  // indices.
+  ReadDataHandle<MeasurementContainer> m_inputMeasurements{
       this, "InputMeasurements"};
   WriteDataHandle<ConstTrackContainer> m_outputTracks{this, "OutputTracks"};
 

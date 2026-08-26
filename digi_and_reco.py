@@ -155,9 +155,23 @@ def addTruthRollout(
     import acts.examples
 
     customLogLevel = acts.examples.defaultLogging(s, logLevel)
+    # Measurements come from Stage 1's CSVs, NOT from re-digitization.
+    # Measured 2026-08-25: the NERSC build's digitization produces 188,154
+    # measurements for event 1 where Modal Stage 1 produced 188,144, with
+    # different ordering -- so measurement indices do not reproduce across
+    # builds and the truth map (keyed by Stage 1 measurement_id) would match
+    # nothing. Reading the CSVs makes the indices Stage 1's by construction.
+    # Requires digi: false in the config (geometry is byte-identical, so
+    # surface resolution is unaffected).
+    s.addReader(acts.examples.CsvMeasurementReader(
+        level=customLogLevel(),
+        inputDir=csv_dir,
+        outputMeasurements="measurements",
+        outputMeasurementSimHitsMap="rollout_measurement_simhit_map",
+    ))
     rollout = acts.examples.TruthRolloutAlgorithm(
         level=customLogLevel(),
-        inputMeasurements=f"{prefix}measurement_subset",
+        inputMeasurements="measurements",
         outputTracks=f"{prefix}rollout_tracks",
         worklistDir=worklist_dir,
         outputDir=output_dir,

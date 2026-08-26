@@ -21,6 +21,7 @@
 #include "ActsExamples/EventData/MeasurementCalibration.hpp"
 
 #include <cstdio>
+#include <numeric>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -180,12 +181,17 @@ ProcessCode TruthRolloutAlgorithm::execute(const AlgorithmContext& ctx) const {
                              << hitMap.size() << " mapped measurements");
 
   // ---- CKF plumbing (mirrors CckfTrackFindingAlgorithm::execute) ----
+  // Wrap the full container as a subset over all indices; the subset builds
+  // the geometry-ordered source-link multiset the CKF accessor needs.
+  std::vector<MeasurementContainer::Index> allIdx(measurements.size());
+  std::iota(allIdx.begin(), allIdx.end(), 0);
+  MeasurementSubset subset(measurements, std::move(allIdx));
+
   PassThroughCalibrator pcalibrator;
-  MeasurementCalibratorAdapter calibrator(pcalibrator,
-                                          measurements.container());
+  MeasurementCalibratorAdapter calibrator(pcalibrator, subset.container());
   Acts::GainMatrixUpdater kfUpdater(false);
   IndexSourceLinkAccessor slAccessor;
-  slAccessor.container = &measurements.orderedIndices();
+  slAccessor.container = &subset.orderedIndices();
 
   auto trackContainer = std::make_shared<Acts::VectorTrackContainer>();
   auto trackStateContainer = std::make_shared<Acts::VectorMultiTrajectory>();
