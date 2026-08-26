@@ -101,7 +101,8 @@ class TruthRolloutAlgorithm final : public IAlgorithm {
   mutable std::atomic<std::size_t> m_nRollouts{0};
   mutable std::atomic<std::size_t> m_nSteps{0};
   mutable std::atomic<std::size_t> m_nHoles{0};
-  mutable std::atomic<std::size_t> m_nFailed{0};
+  mutable std::atomic<std::size_t> m_nSurfaceMiss{0};
+  mutable std::atomic<std::size_t> m_nFindTracksErr{0};
 };
 
 }  // namespace ActsExamples

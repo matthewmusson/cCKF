@@ -248,7 +248,12 @@ ProcessCode TruthRolloutAlgorithm::execute(const AlgorithmContext& ctx) const {
     const Acts::Surface* surface = m_cfg.trackingGeometry->findSurface(
         Acts::GeometryIdentifier(row.geometryId));
     if (surface == nullptr) {
-      ++m_nFailed;
+      ++m_nSurfaceMiss;
+      if (m_nSurfaceMiss <= 10) {
+        ACTS_WARNING("rollout " << row.rolloutId << ": no surface for gid "
+                                << row.geometryId << " (seed " << row.seedId
+                                << " step " << row.stepK << ")");
+      }
       continue;
     }
 
@@ -270,7 +275,12 @@ ProcessCode TruthRolloutAlgorithm::execute(const AlgorithmContext& ctx) const {
     ++nDone;
     ++m_nRollouts;
     if (!result.ok()) {
-      ++m_nFailed;
+      ++m_nFindTracksErr;
+      if (m_nFindTracksErr <= 10) {
+        ACTS_WARNING("rollout " << row.rolloutId << ": findTracks error: "
+                                << result.error().message() << " (gid "
+                                << row.geometryId << ")");
+      }
       continue;
     }
 
@@ -306,14 +316,17 @@ ProcessCode TruthRolloutAlgorithm::execute(const AlgorithmContext& ctx) const {
   m_outputTracks(ctx, std::move(constTracks));
 
   ACTS_INFO("TruthRollout: " << nDone << " rollouts, " << m_nSteps
-                             << " steps total, " << m_nFailed << " failed");
+                             << " steps total, surface-miss "
+                             << m_nSurfaceMiss << ", findTracks-err "
+                             << m_nFindTracksErr);
   return ProcessCode::SUCCESS;
 }
 
 ProcessCode TruthRolloutAlgorithm::finalize() {
   ACTS_INFO("TruthRollout totals: rollouts=" << m_nRollouts
             << " steps=" << m_nSteps << " holes=" << m_nHoles
-            << " failed=" << m_nFailed);
+            << " surface_miss=" << m_nSurfaceMiss
+            << " findtracks_err=" << m_nFindTracksErr);
   return ProcessCode::SUCCESS;
 }
 
