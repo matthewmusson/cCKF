@@ -45,7 +45,7 @@ def main() -> None:
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     state = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
     cls = models.GateMLP if args.model_type == "gate" else models.ValueMLP
-    model = cls(input_dim=X.shape[1])
+    model = cls(n_features=X.shape[1])
     model.load_state_dict(state)
     model.eval()
 
