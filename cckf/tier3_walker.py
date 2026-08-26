@@ -190,12 +190,21 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     trip_d = _triples(det[gcol].astype(np.uint64).to_numpy())
     trip = pd.concat([trip_m, trip_d]).drop_duplicates(
         ["volume_id", "layer_id", "module_id"], keep="first")
+    _tg = trip["true_gid"].to_numpy().astype(np.uint64)
+    print(f"DEBUG trip: {len(trip_m):,} meas + {len(trip_d):,} det -> "
+          f"{len(trip):,}; ring-byte>0 rows: {int((_tg & 0xFF > 0).sum()):,}")
 
     work = st.loc[st["state_class"].isin(["divergence", "tip"]),
                   ["seed_id", "step_k"]].copy()
     work = work.merge(root, on=["seed_id", "step_k"], how="left")
     work = work.merge(trip, on=["volume_id", "layer_id", "module_id"],
                       how="left")
+    _wg = work["true_gid"].fillna(0).to_numpy().astype(np.uint64)
+    _wv = (_wg >> np.uint64(56)) & np.uint64(0xFF)
+    _we = _wg & np.uint64(0xFF)
+    _ec = np.isin(_wv, [16, 18, 23, 25, 28, 30])
+    print(f"DEBUG post-merge: endcap rows {int(_ec.sum()):,}, "
+          f"with ring byte {int((_we[_ec] > 0).sum()):,}")
 
     # Rollout starts on PASSIVE surfaces (module_id == 0: layer/approach
     # material surfaces, absent from detectors.csv) are launched from the
