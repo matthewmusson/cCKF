@@ -209,6 +209,14 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     ).to_pandas().drop_duplicates("seed_id")
     work = work.merge(maj, on="seed_id", how="left")
 
+    # Undefined-majority branches (branch_majority_pid == -1) cannot match
+    # any hit under pi-dagger and are excluded from value training anyway;
+    # cast to uint64 they became a garbage PID that front-loaded the smoke
+    # test with unmatchable rollouts (98 of the first 100).
+    n_undef = int((work["branch_majority_pid"] < 0).sum())
+    work = work.loc[work["branch_majority_pid"] >= 0].reset_index(drop=True)
+    print(f"worklist: dropped {n_undef:,} undefined-majority states")
+
     n0 = len(work)
     bad_par = ~np.isfinite(work["eLOC0_flt"].to_numpy(dtype=np.float64))
     bad_gid = work["true_gid"].isna().to_numpy()
