@@ -172,12 +172,19 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     # all 110,753 rollout surface-misses were extra=0 endcap ids), so it is
     # only a fallback for surfaces without hits this event.
     def _triples(g: np.ndarray) -> pd.DataFrame:
-        return pd.DataFrame({
-            "volume_id": (g >> 56) & 0xFF,
-            "layer_id": (g >> 36) & 0xFFF,
-            "module_id": (g >> 8) & 0xFFFFF,
+        # int64 keys, NOT uint64: pandas merges of uint64 against the float64
+        # ROOT-side keys silently miss (observed: every endcap sensitive
+        # state got NaN true_gid while the same merge worked on a toy frame).
+        df = pd.DataFrame({
+            "volume_id": ((g >> np.uint64(56)) & np.uint64(0xFF)).astype(np.int64),
+            "layer_id": ((g >> np.uint64(36)) & np.uint64(0xFFF)).astype(np.int64),
+            "module_id": ((g >> np.uint64(8)) & np.uint64(0xFFFFF)).astype(np.int64),
             "true_gid": g.astype(np.int64),
         })
+        # sensitive == 0 rows are layer/approach surfaces (detectors.csv
+        # lists them); mapping passive states to them hands findSurface an
+        # unresolvable id AND bypasses the last-sensitive substitution.
+        return df.loc[df["module_id"] > 0]
 
     import os
     meas_csv = os.path.join(os.path.dirname(detectors_csv),
@@ -197,6 +204,8 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     work = st.loc[st["state_class"].isin(["divergence", "tip"]),
                   ["seed_id", "step_k"]].copy()
     work = work.merge(root, on=["seed_id", "step_k"], how="left")
+    for _k in ("volume_id", "layer_id", "module_id"):
+        work[_k] = work[_k].fillna(-1).astype(np.int64)
     work = work.merge(trip, on=["volume_id", "layer_id", "module_id"],
                       how="left")
     _wg = work["true_gid"].fillna(0).to_numpy().astype(np.uint64)
@@ -216,8 +225,11 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
     # 60.03% of event-1 starts are such states; without this they were all
     # refused by the guard.
     par_cols = _FLT_BRANCHES + ["true_gid"]
-    donor = root.merge(trip, on=["volume_id", "layer_id", "module_id"],
-                       how="left")
+    donor = root.copy()
+    for _k in ("volume_id", "layer_id", "module_id"):
+        donor[_k] = donor[_k].fillna(-1).astype(np.int64)
+    donor = donor.merge(trip, on=["volume_id", "layer_id", "module_id"],
+                        how="left")
     donor = donor.sort_values(["seed_id", "step_k"])
     sens = donor["true_gid"].notna()
     for c in par_cols:
