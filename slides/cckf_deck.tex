@@ -229,7 +229,7 @@
 \begin{figure}
     \centering
     \includegraphics[width=0.9\linewidth]{windowFailureRate.png}
-    \caption{Window Failure Rate across $\eta$ stratified by occupancy}
+    \caption{Window failure rate across $\eta$, stratified by sensor type and seed purity, for window sizes $n = 3$ to $10$}
     \label{fig:placeholder}
 \end{figure}
   
@@ -1002,6 +1002,28 @@
   \end{itemize}
 \end{frame}
 
+\begin{frame}{Distribution Shift at the Selector}
+  \begin{columns}
+    \begin{column}{0.5\textwidth}
+      \begin{figure}
+        \centering
+        \includegraphics[width=\linewidth]{chi2_training.png}
+        \caption{Training: $\chi^2$ increments of gate candidates, with the
+          tuned CKF cut values marked.}
+      \end{figure}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{figure}
+        \centering
+        \includegraphics[width=\linewidth]{chi2_all_hits_on_surface.png}
+        \caption{Inference: the selector receives every hit on the surface,
+          so the $\chi^2$ feature blows up relative to training. Fixed with
+          a spatial pre-filter that reproduces the training window.}
+      \end{figure}
+    \end{column}
+  \end{columns}
+\end{frame}
+
 \subsection{Retraining}
 
 \begin{frame}{Retraining After the Fixes}
@@ -1096,9 +1118,9 @@
     \begin{itemize}
       \item The grid is coarse and has not reached the low-fake corner of
         threshold space.
-      \item Greedy ambiguity resolution still stands in for the planned
-        set-packing ILP, whose job is to remove exactly these surviving
-        fakes.
+      \item Ambiguity resolution is unchanged from stock ACTS and does not
+        yet use the calibrated scores, so fakes that reach it mostly
+        survive.
     \end{itemize}
     \item Efficiency more than doubles over the baseline at every grid
       point, so the trade is threshold placement, not model quality.
@@ -1127,6 +1149,78 @@
   \end{itemize}
 \end{frame}
 
+\begin{frame}{Backward Stitching}
+  \begin{itemize}
+    \item One branch, walked tip to seed. Rollouts run only where they are
+      needed; everything else is stitched by recurrence.
+  \end{itemize}
+  \vspace{0.1cm}
+  \centering
+  \resizebox{0.92\textwidth}{!}{%
+  \begin{tikzpicture}[
+    state/.style={circle, draw, thick, minimum size=18pt, inner sep=0pt,
+      font=\scriptsize\bfseries},
+    agree/.style={state, draw=coolgrey, fill=lightsand},
+    diverge/.style={state, draw=cardinal, fill=cardinal!15},
+    tip/.style={state, draw=cardinal, fill=cardinal!35},
+    roll/.style={rectangle, draw=cardinal, fill=cardinal!8,
+      rounded corners=2pt, minimum width=2.2cm, minimum height=0.55cm,
+      align=center, font=\scriptsize},
+    branch/.style={thick, draw=coolgrey},
+    back/.style={-{Stealth[length=2mm]}, very thick, draw=cardinal},
+    rollarrow/.style={-{Stealth[length=1.8mm]}, thick, draw=cardinal,
+      densely dashed},
+    inherit/.style={-{Stealth[length=1.8mm]}, thick, draw=coolgrey!70},
+    lbl/.style={font=\scriptsize, text=coolgrey, align=center},
+    rlbl/.style={font=\scriptsize\bfseries, text=cardinal, align=center},
+  ]
+
+    % Branch states, seed (left) to tip (right)
+    \node[agree]   (s0) at (0,0)   {$s_0$};
+    \node[agree]   (s1) at (1.8,0) {$s_1$};
+    \node[agree]   (s2) at (3.6,0) {$s_2$};
+    \node[diverge] (s3) at (5.4,0) {$s_3$};
+    \node[agree]   (s4) at (7.2,0) {$s_4$};
+    \node[diverge] (s5) at (9.0,0) {$s_5$};
+    \node[tip]     (s6) at (10.8,0){$s_6$};
+
+    \draw[branch] (s0) -- (s1) -- (s2) -- (s3) -- (s4) -- (s5) -- (s6);
+
+    \node[lbl, below=0.15cm of s0] {seed};
+    \node[lbl, below=0.15cm of s3] {diverges\\from $\pi^\dagger$};
+    \node[lbl, below=0.15cm of s5] {diverges\\from $\pi^\dagger$};
+    \node[lbl, below=0.15cm of s6] {tip};
+
+    % Backward walk arrow
+    \draw[back] (10.8,1.0) -- node[above, rlbl] {walk backward from the tip}
+      (0,1.0);
+
+    % Rollouts hang off divergence states and the tip
+    \node[roll] (r3) at (5.4,-2.0) {rollout from $s_3$};
+    \node[roll] (r5) at (9.0,-2.0) {rollout from $s_5$};
+    \node[roll] (r6) at (12.6,-2.0) {rollout from $s_6$};
+    \draw[rollarrow] (s3) -- (r3);
+    \draw[rollarrow] (s5) -- (r5);
+    \draw[rollarrow] (s6.south east) -- (r6);
+
+    % Recurrence arrows for agreeing states
+    \draw[inherit] (s3.north west) to[bend right=25]
+      node[above, lbl] {$V(s_2)$ from $V(s_3)$} (s2.north east);
+    \draw[inherit] (s2.north west) to[bend right=25] (s1.north east);
+    \draw[inherit] (s1.north west) to[bend right=25] (s0.north east);
+    \draw[inherit] (s5.north west) to[bend right=25]
+      node[above, lbl] {inherit} (s4.north east);
+
+    % Legend
+    \node[agree, minimum size=12pt] (leg1) at (0.2,-2.0) {};
+    \node[lbl, right=0.1cm of leg1] {action matches $\pi^\dagger$: value by recurrence};
+    \node[diverge, minimum size=12pt] (leg2) at (0.2,-2.7) {};
+    \node[lbl, right=0.1cm of leg2] {divergence or tip: value from a real rollout};
+
+  \end{tikzpicture}
+  }%
+\end{frame}
+
 \subsection{Status}
 
 \begin{frame}{Current Runs}
@@ -1153,7 +1247,7 @@
     \item Train and benchmark both tier 3 value functions against tier 2.
     \item Make the DAgger call: measure calibration drift on the logged
       on-policy states. Iterate only if the drift is material.
-    \item Wire the set-packing ILP into ambiguity resolution and remeasure
+    \item Use the calibrated scores in ambiguity resolution and remeasure
       the fake rate.
   \end{itemize}
 \end{frame}
