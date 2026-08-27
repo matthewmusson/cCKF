@@ -12,9 +12,9 @@ Each evaluation is one sbatch run of run_p1_input.sbatch on one event
 low-threshold point is informative, and this steers the sampler away
 without crashing the study.
 
-Run inside shifter with the venv python plus PyROOT on PYTHONPATH
-(see --help epilog for the exact incantation). Designed to run on a
-login node under nohup; it only submits jobs and reads results.
+Run on a login node with the host python (module load python) plus
+--user-installed optuna/botorch, under nohup; it only submits jobs and
+shells into shifter to read finished runs.
 
 Usage:
     python scripts/ehvi_sweep.py --pair maj \
@@ -47,28 +47,50 @@ def sq(cmd: list[str]) -> str:
     return subprocess.run(cmd, capture_output=True, text=True).stdout
 
 
-def read_run(run_dir: Path) -> dict | None:
-    """Post-ambiguity efficiency and fake rate from one finished run."""
-    import ROOT
+IMG = "ghcr.io/opendatadetector/sw:0.2.2_linux-ubuntu24.04_gcc-13.3.0"
+ROOT_PREFIX = ("/spack/opt/spack/linux-x86_64/"
+               "root-6.38.00-fkp6aauipwq6nh2lkh23427cswpjirnh")
+SPACK_PY = ("/spack/opt/spack/linux-x86_64/"
+            "python-3.13.11-awxtqzerpdzhatylv3uagd35ebciqs3o/bin/python3")
 
-    ROOT.gROOT.SetBatch(True)
-    ROOT.gErrorIgnoreLevel = ROOT.kFatal
+_READ_SNIPPET = """
+import sys
+import ROOT
+ROOT.gROOT.SetBatch(True)
+ROOT.gErrorIgnoreLevel = ROOT.kFatal
+tf = ROOT.TFile.Open(sys.argv[1])
+eff = tf.Get("trackeff_vs_eta")
+total = eff.GetTotalHistogram().Integral()
+passed = eff.GetPassedHistogram().Integral()
+fake = float(tf.Get("fakeratio_tracks")[0])
+print(passed / total if total > 0 else -1, fake)
+"""
+
+
+def read_run(run_dir: Path) -> dict | None:
+    """Post-ambiguity efficiency and fake rate from one finished run.
+
+    Slurm CLI is unavailable inside shifter and PyROOT is unavailable on the
+    host, so the driver lives on the host and shells into the container just
+    for this read.
+    """
     ambi = run_dir / "performance_finding_ambi.root"
     if not ambi.exists():
         return None
-    tf = ROOT.TFile.Open(str(ambi))
+    p = subprocess.run(
+        ["shifter", f"--image={IMG}",
+         f"--env=PYTHONPATH={ROOT_PREFIX}/lib/root",
+         f"--env=LD_LIBRARY_PATH={ROOT_PREFIX}/lib/root",
+         "--", SPACK_PY, "-c", _READ_SNIPPET, str(ambi)],
+        capture_output=True, text=True,
+    )
     try:
-        eff_obj = tf.Get("trackeff_vs_eta")
-        total = eff_obj.GetTotalHistogram().Integral()
-        passed = eff_obj.GetPassedHistogram().Integral()
-        fake = float(tf.Get("fakeratio_tracks")[0])
-        if total <= 0:
-            return None
-        return {"efficiency": passed / total, "fake_rate": fake}
-    except Exception:
+        eff, fake = map(float, p.stdout.split())
+    except ValueError:
         return None
-    finally:
-        tf.Close()
+    if eff < 0:
+        return None
+    return {"efficiency": eff, "fake_rate": fake}
 
 
 def launch(tag: str, g: float, v: float, weights: Path, event: int,
