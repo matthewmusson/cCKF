@@ -28,7 +28,9 @@ n=0
 for g in $TAU_G; do
   for v in $TAU_V; do
     tag="sweep_g${g//./p}_v${v//./p}"
-    cfg="configs/_${tag}.yaml"
+    # Namespace the generated config by runs-dir so two sweeps launched from
+    # the same repo cannot overwrite each other's configs.
+    cfg="configs/_$(basename "$RUNS")_${tag}.yaml"
     sed -e "s/^cckf_gate_threshold: .*/cckf_gate_threshold: $g/" \
         -e "s/^cckf_value_threshold: .*/cckf_value_threshold: $v/" \
         -e "s|^cckf_gate_weights: .*|cckf_gate_weights: $WEIGHTS/gate.bin|" \
@@ -37,7 +39,7 @@ for g in $TAU_G; do
         "$REPO/configs/nersc_cckf_full_dm.yaml" > "$REPO/$cfg"
     sbatch --parsable --qos=regular --time=01:00:00 \
       --output="$SCRATCH/cckf/logs/${tag}_%j.out" \
-      "$SCRATCH/cckf/run_p1_input.sbatch" "_${tag}.yaml" "$tag" "$MODIN" >/dev/null
+      "$SCRATCH/cckf/run_p1_input.sbatch" "_$(basename "$RUNS")_${tag}.yaml" "$tag" "$MODIN" "$RUNS" >/dev/null
     n=$((n+1))
   done
 done
