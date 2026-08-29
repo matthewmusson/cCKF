@@ -94,7 +94,7 @@ def read_run(run_dir: Path) -> dict | None:
 
 
 def launch(tag: str, g: float, v: float, weights: Path, event: int,
-           runs_dir: Path) -> str:
+           runs_dir: Path, nsigma: float = 0.0) -> str:
     cfg = REPO / "configs" / f"_{runs_dir.name}_{tag}.yaml"
     text = BASE_CONFIG.read_text()
     import re
@@ -108,6 +108,9 @@ def launch(tag: str, g: float, v: float, weights: Path, event: int,
     text = re.sub(r"^cckf_value_weights: .*",
                   f"cckf_value_weights: {weights}/value.bin", text, flags=re.M)
     text = re.sub(r"^skip: .*", f"skip: {event}", text, flags=re.M)
+    if nsigma > 0:
+        text = re.sub(r"^cckf_gate_window_nsigma: .*",
+                      f"cckf_gate_window_nsigma: {nsigma}", text, flags=re.M)
     cfg.write_text(text)
     out = sq([
         "sbatch", "--parsable", "--qos=regular", "--time=01:00:00",
@@ -141,6 +144,9 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--event", type=int, default=4)
+    ap.add_argument("--nsigma", type=float, default=0.0,
+                    help="override cckf_gate_window_nsigma; 0 keeps the "
+                         "base config's value")
     args = ap.parse_args()
 
     runs_dir = Path(args.runs_dir)
@@ -182,7 +188,8 @@ def main() -> None:
             g = round(t.params["tau_g"], 4)
             v = round(t.params["tau_v"], 4)
             tag = f"e{t.number:03d}_g{g}_v{v}".replace(".", "p")
-            jid = launch(tag, g, v, weights, args.event, runs_dir)
+            jid = launch(tag, g, v, weights, args.event, runs_dir,
+                         args.nsigma)
             batch.append((t, g, v, tag, jid))
             print(f"[{args.pair}] round {rnd} trial {t.number}: "
                   f"g={g} v={v} job {jid}", flush=True)
