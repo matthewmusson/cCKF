@@ -359,6 +359,8 @@ def particle_pt_lookup(csv_dir: str, event_id: int) -> pd.DataFrame:
     path = Path(csv_dir) / f"event{event_id:09d}-simhits.csv"
     raw = pd.read_csv(
         path,
+        comment="#",  # match expansion.load_simhits's own read of this file,
+        # else a stray comment line desyncs row position from hit_id
         usecols=[
             SCHEMA["raw_simhit_tpx"],
             SCHEMA["raw_simhit_tpy"],

@@ -8,8 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from winfail_uncensored import (
     ETA_BINS, N_VALUES, OCC_EDGES, PT_EDGES, wilson_interval, assign_strata,
     select_ckf_branch, branch_purity, flag_ambi_survivors, build_state_table,
-    accumulate_event, _as_pid_list, _pick_earliest_by_tt,
+    accumulate_event, _as_pid_list, _pick_earliest_by_tt, particle_pt_lookup,
 )
+import expansion
 
 
 def test_eta_binning_is_dense():
@@ -274,3 +275,33 @@ def test_pick_earliest_by_tt_partial_nan_prefers_finite_tt():
     })
     out = _pick_earliest_by_tt(df)
     assert dict(zip(out.particle_id, out.pt_gev)) == {4: 2.0}
+
+
+def test_particle_pt_lookup_end_to_end_with_leading_comment_line(tmp_path):
+    # Regression test: the raw CSV read must pass comment="#" like
+    # expansion.load_simhits does for the same file, or a leading comment
+    # line (present on real ACTS/edm4hep exports) desyncs row position
+    # (hit_id) between the two reads.
+    csv_dir = tmp_path
+    event_id = 7
+    path = csv_dir / f"event{event_id:09d}-simhits.csv"
+    path.write_text(
+        "# metadata header line, must be stripped like load_simhits does\n"
+        "particle_id_pv,particle_id_sv,particle_id_part,particle_id_gen,"
+        "particle_id_subpart,geometry_id,tx,ty,tz,tpx,tpy,tpz,tt\n"
+        "1,0,1,1,0,111,0.0,0.0,0.0,3.0,4.0,0.0,5.0\n"   # particle 1, later hit
+        "1,0,1,1,0,111,0.0,0.0,0.0,1.0,1.0,0.0,1.0\n"   # particle 1, earliest
+        "2,0,1,1,0,111,0.0,0.0,0.0,0.0,5.0,0.0,2.0\n"   # particle 2
+    )
+    out = particle_pt_lookup(str(csv_dir), event_id)
+    assert list(out.columns) == ["particle_id", "pt_gev"]
+
+    p1 = expansion.encode_particle_id(
+        np.array([1]), np.array([0]), np.array([1]), np.array([1]), np.array([0])
+    )[0]
+    p2 = expansion.encode_particle_id(
+        np.array([2]), np.array([0]), np.array([1]), np.array([1]), np.array([0])
+    )[0]
+    got = dict(zip(out.particle_id, out.pt_gev))
+    assert np.isclose(got[p1], np.hypot(1.0, 1.0))  # earliest (tt=1) hit wins
+    assert np.isclose(got[p2], 5.0)
