@@ -3,13 +3,14 @@
 Reads four sweep CSVs from a specified directory and renders the Pareto curve
 overlay with classical CKF tuned operating points and a pT-selection footer.
 """
+
 import argparse
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
@@ -43,7 +44,12 @@ def render_overlay(csv_dir: Path, output_path: Path | None = None) -> None:
         ("pareto_maj_n3_dense.csv", "n = 3", "#1a7a3a", "o"),
         ("pareto_maj_n5_dense.csv", "n = 5", "#1f6fb5", "s"),
         ("pareto_maj_dense.csv", "n = 10", "#c2452c", "^"),
-        ("pareto_sweep_baseline.csv", "pre-retrain weights, n = 10 (Aug 25)", "#8a8a8a", "x"),
+        (
+            "pareto_sweep_baseline.csv",
+            "pre-retrain weights, n = 10 (Aug 25)",
+            "#8a8a8a",
+            "x",
+        ),
     ]
 
     # Tuned classical CKF operating points (joint Optuna, balanced column, 8-event Modal eval)
