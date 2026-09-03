@@ -397,11 +397,14 @@ def main() -> None:
     ev, S = args.event, args.scratch_base
 
     pq_path = f"{S}/reexpanded/expanded_event{ev:09d}.parquet"
+    # NOTE: chi2_inc added to the task-5 brief's column list -- it is
+    # selected out of df below (for flag_ambi_survivors) but the brief's
+    # iter_batches columns omitted it, which KeyErrors on real data.
     cols = ["seed_id", "branch_id", "step_k", "volume_id", "state_theta",
             "n_window", "cand_hit_id", "residual_l0", "residual_l1",
             "S00", "S11", "is_1d", "is_ckf_selected", "contrib_pids",
             "branch_majority_pid", "majority_undefined",
-            "majority_true_hit_on_surface"]
+            "majority_true_hit_on_surface", "chi2_inc"]
 
     pf = pq.ParquetFile(pq_path)
     partial_states: list[pd.DataFrame] = []
