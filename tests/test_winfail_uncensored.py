@@ -7,7 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from winfail_uncensored import (
     ETA_BINS, N_VALUES, OCC_EDGES, PT_EDGES, wilson_interval, assign_strata,
-    select_ckf_branch, branch_purity, flag_ambi_survivors,
+    select_ckf_branch, branch_purity, flag_ambi_survivors, build_state_table,
+    accumulate_event,
 )
 
 
@@ -119,3 +120,93 @@ def test_flag_ambi_survivors_disjoint_branches_both_survive():
                   + [(1, k, 500 + k, True, 1.0) for k in range(8)])
     out = flag_ambi_survivors(rows)
     assert dict(zip(out.seed_id, out.survived_ambi)) == {0: True, 1: True}
+
+
+# Tests for Task 4: build_state_table, accumulate_event
+
+def _prows(records):
+    cols = ["seed_id", "branch_id", "step_k", "volume_id", "state_theta",
+            "n_window", "cand_hit_id", "residual_l0", "residual_l1",
+            "S00", "S11", "is_1d", "is_ckf_selected", "contrib_pids",
+            "branch_majority_pid", "majority_undefined",
+            "majority_true_hit_on_surface", "chi2_inc"]
+    return pd.DataFrame(records, columns=cols)
+
+
+HALF_PI = float(np.pi / 2)  # eta = 0
+
+
+def test_build_state_table_taxonomy():
+    rows = _prows([
+        # state A: true-hit row at d = 4.0  (r0=0.8, S00=0.04; r1 small)
+        (0, 0, 0, 17, HALF_PI, 3, 11, 0.8, 0.02, 0.04, 0.04, False, True, [7], 7, False, True, 1.0),
+        # ...and a wrong-hit row on the same state (must not affect d_true)
+        (0, 0, 0, 17, HALF_PI, 3, 12, 0.1, 0.01, 0.04, 0.04, False, False, [8], 7, False, True, 1.0),
+        # state B: on surface, NO true-hit row -> escaped (d_true NaN)
+        (1, 0, 0, 17, HALF_PI, 1, 13, 0.1, 0.01, 0.04, 0.04, False, True, [5], 9, False, True, 1.0),
+        # state C: hole row, majority not on surface -> module failure
+        (2, 0, 0, 17, HALF_PI, 0, -1, np.nan, np.nan, np.nan, np.nan, False, False, None, 4, False, False, 1.0),
+    ])
+    st = build_state_table(rows)
+    assert len(st) == 3
+    a = st[st.seed_id == 0].iloc[0]
+    assert np.isclose(a.d_true, 4.0)
+    b = st[st.seed_id == 1].iloc[0]
+    assert b.on_surface and np.isnan(b.d_true)
+    c = st[st.seed_id == 2].iloc[0]
+    assert not c.on_surface
+
+
+def test_build_state_table_min_over_two_true_rows_and_1d():
+    rows = _prows([
+        # two true-hit rows on one state (module overlap): d = 4.0 and d = 1.0
+        (0, 0, 0, 29, HALF_PI, 2, 11, 0.8, np.nan, 0.04, np.nan, True, True, [7], 7, False, True, 1.0),
+        (0, 0, 0, 29, HALF_PI, 2, 12, 0.2, np.nan, 0.04, np.nan, True, False, [7], 7, False, True, 1.0),
+    ])
+    st = build_state_table(rows)
+    assert len(st) == 1
+    assert np.isclose(st.iloc[0].d_true, 1.0)   # min wins; 1D uses l0 leg only
+    assert st.iloc[0].n_true_rows == 2
+
+
+def test_accumulate_event_window_and_module_counts():
+    st = pd.DataFrame({
+        "seed_id": [0, 1, 2], "branch_id": [0, 0, 0], "step_k": [0, 0, 0],
+        "volume_id": [17, 17, 17], "state_theta": [HALF_PI] * 3,
+        "n_window": [3, 1, 0], "branch_majority_pid": [7, 9, 4],
+        "on_surface": [True, True, False],
+        "d_true": [4.0, np.nan, np.nan], "n_true_rows": [1, 0, 0],
+        "is_pure": [True, True, True],
+        "survived_ambi": [True, False, True],
+    })
+    pt_lut = pd.DataFrame({"particle_id": [7, 9, 4], "pt_gev": [2.0, 2.0, 2.0]})
+    out = accumulate_event(st, pt_lut)
+    hi = 3  # pt bin [1.0, inf)
+    assert out["mod_total"][:, :, :, :, hi, :].sum() == 3
+    assert out["mod_fail"][:, :, :, :, hi, :].sum() == 1
+    assert out["win_total"][:, :, :, :, hi, :].sum() == 2   # on-surface states
+    # ambi axis: state A is on a surviving branch, state B is not
+    assert out["win_total"][:, :, :, :, hi, 1].sum() == 1
+    assert out["win_total"][:, :, :, :, hi, 0].sum() == 1
+    # state A (d=4.0): fails n=3 only. state B (escaped): fails ALL n incl 10.
+    n_idx = {n: i for i, n in enumerate((3.0, 5.0, 7.0, 10.0))}
+    assert out["win_fail"][n_idx[3.0]].sum() == 2
+    assert out["win_fail"][n_idx[5.0]].sum() == 1
+    assert out["win_fail"][n_idx[10.0]].sum() == 1
+    assert out["counters"]["n_escaped"] == 1
+
+
+def test_accumulate_event_pt_binning_and_unmatched():
+    st = pd.DataFrame({
+        "seed_id": [0, 1], "branch_id": [0, 0], "step_k": [0, 0],
+        "volume_id": [17, 17], "state_theta": [HALF_PI] * 2,
+        "n_window": [1, 1], "branch_majority_pid": [7, 8],
+        "on_surface": [True, True], "d_true": [1.0, 1.0],
+        "n_true_rows": [1, 1], "is_pure": [False, False],
+        "survived_ambi": [True, True],
+    })
+    pt_lut = pd.DataFrame({"particle_id": [7], "pt_gev": [0.75]})  # 8 unmatched
+    out = accumulate_event(st, pt_lut)
+    assert out["mod_total"][:, :, :, :, 1, :].sum() == 1   # [0.7, 0.9)
+    assert out["mod_total"][:, :, :, :, 0, :].sum() == 1   # unmatched -> bin 0
+    assert out["counters"]["n_pt_unmatched"] == 1

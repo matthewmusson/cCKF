@@ -174,3 +174,125 @@ def flag_ambi_survivors(
     return pd.DataFrame(
         {"seed_id": all_seeds, "survived_ambi": [s_ in sel for s_ in all_seeds]}
     )
+
+
+def build_state_table(rows: pd.DataFrame) -> pd.DataFrame:
+    """Collapse candidate+hole rows to one row per (seed, branch, step).
+
+    Input rows must already be restricted to selected, majority-defined
+    branches. See module docstring for d_true.
+    """
+    maj = rows["branch_majority_pid"].to_numpy()
+    is_true = np.fromiter(
+        (
+            (m in (c if c is not None else []))
+            for m, c in zip(maj, rows["contrib_pids"])
+        ),
+        dtype=bool,
+        count=len(rows),
+    ) & (rows["cand_hit_id"].to_numpy() >= 0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        d0 = np.abs(rows["residual_l0"].to_numpy()) / np.sqrt(
+            rows["S00"].to_numpy()
+        )
+        d1 = np.abs(rows["residual_l1"].to_numpy()) / np.sqrt(
+            rows["S11"].to_numpy()
+        )
+    is1d = rows["is_1d"].to_numpy().astype(bool)
+    d = np.where(is1d, d0, np.maximum(d0, d1))
+
+    work = rows[
+        ["seed_id", "branch_id", "step_k", "volume_id", "state_theta",
+         "n_window", "branch_majority_pid",
+         "majority_true_hit_on_surface"]
+    ].copy()
+    work["_d"] = np.where(is_true & np.isfinite(d), d, np.nan)
+    work["_is_true"] = is_true
+
+    g = work.groupby(["seed_id", "branch_id", "step_k"], as_index=False)
+    out = g.agg(
+        volume_id=("volume_id", "first"),
+        state_theta=("state_theta", "first"),
+        n_window=("n_window", "first"),
+        branch_majority_pid=("branch_majority_pid", "first"),
+        on_surface=("majority_true_hit_on_surface", "first"),
+        d_true=("_d", "min"),
+        n_true_rows=("_is_true", "sum"),
+    )
+    out["on_surface"] = out["on_surface"].astype(bool)
+    return out
+
+
+def accumulate_event(states: pd.DataFrame, pt_lut: pd.DataFrame) -> dict:
+    """Fill the failure tensors for one event. See module docstring."""
+    n_eta, n_sen, n_pur, n_occ = len(ETA_BINS) - 1, 3, 2, len(OCC_EDGES)
+    n_pt = len(PT_EDGES)
+    shape = (n_eta, n_sen, n_pur, n_occ, n_pt, 2)  # trailing axis: survived_ambi
+    mod_total = np.zeros(shape, np.int64)
+    mod_fail = np.zeros(shape, np.int64)
+    win_total = np.zeros(shape, np.int64)
+    win_fail = np.zeros((len(N_VALUES),) + shape, np.int64)
+
+    st = states.merge(
+        pt_lut, left_on="branch_majority_pid", right_on="particle_id",
+        how="left",
+    )
+    n_pt_unmatched = int(st["pt_gev"].isna().sum())
+
+    theta = np.clip(st["state_theta"].to_numpy(), 1e-10, np.pi - 1e-10)
+    eta = -np.log(np.tan(theta / 2.0))
+    ei, si, oi = assign_strata(
+        eta, st["volume_id"].to_numpy(), st["n_window"].to_numpy()
+    )
+    pi = st["is_pure"].to_numpy().astype(np.int64)
+    ti = np.clip(
+        np.digitize(np.nan_to_num(st["pt_gev"].to_numpy(), nan=0.0), PT_EDGES)
+        - 1,
+        0,
+        n_pt - 1,
+    )
+
+    keep = (si >= 0) & np.isfinite(eta)
+    n_vol20 = int((si < 0).sum())
+
+    ai = st["survived_ambi"].to_numpy().astype(np.int64)
+
+    def _at(tensor: np.ndarray, mask: np.ndarray) -> None:
+        np.add.at(
+            tensor,
+            (ei[mask], si[mask], pi[mask], oi[mask], ti[mask], ai[mask]),
+            1,
+        )
+
+    _at(mod_total, keep)
+    on = st["on_surface"].to_numpy().astype(bool)
+    _at(mod_fail, keep & ~on)
+
+    w = keep & on
+    _at(win_total, w)
+    d = st["d_true"].to_numpy()
+    escaped = w & ~np.isfinite(d)
+    for ni, n in enumerate(N_VALUES):
+        f = escaped | (w & (d > n))
+        np.add.at(
+            win_fail,
+            (np.full(int(f.sum()), ni), ei[f], si[f], pi[f], oi[f], ti[f], ai[f]),
+            1,
+        )
+
+    return {
+        "mod_total": mod_total, "mod_fail": mod_fail,
+        "win_total": win_total, "win_fail": win_fail,
+        "counters": {
+            "n_states": int(len(st)),
+            "n_vol20": n_vol20,
+            "n_escaped": int(escaped.sum()),
+            "n_multi_true": int((st["n_true_rows"].to_numpy() > 1).sum()),
+            "n_pt_unmatched": n_pt_unmatched,
+            "n_branches": int(st["seed_id"].nunique()),
+            "n_ambi_survivors": int(
+                st.drop_duplicates("seed_id")["survived_ambi"].sum()
+            ),
+        },
+    }
