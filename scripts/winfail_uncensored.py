@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import heapq
 import sys
 from pathlib import Path
 
@@ -117,7 +118,15 @@ def select_ckf_branch(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def branch_purity(rows: pd.DataFrame, selected: pd.DataFrame) -> pd.DataFrame:
-    """Pure (3/3) vs majority seed, from the first 3 selected candidates."""
+    """Pure (3/3) vs majority seed, from the first 3 selected candidates.
+
+    Vectorized (no groupby.apply Python callable): stage-1 envelope events
+    carry O(1e6) branches, and a per-group Python callable over that many
+    groups is too slow. Same membership-test pattern build_state_table
+    uses, then is_pure = groupby(...).min() over the per-row bools (min of
+    bools is AND, i.e. "all of the first 3 match" -- identical to the old
+    all(...) reduction).
+    """
     sel_rows = rows.merge(selected, on=["seed_id", "branch_id"])
     picks = (
         sel_rows[sel_rows["is_ckf_selected"]]
@@ -125,16 +134,17 @@ def branch_purity(rows: pd.DataFrame, selected: pd.DataFrame) -> pd.DataFrame:
         .groupby("seed_id")
         .head(3)
     )
-
-    def _all_match(g: pd.DataFrame) -> bool:
-        maj = g["branch_majority_pid"].iloc[0]
-        return all(maj in _as_pid_list(c) for c in g["contrib_pids"])
-
+    maj = picks["branch_majority_pid"].to_numpy()
+    match = np.fromiter(
+        (m in _as_pid_list(c) for m, c in zip(maj, picks["contrib_pids"])),
+        dtype=bool,
+        count=len(picks),
+    )
     return (
-        picks.groupby("seed_id")
-        .apply(_all_match, include_groups=False)
-        .rename("is_pure")
-        .reset_index()
+        picks.assign(_match=match)
+        .groupby("seed_id", as_index=False)["_match"]
+        .min()
+        .rename(columns={"_match": "is_pure"})
     )
 
 
@@ -151,6 +161,19 @@ def flag_ambi_survivors(
     until every branch shares fewer than max_shared hits.
 
     Returns one row per seed_id in `rows` with a survived_ambi bool.
+
+    Implementation note: stage-1 envelope events carry O(1e6) surviving
+    branches (terminal cuts disabled), so the naive `max(sel, key=evict_key)`
+    per eviction -- O(evictions x N) -- is too slow. This uses a
+    lazy-deletion heap instead: `shared[s]` only ever decreases (an owner is
+    removed and never re-added), so a branch's rel = shared/len(hits) is
+    monotonically non-increasing and its heap entries are popped in the
+    order they were pushed -- a per-seed version counter (rather than a
+    float comparison) distinguishes a stale entry from the live one. This
+    is the standard lazy-heap pattern for a priority that only moves one
+    direction (cf. Dijkstra's decrease-key), giving O((N + evictions) log N)
+    while selecting the exact same worst branch, with the exact same
+    tie-break order, as the original max() at every step.
     """
     picked = rows[rows["is_ckf_selected"]]
     hits: dict[int, list[int]] = (
@@ -171,12 +194,23 @@ def flag_ambi_survivors(
         for s_ in sel
     }
 
-    def evict_key(s_: int) -> tuple[float, int, float]:
-        rel = shared[s_] / len(hits[s_]) if hits[s_] else 0.0
-        return (rel, -len(hits[s_]), chi2[s_])
+    # heap key = negated evict_key = (rel, -len(hits[s]), chi2[s]), max
+    # first, so heap-min pops the same branch max(sel, key=evict_key) would.
+    heap: list[tuple[float, int, float, int, int]] = []
+    version: dict[int, int] = {}
+
+    def push(s_: int) -> None:
+        version[s_] = version.get(s_, 0) + 1
+        rel = shared[s_] / len(hits[s_])
+        heapq.heappush(heap, (-rel, len(hits[s_]), -chi2[s_], s_, version[s_]))
+
+    for s_ in sel:
+        push(s_)
 
     while sel:
-        worst = max(sel, key=evict_key)
+        _, _, _, worst, v = heapq.heappop(heap)
+        if worst not in sel or v != version[worst]:
+            continue  # superseded by a fresher push for this seed; skip
         if shared[worst] < max_shared:
             break
         for h in hits[worst]:
@@ -185,6 +219,7 @@ def flag_ambi_survivors(
                 (j,) = tracks_per_hit[h]
                 if j in sel:
                     shared[j] -= 1
+                    push(j)
         sel.discard(worst)
 
     return pd.DataFrame(
@@ -387,6 +422,7 @@ def particle_pt_lookup(csv_dir: str, event_id: int) -> pd.DataFrame:
 def main() -> None:
     import argparse
     import os
+    import time
 
     import pyarrow.parquet as pq
 
@@ -397,6 +433,14 @@ def main() -> None:
     ap.add_argument("scratch_base")
     args = ap.parse_args()
     ev, S = args.event, args.scratch_base
+
+    t_prev = time.time()
+
+    def _stage(name: str) -> None:
+        nonlocal t_prev
+        now = time.time()
+        print(f"event {ev}: [{name}] {now - t_prev:.1f}s", flush=True)
+        t_prev = now
 
     pq_path = f"{S}/reexpanded/expanded_event{ev:09d}.parquet"
     # NOTE: chi2_inc added to the task-5 brief's column list -- it is
@@ -426,10 +470,14 @@ def main() -> None:
         partial_states.append(build_state_table(df))
     cand = pd.concat(cand_parts, ignore_index=True)
     del cand_parts
+    _stage("read+reduce")
 
     selected = select_ckf_branch(cand)
+    _stage("select")
     purity = branch_purity(cand, selected)
+    _stage("purity")
     survivors = flag_ambi_survivors(cand)
+    _stage("ambi flag")
     del cand
 
     # A state split across two read batches yields two partial rows; rerun
@@ -454,6 +502,7 @@ def main() -> None:
 
     pt_lut = particle_pt_lookup(str(csv_dir_for(ev)), ev)
     out = accumulate_event(states, pt_lut)
+    _stage("accumulate")
 
     os.makedirs(f"{S}/winfail_unc", exist_ok=True)
     np.savez(
@@ -463,6 +512,7 @@ def main() -> None:
         **{k: v for k, v in out.items() if k != "counters"},
         **{f"counter_{k}": np.array(v) for k, v in out["counters"].items()},
     )
+    _stage("savez")
     c = out["counters"]
     print(
         f"event {ev}: states={c['n_states']:,} vol20={c['n_vol20']:,} "
@@ -470,7 +520,8 @@ def main() -> None:
         f"pt_unmatched={c['n_pt_unmatched']:,} "
         f"branches={c['n_branches']:,} ambi_survivors={c['n_ambi_survivors']:,} "
         f"win_total={int(out['win_total'].sum()):,} "
-        f"winfail_n10={int(out['win_fail'][-1].sum()):,}"
+        f"winfail_n10={int(out['win_fail'][-1].sum()):,}",
+        flush=True,
     )
 
 
