@@ -15,8 +15,14 @@
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import expansion  # noqa: E402
 
 ETA_BINS: np.ndarray = np.linspace(-3.5, 3.5, 141)  # 140 bins, width 0.05
 N_VALUES: tuple[float, ...] = (3.0, 5.0, 7.0, 10.0)
@@ -73,6 +79,18 @@ def assign_strata(
     return eta_idx, sensor_idx, occ_idx
 
 
+def _as_pid_list(c: object) -> list:
+    """Normalize a `contrib_pids` cell to a membership-testable list.
+
+    Parquet nulls in a list<int64> column can surface to pandas either as
+    `None` or as a bare `float` NaN (arrow's null sentinel loses the list
+    type on the empty case). Both mean "no contributors" here.
+    """
+    if c is None or isinstance(c, float):
+        return []
+    return c
+
+
 def select_ckf_branch(rows: pd.DataFrame) -> pd.DataFrame:
     """One (seed_id, branch_id) per seed: the branch the CKF followed.
 
@@ -110,9 +128,7 @@ def branch_purity(rows: pd.DataFrame, selected: pd.DataFrame) -> pd.DataFrame:
 
     def _all_match(g: pd.DataFrame) -> bool:
         maj = g["branch_majority_pid"].iloc[0]
-        return all(
-            maj in (c if c is not None else []) for c in g["contrib_pids"]
-        )
+        return all(maj in _as_pid_list(c) for c in g["contrib_pids"])
 
     return (
         picks.groupby("seed_id")
@@ -185,7 +201,7 @@ def build_state_table(rows: pd.DataFrame) -> pd.DataFrame:
     maj = rows["branch_majority_pid"].to_numpy()
     is_true = np.fromiter(
         (
-            (m in (c if c is not None else []))
+            (m in _as_pid_list(c))
             for m, c in zip(maj, rows["contrib_pids"])
         ),
         dtype=bool,
@@ -296,3 +312,162 @@ def accumulate_event(states: pd.DataFrame, pt_lut: pd.DataFrame) -> dict:
             ),
         },
     }
+
+
+def _pick_earliest_by_tt(df: pd.DataFrame) -> pd.DataFrame:
+    """Reduce (particle_id, pt_gev, tt) rows to one earliest row per particle.
+
+    "Earliest" is minimum `tt`. Ties, and particles whose `tt` is entirely
+    NaN (missing in some events), fall back to original row order - a
+    stable sort with `na_position="last"` preserves input order among equal
+    (including all-NaN) keys, which for hit rows built in file order is
+    exactly "minimum hit_id". Pure and NERSC-independent so it is unit
+    tested directly; `particle_pt_lookup` is the CSV-reading wrapper around
+    it, exercised by the real-data smoke instead.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Columns ``particle_id, pt_gev, tt``, one row per simhit, in
+        original (file) row order.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ``particle_id, pt_gev``, one row per particle_id.
+    """
+    ordered = df.sort_values("tt", kind="stable", na_position="last")
+    return (
+        ordered.groupby("particle_id", as_index=False)
+        .first()[["particle_id", "pt_gev"]]
+    )
+
+
+def particle_pt_lookup(csv_dir: str, event_id: int) -> pd.DataFrame:
+    """(particle_id, pt_gev) for one event, from each particle's earliest simhit.
+
+    Momentum (`tpx, tpy, tt`) lives only in the raw simhits CSV;
+    `expansion.load_simhits` computes the custom-encoded `particle_id` but
+    drops momentum. The two are joined **by row position** (hit_id), never
+    by re-encoding barcodes: both read `event{event_id:09d}-simhits.csv` in
+    file order with no row filtering, so row i means the same hit in both
+    (verified full-file on event 4 - see Task 1 recon). The path is built
+    from `event_id` directly, never globbed: each pilot `csv_dir` holds two
+    events, so a glob-and-take-first would silently read the wrong one for
+    odd event ids.
+    """
+    path = Path(csv_dir) / f"event{event_id:09d}-simhits.csv"
+    raw = pd.read_csv(
+        path,
+        usecols=[
+            SCHEMA["raw_simhit_tpx"],
+            SCHEMA["raw_simhit_tpy"],
+            SCHEMA["raw_simhit_tt"],
+        ],
+    ).reset_index(drop=True)
+
+    sim = expansion.load_simhits(csv_dir, event_id)[
+        [SCHEMA["simhit_hit_id"], SCHEMA["simhit_particle_id"]]
+    ]
+    pos = sim[SCHEMA["simhit_hit_id"]].to_numpy()  # positional index (arange)
+
+    joined = pd.DataFrame({
+        "particle_id": sim[SCHEMA["simhit_particle_id"]].to_numpy(),
+        "pt_gev": np.hypot(
+            raw[SCHEMA["raw_simhit_tpx"]].to_numpy()[pos],
+            raw[SCHEMA["raw_simhit_tpy"]].to_numpy()[pos],
+        ),
+        "tt": raw[SCHEMA["raw_simhit_tt"]].to_numpy()[pos],
+    })
+    return _pick_earliest_by_tt(joined)
+
+
+def main() -> None:
+    import argparse
+    import os
+
+    import pyarrow.parquet as pq
+
+    from cckf.stage1_map import csv_dir_for
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("event", type=int)
+    ap.add_argument("scratch_base")
+    args = ap.parse_args()
+    ev, S = args.event, args.scratch_base
+
+    pq_path = f"{S}/reexpanded/expanded_event{ev:09d}.parquet"
+    cols = ["seed_id", "branch_id", "step_k", "volume_id", "state_theta",
+            "n_window", "cand_hit_id", "residual_l0", "residual_l1",
+            "S00", "S11", "is_1d", "is_ckf_selected", "contrib_pids",
+            "branch_majority_pid", "majority_undefined",
+            "majority_true_hit_on_surface"]
+
+    pf = pq.ParquetFile(pq_path)
+    partial_states: list[pd.DataFrame] = []
+    cand_parts: list[pd.DataFrame] = []
+    for batch in pf.iter_batches(batch_size=2_000_000, columns=cols):
+        df = batch.to_pandas()
+        df = df[~df["majority_undefined"].astype(bool)]
+        if not len(df):
+            continue
+        cand_parts.append(
+            df[df["cand_hit_id"] >= 0][
+                ["seed_id", "branch_id", "step_k", "cand_hit_id",
+                 "is_ckf_selected", "contrib_pids", "branch_majority_pid",
+                 "chi2_inc"]
+            ]
+        )
+        partial_states.append(build_state_table(df))
+    cand = pd.concat(cand_parts, ignore_index=True)
+    del cand_parts
+
+    selected = select_ckf_branch(cand)
+    purity = branch_purity(cand, selected)
+    survivors = flag_ambi_survivors(cand)
+    del cand
+
+    # A state split across two read batches yields two partial rows; rerun
+    # the min/first reduction once on the (much smaller) concatenation.
+    allp = pd.concat(partial_states, ignore_index=True)
+    del partial_states
+    g = allp.groupby(["seed_id", "branch_id", "step_k"], as_index=False)
+    states = g.agg(
+        volume_id=("volume_id", "first"),
+        state_theta=("state_theta", "first"),
+        n_window=("n_window", "first"),
+        branch_majority_pid=("branch_majority_pid", "first"),
+        on_surface=("on_surface", "first"),
+        d_true=("d_true", "min"),
+        n_true_rows=("n_true_rows", "sum"),
+    )
+    states = states.merge(selected, on=["seed_id", "branch_id"])
+    states = states.merge(purity, on="seed_id", how="left")
+    states["is_pure"] = states["is_pure"].fillna(False).astype(bool)
+    states = states.merge(survivors, on="seed_id", how="left")
+    states["survived_ambi"] = states["survived_ambi"].fillna(False).astype(bool)
+
+    pt_lut = particle_pt_lookup(str(csv_dir_for(ev)), ev)
+    out = accumulate_event(states, pt_lut)
+
+    os.makedirs(f"{S}/winfail_unc", exist_ok=True)
+    np.savez(
+        f"{S}/winfail_unc/winfail_unc_event{ev:03d}.npz",
+        eta_bins=ETA_BINS, n_values=np.array(N_VALUES),
+        occ_edges=np.array(OCC_EDGES), pt_edges=np.array(PT_EDGES),
+        **{k: v for k, v in out.items() if k != "counters"},
+        **{f"counter_{k}": np.array(v) for k, v in out["counters"].items()},
+    )
+    c = out["counters"]
+    print(
+        f"event {ev}: states={c['n_states']:,} vol20={c['n_vol20']:,} "
+        f"escaped={c['n_escaped']:,} multi_true={c['n_multi_true']:,} "
+        f"pt_unmatched={c['n_pt_unmatched']:,} "
+        f"branches={c['n_branches']:,} ambi_survivors={c['n_ambi_survivors']:,} "
+        f"win_total={int(out['win_total'].sum()):,} "
+        f"winfail_n10={int(out['win_fail'][-1].sum()):,}"
+    )
+
+
+if __name__ == "__main__":
+    main()

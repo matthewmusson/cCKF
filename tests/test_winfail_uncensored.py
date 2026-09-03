@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from winfail_uncensored import (
     ETA_BINS, N_VALUES, OCC_EDGES, PT_EDGES, wilson_interval, assign_strata,
     select_ckf_branch, branch_purity, flag_ambi_survivors, build_state_table,
-    accumulate_event,
+    accumulate_event, _as_pid_list, _pick_earliest_by_tt,
 )
 
 
@@ -210,3 +210,67 @@ def test_accumulate_event_pt_binning_and_unmatched():
     assert out["mod_total"][:, :, :, :, 1, :].sum() == 1   # [0.7, 0.9)
     assert out["mod_total"][:, :, :, :, 0, :].sum() == 1   # unmatched -> bin 0
     assert out["counters"]["n_pt_unmatched"] == 1
+
+
+# Tests for Task 5: contrib_pids null normalization, earliest-simhit helper
+
+def test_as_pid_list_none_and_nan_are_empty():
+    assert _as_pid_list(None) == []
+    assert _as_pid_list(float("nan")) == []
+    assert _as_pid_list([7, 8]) == [7, 8]
+
+
+def test_build_state_table_float_nan_contrib_is_not_a_crash():
+    # Parquet null lists can surface to pandas as a bare float NaN, not
+    # None. Must be treated as "no contributors" like None is.
+    rows = _prows([
+        (0, 0, 0, 17, HALF_PI, 3, -1, np.nan, np.nan, np.nan, np.nan, False,
+         False, float("nan"), 7, False, False, 1.0),
+    ])
+    st = build_state_table(rows)
+    assert len(st) == 1
+    assert not st.iloc[0].on_surface
+    assert np.isnan(st.iloc[0].d_true)
+
+
+def test_branch_purity_float_nan_contrib_counts_as_not_matching():
+    rows = _rows([
+        (0, 0, 0, 11, True, float("nan"), 7),
+        (0, 0, 1, 12, True, [7], 7),
+        (0, 0, 2, 13, True, [7], 7),
+    ])
+    sel = select_ckf_branch(rows)
+    pur = branch_purity(rows, sel)
+    assert dict(zip(pur.seed_id, pur.is_pure)) == {0: False}
+
+
+def test_pick_earliest_by_tt_prefers_minimum_tt():
+    df = pd.DataFrame({
+        "particle_id": [1, 1, 2],
+        "pt_gev": [5.0, 1.0, 9.0],
+        "tt": [3.0, 1.0, 2.0],
+    })
+    out = _pick_earliest_by_tt(df)
+    got = dict(zip(out.particle_id, out.pt_gev))
+    assert got[1] == 1.0  # tt=1.0 beats tt=3.0
+    assert got[2] == 9.0
+
+
+def test_pick_earliest_by_tt_falls_back_to_row_order_when_tt_missing():
+    df = pd.DataFrame({
+        "particle_id": [3, 3, 3],
+        "pt_gev": [7.0, 8.0, 9.0],
+        "tt": [np.nan, np.nan, np.nan],
+    })
+    out = _pick_earliest_by_tt(df)
+    assert dict(zip(out.particle_id, out.pt_gev)) == {3: 7.0}
+
+
+def test_pick_earliest_by_tt_partial_nan_prefers_finite_tt():
+    df = pd.DataFrame({
+        "particle_id": [4, 4],
+        "pt_gev": [1.0, 2.0],
+        "tt": [np.nan, 5.0],
+    })
+    out = _pick_earliest_by_tt(df)
+    assert dict(zip(out.particle_id, out.pt_gev)) == {4: 2.0}
