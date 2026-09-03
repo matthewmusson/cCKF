@@ -13,7 +13,7 @@
 - Events `[32, 64)` are sealed. Only events `[0, 32)` are ever read.
 - Code sync local ↔ NERSC CFS is `git push` local → `git pull` on CFS. Never scp source files.
 - Every figure carries the truth-pT threshold and the denominator conditions, briefly (memory rule `mark-pt-threshold`).
-- No silent scope cuts: excluded populations (volume 20, multi-true-row states) are counted and printed.
+- No silent scope cuts: excluded populations (volume 20 states; multi-true-row states are counted, not excluded) are counted and printed.
 - Style: type hints, NumPy docstrings, Black at 88 chars.
 - SSH: `ssh -i ~/.ssh/nersc -o IdentitiesOnly=yes mussonm@perlmutter.nersc.gov` (anything else → "Too many authentication failures").
 - Harness truth selection (recorded from `digi_and_reco.py:620`): pT > 0.999 GeV, |η| < 3, ≥6 measurements, ≥3 pixel hits, ρ < 24 mm, |z| < 1 m, charged. Quote as "pT > 1 GeV".
@@ -213,9 +213,9 @@ SENSOR_VOLUMES: dict[int, int] = {
 SCHEMA: dict[str, str] = {
     "simhit_hit_id": "hit_id",
     "simhit_particle_id": "particle_id",
-    "raw_simhit_index": "index",
     "raw_simhit_tpx": "tpx",
     "raw_simhit_tpy": "tpy",
+    "raw_simhit_tt": "tt",
 }
 
 
@@ -1046,7 +1046,7 @@ Only needed for (a) lines at n > 10, (b) splitting "digitized but escaped" from 
 1. **Spec coverage.** Dense η (140 ≥ 100) ✓; pixel/short/long ✓; pure vs majority separate plots ✓ (Family A); n = 3/5/7/10 ✓; GeV threshold marked ✓ (recoverable pT-bin axis, renders at 1.0 and 0.9, footers); occupancy stratification at each n ✓ (Family B); module failure vs η by sensor ✓ (Family C, parquet boolean only - no join, per user); module failure vs occupancy ✓ (Family D); binomial CIs ✓ (Wilson z=1); Pareto annotation ✓ (Task 7); "proper n=10 line" ✓ - escaped states counted as failures at every n, Task 5 smoke gates on `winfail_n10 > 0`.
 1b. **Branch-class axis** - "all CKF-output branches" vs "ambi survivors" as the trailing tensor axis; survivor flag from the offline greedy replica (Task 3), rendered as separate figure sets. Pruned-in-flight branches remain impossible by construction and the plan says so wherever the axis is defined.
 2. **Placeholder scan.** One open point by design: `particle_pt_lookup` column names await the Task 1 recon; its contract (join by hit id, earliest simhit, `(particle_id, pt_gev)`) is pinned and the barcode-re-encoding alternative is forbidden. Everything else is concrete.
-3. **Type consistency.** `build_state_table` output columns match `accumulate_event` input and the Task 5 re-reduction; `select_ckf_branch`/`branch_purity` signatures match Tasks 3 and 5; tensor shapes `(140, 3, 2, 5, 4)` consistent across Tasks 4-6; `pt_slice` consumes `PT_EDGES` from Task 2.
+3. **Type consistency.** `build_state_table` output columns match `accumulate_event` input and the Task 5 re-reduction; `select_ckf_branch`/`branch_purity` signatures match Tasks 3 and 5; tensor shapes `(140, 3, 2, 5, 4, 2)` consistent across Tasks 4-6; `pt_slice` consumes `PT_EDGES` from Task 2.
 
 ## Known limits (state on request, footnoted on figures)
 

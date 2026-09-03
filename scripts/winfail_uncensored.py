@@ -13,6 +13,7 @@
 - **Ambi survivor**: the branch is kept by an offline replica of ACTS `GreedyAmbiguityResolution` with `maximumSharedHits = 3` and `nMeasurementsMin = 7` (the stage-1 steering's fallback when the CKF cut is disabled). Branch hits = its `is_ckf_selected` rows' `cand_hit_id` (measurement ids, unique per event); branch chi2 = sum of those rows' `chi2_inc`. Replica semantics: drop branches with < 7 accepted hits, then iteratively evict the branch with the highest shared-hit fraction (ties: fewer hits, then higher chi2) until every branch shares < 3 hits. Stage 1 wrote no post-ambi reference, so the replica is the only route; the chi2 tie-break uses the shared-S approximation - a documented fidelity caveat affecting only exact ties.
 - η: from `state_theta` (branch state direction), 140 bins of width 0.05 over [−3.5, 3.5].
 """
+
 from __future__ import annotations
 
 import heapq
@@ -31,9 +32,15 @@ OCC_EDGES: tuple[float, ...] = (0.0, 2.0, 5.0, 10.0, 20.0)  # last bin open
 PT_EDGES: tuple[float, ...] = (0.0, 0.7, 0.9, 1.0)  # last bin open; render
 # thresholds must be edges of this tuple
 SENSOR_VOLUMES: dict[int, int] = {
-    16: 0, 17: 0, 18: 0,   # pixel
-    23: 1, 24: 1, 25: 1,   # short strip (2D)
-    28: 2, 29: 2, 30: 2,   # long strip (1D)
+    16: 0,
+    17: 0,
+    18: 0,  # pixel
+    23: 1,
+    24: 1,
+    25: 1,  # short strip (2D)
+    28: 2,
+    29: 2,
+    30: 2,  # long strip (1D)
 }
 
 # Single source of truth for external column names (corrected by Task 1).
@@ -108,9 +115,7 @@ def select_ckf_branch(rows: pd.DataFrame) -> pd.DataFrame:
         .size()
         .rename("n_sel")
         .reset_index()
-        .sort_values(
-            ["seed_id", "n_sel", "branch_id"], ascending=[True, False, True]
-        )
+        .sort_values(["seed_id", "n_sel", "branch_id"], ascending=[True, False, True])
     )
     return counts.drop_duplicates("seed_id")[["seed_id", "branch_id"]].reset_index(
         drop=True
@@ -179,9 +184,7 @@ def flag_ambi_survivors(
     hits: dict[int, list[int]] = (
         picked.groupby("seed_id")["cand_hit_id"].apply(list).to_dict()
     )
-    chi2: dict[int, float] = (
-        picked.groupby("seed_id")["chi2_inc"].sum().to_dict()
-    )
+    chi2: dict[int, float] = picked.groupby("seed_id")["chi2_inc"].sum().to_dict()
     all_seeds = rows["seed_id"].unique()
 
     sel = {s for s, h in hits.items() if len(h) >= nmeas_min}
@@ -189,10 +192,7 @@ def flag_ambi_survivors(
     for s_ in sel:
         for h in hits[s_]:
             tracks_per_hit.setdefault(h, set()).add(s_)
-    shared = {
-        s_: sum(1 for h in hits[s_] if len(tracks_per_hit[h]) > 1)
-        for s_ in sel
-    }
+    shared = {s_: sum(1 for h in hits[s_] if len(tracks_per_hit[h]) > 1) for s_ in sel}
 
     # heap key = negated evict_key = (rel, -len(hits[s]), chi2[s]), max
     # first, so heap-min pops the same branch max(sel, key=evict_key) would.
@@ -235,28 +235,28 @@ def build_state_table(rows: pd.DataFrame) -> pd.DataFrame:
     """
     maj = rows["branch_majority_pid"].to_numpy()
     is_true = np.fromiter(
-        (
-            (m in _as_pid_list(c))
-            for m, c in zip(maj, rows["contrib_pids"])
-        ),
+        ((m in _as_pid_list(c)) for m, c in zip(maj, rows["contrib_pids"])),
         dtype=bool,
         count=len(rows),
     ) & (rows["cand_hit_id"].to_numpy() >= 0)
 
     with np.errstate(invalid="ignore", divide="ignore"):
-        d0 = np.abs(rows["residual_l0"].to_numpy()) / np.sqrt(
-            rows["S00"].to_numpy()
-        )
-        d1 = np.abs(rows["residual_l1"].to_numpy()) / np.sqrt(
-            rows["S11"].to_numpy()
-        )
+        d0 = np.abs(rows["residual_l0"].to_numpy()) / np.sqrt(rows["S00"].to_numpy())
+        d1 = np.abs(rows["residual_l1"].to_numpy()) / np.sqrt(rows["S11"].to_numpy())
     is1d = rows["is_1d"].to_numpy().astype(bool)
     d = np.where(is1d, d0, np.maximum(d0, d1))
 
     work = rows[
-        ["seed_id", "branch_id", "step_k", "volume_id", "state_theta",
-         "n_window", "branch_majority_pid",
-         "majority_true_hit_on_surface"]
+        [
+            "seed_id",
+            "branch_id",
+            "step_k",
+            "volume_id",
+            "state_theta",
+            "n_window",
+            "branch_majority_pid",
+            "majority_true_hit_on_surface",
+        ]
     ].copy()
     work["_d"] = np.where(is_true & np.isfinite(d), d, np.nan)
     work["_is_true"] = is_true
@@ -286,7 +286,9 @@ def accumulate_event(states: pd.DataFrame, pt_lut: pd.DataFrame) -> dict:
     win_fail = np.zeros((len(N_VALUES),) + shape, np.int64)
 
     st = states.merge(
-        pt_lut, left_on="branch_majority_pid", right_on="particle_id",
+        pt_lut,
+        left_on="branch_majority_pid",
+        right_on="particle_id",
         how="left",
     )
     n_pt_unmatched = int(st["pt_gev"].isna().sum())
@@ -298,8 +300,7 @@ def accumulate_event(states: pd.DataFrame, pt_lut: pd.DataFrame) -> dict:
     )
     pi = st["is_pure"].to_numpy().astype(np.int64)
     ti = np.clip(
-        np.digitize(np.nan_to_num(st["pt_gev"].to_numpy(), nan=0.0), PT_EDGES)
-        - 1,
+        np.digitize(np.nan_to_num(st["pt_gev"].to_numpy(), nan=0.0), PT_EDGES) - 1,
         0,
         n_pt - 1,
     )
@@ -333,8 +334,10 @@ def accumulate_event(states: pd.DataFrame, pt_lut: pd.DataFrame) -> dict:
         )
 
     return {
-        "mod_total": mod_total, "mod_fail": mod_fail,
-        "win_total": win_total, "win_fail": win_fail,
+        "mod_total": mod_total,
+        "mod_fail": mod_fail,
+        "win_total": win_total,
+        "win_fail": win_fail,
         "counters": {
             "n_states": int(len(st)),
             "n_vol20": n_vol20,
@@ -372,10 +375,9 @@ def _pick_earliest_by_tt(df: pd.DataFrame) -> pd.DataFrame:
         Columns ``particle_id, pt_gev``, one row per particle_id.
     """
     ordered = df.sort_values("tt", kind="stable", na_position="last")
-    return (
-        ordered.groupby("particle_id", as_index=False)
-        .first()[["particle_id", "pt_gev"]]
-    )
+    return ordered.groupby("particle_id", as_index=False).first()[
+        ["particle_id", "pt_gev"]
+    ]
 
 
 def particle_pt_lookup(csv_dir: str, event_id: int) -> pd.DataFrame:
@@ -408,14 +410,16 @@ def particle_pt_lookup(csv_dir: str, event_id: int) -> pd.DataFrame:
     ]
     pos = sim[SCHEMA["simhit_hit_id"]].to_numpy()  # positional index (arange)
 
-    joined = pd.DataFrame({
-        "particle_id": sim[SCHEMA["simhit_particle_id"]].to_numpy(),
-        "pt_gev": np.hypot(
-            raw[SCHEMA["raw_simhit_tpx"]].to_numpy()[pos],
-            raw[SCHEMA["raw_simhit_tpy"]].to_numpy()[pos],
-        ),
-        "tt": raw[SCHEMA["raw_simhit_tt"]].to_numpy()[pos],
-    })
+    joined = pd.DataFrame(
+        {
+            "particle_id": sim[SCHEMA["simhit_particle_id"]].to_numpy(),
+            "pt_gev": np.hypot(
+                raw[SCHEMA["raw_simhit_tpx"]].to_numpy()[pos],
+                raw[SCHEMA["raw_simhit_tpy"]].to_numpy()[pos],
+            ),
+            "tt": raw[SCHEMA["raw_simhit_tt"]].to_numpy()[pos],
+        }
+    )
     return _pick_earliest_by_tt(joined)
 
 
@@ -446,11 +450,26 @@ def main() -> None:
     # NOTE: chi2_inc added to the task-5 brief's column list -- it is
     # selected out of df below (for flag_ambi_survivors) but the brief's
     # iter_batches columns omitted it, which KeyErrors on real data.
-    cols = ["seed_id", "branch_id", "step_k", "volume_id", "state_theta",
-            "n_window", "cand_hit_id", "residual_l0", "residual_l1",
-            "S00", "S11", "is_1d", "is_ckf_selected", "contrib_pids",
-            "branch_majority_pid", "majority_undefined",
-            "majority_true_hit_on_surface", "chi2_inc"]
+    cols = [
+        "seed_id",
+        "branch_id",
+        "step_k",
+        "volume_id",
+        "state_theta",
+        "n_window",
+        "cand_hit_id",
+        "residual_l0",
+        "residual_l1",
+        "S00",
+        "S11",
+        "is_1d",
+        "is_ckf_selected",
+        "contrib_pids",
+        "branch_majority_pid",
+        "majority_undefined",
+        "majority_true_hit_on_surface",
+        "chi2_inc",
+    ]
 
     pf = pq.ParquetFile(pq_path)
     partial_states: list[pd.DataFrame] = []
@@ -462,9 +481,16 @@ def main() -> None:
             continue
         cand_parts.append(
             df[df["cand_hit_id"] >= 0][
-                ["seed_id", "branch_id", "step_k", "cand_hit_id",
-                 "is_ckf_selected", "contrib_pids", "branch_majority_pid",
-                 "chi2_inc"]
+                [
+                    "seed_id",
+                    "branch_id",
+                    "step_k",
+                    "cand_hit_id",
+                    "is_ckf_selected",
+                    "contrib_pids",
+                    "branch_majority_pid",
+                    "chi2_inc",
+                ]
             ]
         )
         partial_states.append(build_state_table(df))
@@ -507,8 +533,10 @@ def main() -> None:
     os.makedirs(f"{S}/winfail_unc", exist_ok=True)
     np.savez(
         f"{S}/winfail_unc/winfail_unc_event{ev:03d}.npz",
-        eta_bins=ETA_BINS, n_values=np.array(N_VALUES),
-        occ_edges=np.array(OCC_EDGES), pt_edges=np.array(PT_EDGES),
+        eta_bins=ETA_BINS,
+        n_values=np.array(N_VALUES),
+        occ_edges=np.array(OCC_EDGES),
+        pt_edges=np.array(PT_EDGES),
         **{k: v for k, v in out.items() if k != "counters"},
         **{f"counter_{k}": np.array(v) for k, v in out["counters"].items()},
     )
