@@ -7,28 +7,35 @@ Families (see task brief for the full spec):
   C. modfail_vs_eta.png                   - 1 panel, 3 sensor lines
   D. modfail_vs_occupancy.png             - 1 panel, 3 sensor lines, errorbars
 """
+
 from __future__ import annotations
 
 import sys
-import textwrap
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.axes import Axes  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # One brief line: only the statistics needed to reconstruct the denominator.
-FOOTER_WIN = ("all surviving branches (pre-ambi, envelope: chi2 16.26/35.75, "
-              "cap 5, terminal cuts off) · majority defined · denom: majority "
-              "simhit on surface · majority pT > {pt} GeV · uncensored "
-              "(escaped = fail; incl. undigitized) · vol 20 excluded")
-FOOTER_MOD = ("all surviving branches (pre-ambi, envelope: chi2 16.26/35.75, "
-              "cap 5, terminal cuts off) · majority defined · majority pT > "
-              "{pt} GeV · fail = no majority simhit on surface · vol 20 excluded")
+FOOTER_WIN = (
+    "all surviving branches (pre-ambi, envelope: chi2 16.26/35.75, "
+    "cap 5, terminal cuts off) · majority defined · denom: majority "
+    "simhit on surface · majority pT > {pt} GeV · uncensored "
+    "(escaped = fail; incl. undigitized) · vol 20 excluded"
+)
+FOOTER_MOD = (
+    "all surviving branches (pre-ambi, envelope: chi2 16.26/35.75, "
+    "cap 5, terminal cuts off) · majority defined · majority pT > "
+    "{pt} GeV · fail = no majority simhit on surface · vol 20 excluded"
+)
 SENSOR_LABELS = ["Pixel", "Short strip", "Long strip"]
 OCC_LABELS = ["0-1", "2-4", "5-9", "10-19", "20+"]
 
@@ -64,7 +71,14 @@ def _load_sums(npz_dir: str) -> dict[str, np.ndarray]:
     return acc
 
 
-def _rate_with_band(ax, x, k, n, label, color):
+def _rate_with_band(
+    ax: Axes,
+    x: np.ndarray,
+    k: np.ndarray,
+    n: np.ndarray,
+    label: str,
+    color: Any,
+) -> None:
     from winfail_uncensored import wilson_interval
 
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -77,8 +91,7 @@ def _rate_with_band(ax, x, k, n, label, color):
 
 def _branch_class_suffix(branch_class: str) -> str:
     if branch_class == "ambi":
-        return (" · ambi survivors (offline greedy replica, maxShared 3, "
-                 "nMeasMin 7)")
+        return " · ambi survivors (offline greedy replica, maxShared 3, " "nMeasMin 7)"
     if branch_class == "all":
         return " · all CKF-output branches"
     raise ValueError(f"branch_class must be 'all' or 'ambi', got {branch_class!r}")
@@ -111,12 +124,22 @@ def _wrap_footer(text: str, width: int = 110) -> str:
     return "\n".join(lines)
 
 
-def _footer(fig, template: str, threshold_gev: float, branch_class: str) -> None:
+def _footer(
+    fig: Figure, template: str, threshold_gev: float, branch_class: str
+) -> None:
     fig.tight_layout()
     text = template.format(pt=threshold_gev) + _branch_class_suffix(branch_class)
     wrapped = _wrap_footer(text)
-    fig.text(0.99, 0.005, wrapped, ha="right", va="bottom", fontsize=6.5,
-              color="0.35", linespacing=1.3)
+    fig.text(
+        0.99,
+        0.005,
+        wrapped,
+        ha="right",
+        va="bottom",
+        fontsize=6.5,
+        color="0.35",
+        linespacing=1.3,
+    )
     # Reserve room below the axes so the (possibly multi-line) footer never
     # overlaps the x-axis label; tight_layout already set a sensible bottom,
     # this just pads it further, scaled by how many footer lines there are.
@@ -124,16 +147,25 @@ def _footer(fig, template: str, threshold_gev: float, branch_class: str) -> None
     fig.subplots_adjust(bottom=fig.subplotpars.bottom + 0.03 * n_lines)
 
 
-def _save(fig, out_dir: Path, name: str) -> str:
+def _save(fig: Figure, out_dir: Path, name: str) -> str:
     path = out_dir / name
     fig.savefig(path, dpi=150)
     plt.close(fig)
     return str(path)
 
 
-def _render_family_a(win_fail, win_total, x, n_values, purity_idx, name,
-                      out_dir, threshold_gev, branch_class):
-    """3 sensor panels; lines = the n values; one purity slice (pure/majority)."""
+def _render_family_a(
+    win_fail: np.ndarray,
+    win_total: np.ndarray,
+    x: np.ndarray,
+    n_values: np.ndarray,
+    purity_idx: int,
+    name: str,
+    out_dir: Path,
+    threshold_gev: float,
+    branch_class: str,
+) -> str:
+    """3 sensor panels; lines = n values; one purity slice (pure/majority)."""
     fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
     colors = plt.cm.viridis(np.linspace(0, 1, len(n_values)))
     for s, (ax, sensor_label) in enumerate(zip(axes, SENSOR_LABELS)):
@@ -151,9 +183,17 @@ def _render_family_a(win_fail, win_total, x, n_values, purity_idx, name,
     return _save(fig, out_dir, f"winfail_vs_eta_{name}.png")
 
 
-def _render_family_b(win_fail, win_total, x, n_values, ni,
-                      out_dir, threshold_gev, branch_class):
-    """3 sensor panels; lines = the 5 occupancy strata; one n slice (purities pooled)."""
+def _render_family_b(
+    win_fail: np.ndarray,
+    win_total: np.ndarray,
+    x: np.ndarray,
+    n_values: np.ndarray,
+    ni: int,
+    out_dir: Path,
+    threshold_gev: float,
+    branch_class: str,
+) -> str:
+    """3 sensor panels; lines = 5 occupancy strata; one n slice (purities pooled)."""
     n = int(n_values[ni])
     fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
     colors = plt.cm.viridis(np.linspace(0, 1, len(OCC_LABELS)))
@@ -174,7 +214,14 @@ def _render_family_b(win_fail, win_total, x, n_values, ni,
     return _save(fig, out_dir, f"winfail_vs_eta_occupancy_n{n}.png")
 
 
-def _render_family_c(mod_fail, mod_total, x, out_dir, threshold_gev, branch_class):
+def _render_family_c(
+    mod_fail: np.ndarray,
+    mod_total: np.ndarray,
+    x: np.ndarray,
+    out_dir: Path,
+    threshold_gev: float,
+    branch_class: str,
+) -> str:
     """Single panel; 3 sensor lines, purities and occupancy pooled."""
     fig, ax = plt.subplots(figsize=(10, 5))
     colors = plt.cm.viridis(np.linspace(0, 1, len(SENSOR_LABELS)))
@@ -191,8 +238,14 @@ def _render_family_c(mod_fail, mod_total, x, out_dir, threshold_gev, branch_clas
     return _save(fig, out_dir, "modfail_vs_eta.png")
 
 
-def _render_family_d(mod_fail, mod_total, out_dir, threshold_gev, branch_class):
-    """Single panel; 3 sensor lines vs the 5 occupancy strata, Wilson errorbars."""
+def _render_family_d(
+    mod_fail: np.ndarray,
+    mod_total: np.ndarray,
+    out_dir: Path,
+    threshold_gev: float,
+    branch_class: str,
+) -> str:
+    """Single panel; 3 sensor lines vs 5 occupancy strata, Wilson errorbars."""
     from winfail_uncensored import wilson_interval
 
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -208,8 +261,14 @@ def _render_family_d(mod_fail, mod_total, out_dir, threshold_gev, branch_class):
         ok = n_tot > 0
         yerr = np.vstack([rate[ok] - lo[ok], hi[ok] - rate[ok]])
         ax.errorbar(
-            positions[ok] + offsets[s], rate[ok], yerr=yerr, fmt="o",
-            color=colors[s], label=sensor_label, capsize=3, markersize=5,
+            positions[ok] + offsets[s],
+            rate[ok],
+            yerr=yerr,
+            fmt="o",
+            color=colors[s],
+            label=sensor_label,
+            capsize=3,
+            markersize=5,
         )
     ax.set_xticks(positions)
     ax.set_xticklabels(OCC_LABELS)
@@ -247,20 +306,48 @@ def render_all(
     out_path.mkdir(parents=True, exist_ok=True)
 
     made = [
-        _render_family_a(win_fail, win_total, x, n_values, 1, "pure",
-                          out_path, threshold_gev, branch_class),
-        _render_family_a(win_fail, win_total, x, n_values, 0, "majority",
-                          out_path, threshold_gev, branch_class),
+        _render_family_a(
+            win_fail,
+            win_total,
+            x,
+            n_values,
+            1,
+            "pure",
+            out_path,
+            threshold_gev,
+            branch_class,
+        ),
+        _render_family_a(
+            win_fail,
+            win_total,
+            x,
+            n_values,
+            0,
+            "majority",
+            out_path,
+            threshold_gev,
+            branch_class,
+        ),
     ]
     for ni in range(len(n_values)):
         made.append(
-            _render_family_b(win_fail, win_total, x, n_values, ni,
-                              out_path, threshold_gev, branch_class)
+            _render_family_b(
+                win_fail,
+                win_total,
+                x,
+                n_values,
+                ni,
+                out_path,
+                threshold_gev,
+                branch_class,
+            )
         )
-    made.append(_render_family_c(mod_fail, mod_total, x, out_path,
-                                  threshold_gev, branch_class))
-    made.append(_render_family_d(mod_fail, mod_total, out_path,
-                                  threshold_gev, branch_class))
+    made.append(
+        _render_family_c(mod_fail, mod_total, x, out_path, threshold_gev, branch_class)
+    )
+    made.append(
+        _render_family_d(mod_fail, mod_total, out_path, threshold_gev, branch_class)
+    )
     return made
 
 
@@ -269,7 +356,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         description="Render uncensored winfail/modfail plot families from "
-                     "accumulated npz tensors."
+        "accumulated npz tensors."
     )
     parser.add_argument("npz_dir", help="directory of winfail_unc_event*.npz files")
     parser.add_argument("out_base", help="base output directory")
