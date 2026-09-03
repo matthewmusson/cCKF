@@ -10,6 +10,7 @@ Families (see task brief for the full spec):
 from __future__ import annotations
 
 import sys
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -92,10 +93,35 @@ def _collapse_ambi(tensor: np.ndarray, branch_class: str) -> np.ndarray:
     raise ValueError(f"branch_class must be 'all' or 'ambi', got {branch_class!r}")
 
 
+def _wrap_footer(text: str, width: int = 110) -> str:
+    """Pack " · "-separated footer segments into lines <= width chars.
+
+    Wrapping on the segment boundaries (rather than plain word-wrap) keeps
+    each condition ("majority pT > 1.0 GeV", "vol 20 excluded", ...) intact
+    on one line instead of splitting it mid-phrase.
+    """
+    parts = text.split(" · ")
+    lines: list[str] = [parts[0]]
+    for part in parts[1:]:
+        candidate = f"{lines[-1]} · {part}"
+        if len(candidate) <= width:
+            lines[-1] = candidate
+        else:
+            lines.append(part)
+    return "\n".join(lines)
+
+
 def _footer(fig, template: str, threshold_gev: float, branch_class: str) -> None:
     fig.tight_layout()
     text = template.format(pt=threshold_gev) + _branch_class_suffix(branch_class)
-    fig.text(0.99, 0.005, text, ha="right", va="bottom", fontsize=7, color="0.35")
+    wrapped = _wrap_footer(text)
+    fig.text(0.99, 0.005, wrapped, ha="right", va="bottom", fontsize=6.5,
+              color="0.35", linespacing=1.3)
+    # Reserve room below the axes so the (possibly multi-line) footer never
+    # overlaps the x-axis label; tight_layout already set a sensible bottom,
+    # this just pads it further, scaled by how many footer lines there are.
+    n_lines = wrapped.count("\n") + 1
+    fig.subplots_adjust(bottom=fig.subplotpars.bottom + 0.03 * n_lines)
 
 
 def _save(fig, out_dir: Path, name: str) -> str:
