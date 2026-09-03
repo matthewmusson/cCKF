@@ -305,3 +305,38 @@ def test_particle_pt_lookup_end_to_end_with_leading_comment_line(tmp_path):
     got = dict(zip(out.particle_id, out.pt_gev))
     assert np.isclose(got[p1], np.hypot(1.0, 1.0))  # earliest (tt=1) hit wins
     assert np.isclose(got[p2], 5.0)
+
+
+def test_render_all_produces_expected_files(tmp_path):
+    import plot_winfail_uncensored as P
+    shape = (140, 3, 2, 5, 4, 2)
+    rng = np.random.default_rng(0)
+    total = rng.integers(50, 100, size=shape)
+    np.savez(
+        tmp_path / "winfail_unc_event000.npz",
+        eta_bins=np.linspace(-3.5, 3.5, 141),
+        n_values=np.array([3.0, 5.0, 7.0, 10.0]),
+        occ_edges=np.array([0.0, 2.0, 5.0, 10.0, 20.0]),
+        pt_edges=np.array([0.0, 0.7, 0.9, 1.0]),
+        mod_total=total, mod_fail=total // 10,
+        win_total=total, win_fail=np.stack([total // (i + 2) for i in range(4)]),
+        counter_n_states=np.array(1), counter_n_vol20=np.array(0),
+        counter_n_escaped=np.array(0), counter_n_multi_true=np.array(0),
+        counter_n_pt_unmatched=np.array(0),
+    )
+    made = P.render_all(str(tmp_path), str(tmp_path / "out"),
+                        threshold_gev=1.0, branch_class="ambi")
+    names = {p.split("/")[-1] for p in made}
+    assert names == {
+        "winfail_vs_eta_pure.png", "winfail_vs_eta_majority.png",
+        "winfail_vs_eta_occupancy_n3.png", "winfail_vs_eta_occupancy_n5.png",
+        "winfail_vs_eta_occupancy_n7.png", "winfail_vs_eta_occupancy_n10.png",
+        "modfail_vs_eta.png", "modfail_vs_occupancy.png",
+    }
+
+
+def test_pt_slice_rejects_non_edge_threshold(tmp_path):
+    import plot_winfail_uncensored as P
+    import pytest
+    with pytest.raises(ValueError):
+        P.pt_slice(np.zeros((2, 4)), 0.8)
