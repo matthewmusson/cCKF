@@ -12,6 +12,14 @@
 - **pT bins**: majority-particle pT binned at `PT_EDGES = (0.0, 0.7, 0.9, 1.0)`, last bin open; renders sum bins at/above a threshold that must be an edge. Primary renders: pT > 1.0 and pT > 0.9 GeV.
 - **Ambi survivor**: the branch is kept by an offline replica of ACTS `GreedyAmbiguityResolution` with `maximumSharedHits = 3` and `nMeasurementsMin = 7` (the stage-1 steering's fallback when the CKF cut is disabled). Branch hits = its `is_ckf_selected` rows' `cand_hit_id` (measurement ids, unique per event); branch chi2 = sum of those rows' `chi2_inc`. Replica semantics: drop branches with < 7 accepted hits, then iteratively evict the branch with the highest shared-hit fraction (ties: fewer hits, then higher chi2) until every branch shares < 3 hits. Stage 1 wrote no post-ambi reference, so the replica is the only route; the chi2 tie-break uses the shared-S approximation - a documented fidelity caveat affecting only exact ties.
 - η: from `state_theta` (branch state direction), 140 bins of width 0.05 over [−3.5, 3.5].
+- **Config emulation** (`flag_config_emulation`): offline filter that keeps
+  only the branches that would have survived a specific operating point's
+  cuts (`CONFIG_EMULATIONS["tight"|"fast"]`), so downstream failure rates
+  reflect that config's branch population instead of the loose envelope's.
+  A branch passes iff every `is_ckf_selected` row's `chi2_inc` is under the
+  config's `chi2_meas` ceiling, the accepted-hit count meets `nmeas_min`,
+  the branch's max running `n_holes` is at most `max_holes`, and the
+  reconstructed pT at the branch's first state exceeds `pt_min_gev`.
 """
 
 from __future__ import annotations
@@ -50,6 +58,22 @@ SCHEMA: dict[str, str] = {
     "raw_simhit_tpx": "tpx",
     "raw_simhit_tpy": "tpy",
     "raw_simhit_tt": "tt",
+}
+
+# MOTPE joint trial 79 ("tight") and 331 ("fast"), exact values.
+CONFIG_EMULATIONS: dict[str, dict[str, float | int]] = {
+    "tight": {
+        "chi2_meas": 16.255929655134203,
+        "nmeas_min": 9,
+        "max_holes": 1,
+        "pt_min_gev": 0.4597609399152028,
+    },
+    "fast": {
+        "chi2_meas": 15.401021709868644,
+        "nmeas_min": 8,
+        "max_holes": 1,
+        "pt_min_gev": 0.6215760132564532,
+    },
 }
 
 
@@ -225,6 +249,88 @@ def flag_ambi_survivors(
     return pd.DataFrame(
         {"seed_id": all_seeds, "survived_ambi": [s_ in sel for s_ in all_seeds]}
     )
+
+
+def flag_config_emulation(
+    cand: pd.DataFrame, states: pd.DataFrame, config: str
+) -> pd.DataFrame:
+    """Flag branches that would survive one MOTPE operating point's cuts.
+
+    Returns one row per seed_id in `states` with a bool `passes_emulation`.
+    Mirrors flag_ambi_survivors's seed_id-as-branch grouping over `cand`
+    (see its docstring: stage-1 envelope data has
+    seed_id == branch_id == track_nr).
+
+    A branch passes iff ALL of:
+      1. Every is_ckf_selected `cand` row's chi2_inc is below the config's
+         chi2_meas ceiling. A branch with zero selected rows fails.
+      2. The accepted-hit count (is_ckf_selected row count) is >=
+         nmeas_min.
+      3. The branch's max over `states` of the running n_holes column is
+         <= max_holes.
+      4. Reconstructed pT at the branch's first state (minimum step_k)
+         exceeds pt_min_gev, where pT = abs(1.0 / state_qop) *
+         sin(state_theta). qop == 0 or a non-finite pT fails.
+
+    Parameters
+    ----------
+    cand : pd.DataFrame
+        Candidate rows with columns seed_id, step_k, is_ckf_selected,
+        chi2_inc (branch_id/cand_hit_id/etc. may also be present, unused
+        here).
+    states : pd.DataFrame
+        One row per (seed, branch, step) with columns seed_id, step_k,
+        state_theta, n_holes, state_qop.
+    config : str
+        Key into CONFIG_EMULATIONS ("tight" or "fast").
+    """
+    if config not in CONFIG_EMULATIONS:
+        raise ValueError(
+            f"unknown config {config!r}; choices: {list(CONFIG_EMULATIONS)}"
+        )
+    p = CONFIG_EMULATIONS[config]
+    all_seeds = states["seed_id"].unique()
+
+    picked = cand[cand["is_ckf_selected"]]
+    max_chi2 = picked.groupby("seed_id")["chi2_inc"].max()
+    n_sel = picked.groupby("seed_id").size()
+    chi2_ok = max_chi2.reindex(all_seeds).lt(p["chi2_meas"]).fillna(False)
+    nmeas_ok = n_sel.reindex(all_seeds).ge(p["nmeas_min"]).fillna(False)
+
+    max_holes = states.groupby("seed_id")["n_holes"].max()
+    holes_ok = max_holes.reindex(all_seeds).le(p["max_holes"]).fillna(False)
+
+    first = states.sort_values("step_k", kind="stable").groupby("seed_id").head(1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        qop = first["state_qop"].to_numpy()
+        pt = np.abs(1.0 / qop) * np.sin(first["state_theta"].to_numpy())
+    pt_pass = (qop != 0) & np.isfinite(pt) & (pt > p["pt_min_gev"])
+    pt_ok = (
+        pd.Series(pt_pass, index=first["seed_id"].to_numpy())
+        .reindex(all_seeds)
+        .fillna(False)
+    )
+
+    passes = (
+        chi2_ok.to_numpy()
+        & nmeas_ok.to_numpy()
+        & holes_ok.to_numpy()
+        & pt_ok.to_numpy()
+    )
+    return pd.DataFrame({"seed_id": all_seeds, "passes_emulation": passes})
+
+
+def _holes_qop_partial(rows: pd.DataFrame) -> pd.DataFrame:
+    """Per-batch (seed, branch, step) reduction of n_holes and state_qop.
+
+    Companion to build_state_table: n_holes/state_qop are only needed for
+    --emulate, so they're kept out of build_state_table's own output to
+    leave its (extensively tested) behavior untouched. n_holes uses max
+    (the running hole count is constant within a state; max matches the
+    "max of maxes" second-pass reduction in main()); state_qop uses first.
+    """
+    g = rows.groupby(["seed_id", "branch_id", "step_k"], as_index=False)
+    return g.agg(n_holes=("n_holes", "max"), state_qop=("state_qop", "first"))
 
 
 def build_state_table(rows: pd.DataFrame) -> pd.DataFrame:
@@ -435,8 +541,16 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("event", type=int)
     ap.add_argument("scratch_base")
+    ap.add_argument(
+        "--emulate",
+        choices=("tight", "fast"),
+        default=None,
+        help="offline-filter branches to those that would survive this "
+        "MOTPE operating point's cuts (see CONFIG_EMULATIONS); default "
+        "None reproduces the uncensored envelope population unchanged",
+    )
     args = ap.parse_args()
-    ev, S = args.event, args.scratch_base
+    ev, S, emulate = args.event, args.scratch_base, args.emulate
 
     t_prev = time.time()
 
@@ -450,6 +564,10 @@ def main() -> None:
     # NOTE: chi2_inc added to the task-5 brief's column list -- it is
     # selected out of df below (for flag_ambi_survivors) but the brief's
     # iter_batches columns omitted it, which KeyErrors on real data.
+    # n_holes/state_qop are only consumed by --emulate, but are always read
+    # for simplicity -- the per-state reduction below handles them
+    # identically whether or not --emulate is set, so this is a no-op on
+    # the eventual npz contents when --emulate is None.
     cols = [
         "seed_id",
         "branch_id",
@@ -469,10 +587,13 @@ def main() -> None:
         "majority_undefined",
         "majority_true_hit_on_surface",
         "chi2_inc",
+        "n_holes",
+        "state_qop",
     ]
 
     pf = pq.ParquetFile(pq_path)
     partial_states: list[pd.DataFrame] = []
+    partial_holes_qop: list[pd.DataFrame] = []
     cand_parts: list[pd.DataFrame] = []
     for batch in pf.iter_batches(batch_size=2_000_000, columns=cols):
         df = batch.to_pandas()
@@ -494,17 +615,10 @@ def main() -> None:
             ]
         )
         partial_states.append(build_state_table(df))
+        partial_holes_qop.append(_holes_qop_partial(df))
     cand = pd.concat(cand_parts, ignore_index=True)
     del cand_parts
     _stage("read+reduce")
-
-    selected = select_ckf_branch(cand)
-    _stage("select")
-    purity = branch_purity(cand, selected)
-    _stage("purity")
-    survivors = flag_ambi_survivors(cand)
-    _stage("ambi flag")
-    del cand
 
     # A state split across two read batches yields two partial rows; rerun
     # the min/first reduction once on the (much smaller) concatenation.
@@ -520,6 +634,33 @@ def main() -> None:
         d_true=("d_true", "min"),
         n_true_rows=("n_true_rows", "sum"),
     )
+
+    allhq = pd.concat(partial_holes_qop, ignore_index=True)
+    del partial_holes_qop
+    g2 = allhq.groupby(["seed_id", "branch_id", "step_k"], as_index=False)
+    holes_qop = g2.agg(n_holes=("n_holes", "max"), state_qop=("state_qop", "first"))
+    states = states.merge(holes_qop, on=["seed_id", "branch_id", "step_k"], how="left")
+    _stage("state reduce")
+
+    n_emu_pass = None
+    if emulate is not None:
+        emu = flag_config_emulation(cand, states, emulate)
+        passing = set(emu.loc[emu["passes_emulation"], "seed_id"])
+        n_emu_pass = len(passing)
+        states = states[states["seed_id"].isin(passing)].reset_index(drop=True)
+        cand = cand[cand["seed_id"].isin(passing)].reset_index(drop=True)
+        _stage("emulate filter")
+
+    selected = select_ckf_branch(cand)
+    _stage("select")
+    purity = branch_purity(cand, selected)
+    _stage("purity")
+    # The real chains' greedy fallback uses the config's own nMeasurementsMin.
+    ambi_nmeas_min = CONFIG_EMULATIONS[emulate]["nmeas_min"] if emulate else 7
+    survivors = flag_ambi_survivors(cand, nmeas_min=ambi_nmeas_min)
+    _stage("ambi flag")
+    del cand
+
     states = states.merge(selected, on=["seed_id", "branch_id"])
     states = states.merge(purity, on="seed_id", how="left")
     states["is_pure"] = states["is_pure"].fillna(False).astype(bool)
@@ -530,9 +671,14 @@ def main() -> None:
     out = accumulate_event(states, pt_lut)
     _stage("accumulate")
 
-    os.makedirs(f"{S}/winfail_unc", exist_ok=True)
+    if emulate is not None:
+        out["counters"]["n_emu_pass"] = n_emu_pass
+        out_dir = f"{S}/winfail_unc_emu_{emulate}"
+    else:
+        out_dir = f"{S}/winfail_unc"
+    os.makedirs(out_dir, exist_ok=True)
     np.savez(
-        f"{S}/winfail_unc/winfail_unc_event{ev:03d}.npz",
+        f"{out_dir}/winfail_unc_event{ev:03d}.npz",
         eta_bins=ETA_BINS,
         n_values=np.array(N_VALUES),
         occ_edges=np.array(OCC_EDGES),
@@ -542,11 +688,13 @@ def main() -> None:
     )
     _stage("savez")
     c = out["counters"]
+    emu_tag = f" emu_pass={c['n_emu_pass']:,}" if emulate is not None else ""
     print(
         f"event {ev}: states={c['n_states']:,} vol20={c['n_vol20']:,} "
         f"escaped={c['n_escaped']:,} multi_true={c['n_multi_true']:,} "
         f"pt_unmatched={c['n_pt_unmatched']:,} "
-        f"branches={c['n_branches']:,} ambi_survivors={c['n_ambi_survivors']:,} "
+        f"branches={c['n_branches']:,} ambi_survivors={c['n_ambi_survivors']:,}"
+        f"{emu_tag} "
         f"win_total={int(out['win_total'].sum()):,} "
         f"winfail_n10={int(out['win_fail'][-1].sum()):,}",
         flush=True,

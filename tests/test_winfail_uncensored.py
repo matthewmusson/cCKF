@@ -11,11 +11,13 @@ from winfail_uncensored import (
     N_VALUES,
     OCC_EDGES,
     PT_EDGES,
+    CONFIG_EMULATIONS,
     wilson_interval,
     assign_strata,
     select_ckf_branch,
     branch_purity,
     flag_ambi_survivors,
+    flag_config_emulation,
     build_state_table,
     accumulate_event,
     _as_pid_list,
@@ -559,3 +561,126 @@ def test_pt_slice_rejects_non_edge_threshold(tmp_path):
 
     with pytest.raises(ValueError):
         P.pt_slice(np.zeros((2, 4)), 0.8)
+
+
+# Tests for flag_config_emulation (tight/fast config-emulation branch filters)
+
+
+def _erows(records):
+    cols = ["seed_id", "step_k", "cand_hit_id", "is_ckf_selected", "chi2_inc"]
+    return pd.DataFrame(records, columns=cols)
+
+
+def _estates(records):
+    cols = ["seed_id", "step_k", "state_theta", "n_holes", "state_qop"]
+    return pd.DataFrame(records, columns=cols)
+
+
+def test_config_emulations_has_tight_and_fast_exact_values():
+    assert set(CONFIG_EMULATIONS) == {"tight", "fast"}
+    assert CONFIG_EMULATIONS["tight"]["nmeas_min"] == 9
+    assert CONFIG_EMULATIONS["fast"]["nmeas_min"] == 8
+
+
+def test_flag_config_emulation_passing_branch():
+    # 9 selected rows (meets tight nmeas_min=9), all low chi2, holes<=1,
+    # pT = |1/1.0| * sin(pi/2) = 1.0 GeV > 0.4598 GeV.
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
+    states = _estates([(0, 0, HALF_PI, 0, 1.0), (0, 1, HALF_PI, 1, 1.0)])
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: True}
+
+
+def test_flag_config_emulation_fails_chi2_ceiling():
+    # 9 selected rows (nmeas_min ok), but one row's chi2_inc = 16.5 exceeds
+    # tight's 16.255929655134203 ceiling.
+    cand = _erows(
+        [(0, k, 100 + k, True, 1.0) for k in range(8)] + [(0, 8, 108, True, 16.5)]
+    )
+    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+
+
+def test_flag_config_emulation_fails_nmeas_min():
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(5)])
+    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+
+
+def test_flag_config_emulation_fails_hole_cap():
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
+    states = _estates([(0, 0, HALF_PI, 0, 1.0), (0, 1, HALF_PI, 2, 1.0)])
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+
+
+def test_flag_config_emulation_fails_pt():
+    # qop = 5.0 -> p = 0.2 GeV -> pT = 0.2 GeV, below tight's 0.4598 GeV.
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
+    states = _estates([(0, 0, HALF_PI, 0, 5.0)])
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+
+
+def test_flag_config_emulation_zero_selected_rows_fails():
+    cand = _erows([(0, k, 100 + k, False, 1.0) for k in range(9)])
+    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+
+
+def test_flag_config_emulation_fast_ceiling_stricter_than_tight():
+    # max chi2 = 16.0: under tight's ceiling (16.2559...) but over fast's
+    # (15.4010...). nmeas_min=9 satisfies both tight (9) and fast (8).
+    cand = _erows(
+        [(0, k, 100 + k, True, 1.0) for k in range(8)] + [(0, 8, 108, True, 16.0)]
+    )
+    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    tight = flag_config_emulation(cand, states, "tight")
+    fast = flag_config_emulation(cand, states, "fast")
+    assert dict(zip(tight.seed_id, tight.passes_emulation)) == {0: True}
+    assert dict(zip(fast.seed_id, fast.passes_emulation)) == {0: False}
+
+
+def test_render_all_extra_footer_no_exception(tmp_path):
+    import plot_winfail_uncensored as P
+
+    shape = (140, 3, 2, 5, 4, 2)
+    rng = np.random.default_rng(1)
+    total = rng.integers(50, 100, size=shape)
+    np.savez(
+        tmp_path / "winfail_unc_event000.npz",
+        eta_bins=np.linspace(-3.5, 3.5, 141),
+        n_values=np.array([3.0, 5.0, 7.0, 10.0]),
+        occ_edges=np.array([0.0, 2.0, 5.0, 10.0, 20.0]),
+        pt_edges=np.array([0.0, 0.7, 0.9, 1.0]),
+        mod_total=total,
+        mod_fail=total // 10,
+        win_total=total,
+        win_fail=np.stack([total // (i + 2) for i in range(4)]),
+        counter_n_states=np.array(1),
+        counter_n_vol20=np.array(0),
+        counter_n_escaped=np.array(0),
+        counter_n_multi_true=np.array(0),
+        counter_n_pt_unmatched=np.array(0),
+    )
+    made = P.render_all(
+        str(tmp_path),
+        str(tmp_path / "out"),
+        threshold_gev=1.0,
+        branch_class="ambi",
+        extra_footer="tight emulation (chi2<16.26, nmeas>=9, holes<=1, pT>0.46 GeV)",
+    )
+    names = {p.split("/")[-1] for p in made}
+    assert names == {
+        "winfail_vs_eta_pure.png",
+        "winfail_vs_eta_majority.png",
+        "winfail_vs_eta_occupancy_n3.png",
+        "winfail_vs_eta_occupancy_n5.png",
+        "winfail_vs_eta_occupancy_n7.png",
+        "winfail_vs_eta_occupancy_n10.png",
+        "modfail_vs_eta.png",
+        "modfail_vs_occupancy.png",
+    }

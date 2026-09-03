@@ -125,10 +125,16 @@ def _wrap_footer(text: str, width: int = 110) -> str:
 
 
 def _footer(
-    fig: Figure, template: str, threshold_gev: float, branch_class: str
+    fig: Figure,
+    template: str,
+    threshold_gev: float,
+    branch_class: str,
+    extra_footer: str = "",
 ) -> None:
     fig.tight_layout()
     text = template.format(pt=threshold_gev) + _branch_class_suffix(branch_class)
+    if extra_footer:
+        text += f" · {extra_footer}"
     wrapped = _wrap_footer(text)
     fig.text(
         0.99,
@@ -164,6 +170,7 @@ def _render_family_a(
     out_dir: Path,
     threshold_gev: float,
     branch_class: str,
+    extra_footer: str = "",
 ) -> str:
     """3 sensor panels; lines = n values; one purity slice (pure/majority)."""
     fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
@@ -179,7 +186,7 @@ def _render_family_a(
         ax.legend(loc="upper right", fontsize=8)
     axes[-1].set_xlabel("η (branch state direction)")
     fig.suptitle(f"Window failure vs η, {name} branches (uncensored)")
-    _footer(fig, FOOTER_WIN, threshold_gev, branch_class)
+    _footer(fig, FOOTER_WIN, threshold_gev, branch_class, extra_footer)
     return _save(fig, out_dir, f"winfail_vs_eta_{name}.png")
 
 
@@ -192,6 +199,7 @@ def _render_family_b(
     out_dir: Path,
     threshold_gev: float,
     branch_class: str,
+    extra_footer: str = "",
 ) -> str:
     """3 sensor panels; lines = 5 occupancy strata; one n slice (purities pooled)."""
     n = int(n_values[ni])
@@ -210,7 +218,7 @@ def _render_family_b(
     fig.suptitle(
         f"Window failure vs η by occupancy, n = {n} (uncensored, purities pooled)"
     )
-    _footer(fig, FOOTER_WIN, threshold_gev, branch_class)
+    _footer(fig, FOOTER_WIN, threshold_gev, branch_class, extra_footer)
     return _save(fig, out_dir, f"winfail_vs_eta_occupancy_n{n}.png")
 
 
@@ -221,6 +229,7 @@ def _render_family_c(
     out_dir: Path,
     threshold_gev: float,
     branch_class: str,
+    extra_footer: str = "",
 ) -> str:
     """Single panel; 3 sensor lines, purities and occupancy pooled."""
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -234,7 +243,7 @@ def _render_family_c(
     ax.set_xlabel("η (branch state direction)")
     ax.set_title("Module failure vs η")
     ax.legend(loc="upper right", fontsize=8)
-    _footer(fig, FOOTER_MOD, threshold_gev, branch_class)
+    _footer(fig, FOOTER_MOD, threshold_gev, branch_class, extra_footer)
     return _save(fig, out_dir, "modfail_vs_eta.png")
 
 
@@ -244,6 +253,7 @@ def _render_family_d(
     out_dir: Path,
     threshold_gev: float,
     branch_class: str,
+    extra_footer: str = "",
 ) -> str:
     """Single panel; 3 sensor lines vs 5 occupancy strata, Wilson errorbars."""
     from winfail_uncensored import wilson_interval
@@ -277,14 +287,21 @@ def _render_family_d(
     ax.set_ylabel("Module failure rate")
     ax.set_title("Module failure vs occupancy")
     ax.legend(loc="upper right", fontsize=8)
-    _footer(fig, FOOTER_MOD, threshold_gev, branch_class)
+    _footer(fig, FOOTER_MOD, threshold_gev, branch_class, extra_footer)
     return _save(fig, out_dir, "modfail_vs_occupancy.png")
 
 
 def render_all(
-    npz_dir: str, out_dir: str, threshold_gev: float, branch_class: str
+    npz_dir: str,
+    out_dir: str,
+    threshold_gev: float,
+    branch_class: str,
+    extra_footer: str = "",
 ) -> list[str]:
     """Render all 8 figures for one (threshold_gev, branch_class) cell.
+
+    `extra_footer`, if non-empty, is appended as one more " · "-separated
+    segment on every figure's footer (e.g. to tag a config-emulation run).
 
     Returns the list of written PNG paths.
     """
@@ -316,6 +333,7 @@ def render_all(
             out_path,
             threshold_gev,
             branch_class,
+            extra_footer,
         ),
         _render_family_a(
             win_fail,
@@ -327,6 +345,7 @@ def render_all(
             out_path,
             threshold_gev,
             branch_class,
+            extra_footer,
         ),
     ]
     for ni in range(len(n_values)):
@@ -340,13 +359,18 @@ def render_all(
                 out_path,
                 threshold_gev,
                 branch_class,
+                extra_footer,
             )
         )
     made.append(
-        _render_family_c(mod_fail, mod_total, x, out_path, threshold_gev, branch_class)
+        _render_family_c(
+            mod_fail, mod_total, x, out_path, threshold_gev, branch_class, extra_footer
+        )
     )
     made.append(
-        _render_family_d(mod_fail, mod_total, out_path, threshold_gev, branch_class)
+        _render_family_d(
+            mod_fail, mod_total, out_path, threshold_gev, branch_class, extra_footer
+        )
     )
     return made
 
@@ -360,13 +384,25 @@ def main() -> None:
     )
     parser.add_argument("npz_dir", help="directory of winfail_unc_event*.npz files")
     parser.add_argument("out_base", help="base output directory")
+    parser.add_argument(
+        "--footer-tag",
+        default="",
+        help="extra text appended to every figure's footer, e.g. to tag a "
+        "config-emulation run",
+    )
     args = parser.parse_args()
 
     for threshold_gev in (1.0, 0.9):
         pt_tag = f"pt{threshold_gev}".replace(".", "p")
         for branch_class in ("all", "ambi"):
             out_dir = str(Path(args.out_base) / f"{pt_tag}_{branch_class}")
-            made = render_all(args.npz_dir, out_dir, threshold_gev, branch_class)
+            made = render_all(
+                args.npz_dir,
+                out_dir,
+                threshold_gev,
+                branch_class,
+                extra_footer=args.footer_tag,
+            )
             print(f"{out_dir}: wrote {len(made)} files")
 
 
