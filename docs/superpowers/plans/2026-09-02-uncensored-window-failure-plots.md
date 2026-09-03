@@ -103,9 +103,10 @@ PYEOF'
 
 ```markdown
 #### Recon results (Task 1)
-- load_simhits columns: ...
-- momentum columns (tpx/tpy or equivalent) and where they live: ...
-- hit-id join key between load_simhits and the raw CSV: ...
+- load_simhits columns: hit_id, geometry_id, particle_id, tx, ty, tz
+- momentum columns (tpx/tpy or equivalent) and where they live: tpx, tpy, tpz in raw CSV (sums to 6 momentum components: transverse pX, transverse pY, longitudinal pZ; pT computation uses hypot(tpx, tpy))
+- hit-id join key between load_simhits and the raw CSV: load_simhits.hit_id is the row index (0-based sequential count); matches raw CSV row order directly (particles in same row across both tables)
+- particle_id encoding status: load_simhits.particle_id is custom-encoded as 19-digit integers (example: 19704042944135862); raw CSV stores particle_id as 5 separate components (particle_id_pv, particle_id_sv, particle_id_part, particle_id_gen, particle_id_subpart); load_simhits' encoding is pre-computed, not derivable from raw components by re-encoding barcodes
 ```
 
 - [ ] **Step 3: Fix the `SCHEMA` dict of Task 2 if any name differs; column names appear nowhere else.**
