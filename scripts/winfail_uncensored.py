@@ -71,3 +71,106 @@ def assign_strata(
     occ = np.nan_to_num(np.asarray(n_window, dtype=float), nan=0.0)
     occ_idx = np.clip(np.digitize(occ, OCC_EDGES) - 1, 0, len(OCC_EDGES) - 1)
     return eta_idx, sensor_idx, occ_idx
+
+
+def select_ckf_branch(rows: pd.DataFrame) -> pd.DataFrame:
+    """One (seed_id, branch_id) per seed: the branch the CKF followed.
+
+    The branch with the most is_ckf_selected rows; ties break to the lowest
+    branch_id. Seeds with zero selected rows are excluded.
+
+    On stage-1 envelope data seed_id == branch_id == track_nr, so this is an
+    identity over branches with at least one selected row - kept as a guard
+    and for datasets that do carry real seed grouping.
+    """
+    picked = rows[rows["is_ckf_selected"]]
+    counts = (
+        picked.groupby(["seed_id", "branch_id"])
+        .size()
+        .rename("n_sel")
+        .reset_index()
+        .sort_values(
+            ["seed_id", "n_sel", "branch_id"], ascending=[True, False, True]
+        )
+    )
+    return counts.drop_duplicates("seed_id")[["seed_id", "branch_id"]].reset_index(
+        drop=True
+    )
+
+
+def branch_purity(rows: pd.DataFrame, selected: pd.DataFrame) -> pd.DataFrame:
+    """Pure (3/3) vs majority seed, from the first 3 selected candidates."""
+    sel_rows = rows.merge(selected, on=["seed_id", "branch_id"])
+    picks = (
+        sel_rows[sel_rows["is_ckf_selected"]]
+        .sort_values("step_k")
+        .groupby("seed_id")
+        .head(3)
+    )
+
+    def _all_match(g: pd.DataFrame) -> bool:
+        maj = g["branch_majority_pid"].iloc[0]
+        return all(
+            maj in (c if c is not None else []) for c in g["contrib_pids"]
+        )
+
+    return (
+        picks.groupby("seed_id")
+        .apply(_all_match, include_groups=False)
+        .rename("is_pure")
+        .reset_index()
+    )
+
+
+def flag_ambi_survivors(
+    rows: pd.DataFrame, max_shared: int = 3, nmeas_min: int = 7
+) -> pd.DataFrame:
+    """Offline replica of ACTS GreedyAmbiguityResolution over parquet branches.
+
+    Branch hits = is_ckf_selected rows' cand_hit_id; branch chi2 = summed
+    chi2_inc of those rows. Mirrors
+    Core/src/AmbiguityResolution/GreedyAmbiguityResolution.cpp: drop branches
+    with fewer than nmeas_min hits, then iteratively evict the branch with
+    the highest shared-hit fraction (ties: fewer hits, then higher chi2)
+    until every branch shares fewer than max_shared hits.
+
+    Returns one row per seed_id in `rows` with a survived_ambi bool.
+    """
+    picked = rows[rows["is_ckf_selected"]]
+    hits: dict[int, list[int]] = (
+        picked.groupby("seed_id")["cand_hit_id"].apply(list).to_dict()
+    )
+    chi2: dict[int, float] = (
+        picked.groupby("seed_id")["chi2_inc"].sum().to_dict()
+    )
+    all_seeds = rows["seed_id"].unique()
+
+    sel = {s for s, h in hits.items() if len(h) >= nmeas_min}
+    tracks_per_hit: dict[int, set[int]] = {}
+    for s_ in sel:
+        for h in hits[s_]:
+            tracks_per_hit.setdefault(h, set()).add(s_)
+    shared = {
+        s_: sum(1 for h in hits[s_] if len(tracks_per_hit[h]) > 1)
+        for s_ in sel
+    }
+
+    def evict_key(s_: int) -> tuple[float, int, float]:
+        rel = shared[s_] / len(hits[s_]) if hits[s_] else 0.0
+        return (rel, -len(hits[s_]), chi2[s_])
+
+    while sel:
+        worst = max(sel, key=evict_key)
+        if shared[worst] < max_shared:
+            break
+        for h in hits[worst]:
+            tracks_per_hit[h].discard(worst)
+            if len(tracks_per_hit[h]) == 1:
+                (j,) = tracks_per_hit[h]
+                if j in sel:
+                    shared[j] -= 1
+        sel.discard(worst)
+
+    return pd.DataFrame(
+        {"seed_id": all_seeds, "survived_ambi": [s_ in sel for s_ in all_seeds]}
+    )
