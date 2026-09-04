@@ -644,6 +644,57 @@ def test_flag_config_emulation_fast_ceiling_stricter_than_tight():
     assert dict(zip(fast.seed_id, fast.passes_emulation)) == {0: False}
 
 
+def test_flag_config_emulation_multi_branch_alignment():
+    """Four branches, each failing a different cut (or none), built with a
+    non-sorted seed_id order and rows interleaved across seeds -- pins the
+    four per-cut boolean series (chi2/nmeas/holes/pT) to seed_id-label
+    alignment (pandas reindex) rather than positional/sorted order, which
+    a single-seed test cannot catch.
+    """
+
+    def sel_rows(seed, n, bad_chi2_at=None, bad_chi2=1.0):
+        rows = []
+        for k in range(n):
+            chi2 = bad_chi2 if k == bad_chi2_at else 1.0
+            rows.append((seed, k, seed * 100 + k, True, chi2))
+        return rows
+
+    r0 = sel_rows(0, 9)  # passes everything
+    r1 = sel_rows(1, 9, bad_chi2_at=8, bad_chi2=16.5)  # fails chi2 only
+    r2 = sel_rows(2, 9)  # fails holes only (via states below)
+    r3 = sel_rows(3, 9)  # fails pT only (via states below)
+
+    # Interleave in a non-ascending, non-seed-grouped order.
+    interleaved = []
+    for a, b, c, d in zip(r1, r3, r0, r2):
+        interleaved += [a, b, c, d]
+    cand = _erows(interleaved)
+
+    states = _estates(
+        [
+            (2, 0, HALF_PI, 2, 1.0),  # seed 2: holes=2 > max_holes=1
+            (0, 0, HALF_PI, 0, 1.0),  # seed 0: passes
+            (3, 0, HALF_PI, 0, 5.0),  # seed 3: qop=5 -> pT=0.2 GeV, fails
+            (1, 0, HALF_PI, 0, 1.0),  # seed 1: holes/pT fine
+        ]
+    )
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {
+        0: True,
+        1: False,
+        2: False,
+        3: False,
+    }
+
+
+def test_flag_config_emulation_qop_zero_fails():
+    # Explicit spec clause: qop == 0 must fail (not just non-finite pT).
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
+    states = _estates([(0, 0, HALF_PI, 0, 0.0)])
+    out = flag_config_emulation(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+
+
 def test_render_all_extra_footer_no_exception(tmp_path):
     import plot_winfail_uncensored as P
 
