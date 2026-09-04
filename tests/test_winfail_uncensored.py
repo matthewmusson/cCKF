@@ -17,7 +17,7 @@ from winfail_uncensored import (
     select_ckf_branch,
     branch_purity,
     flag_ambi_survivors,
-    flag_config_emulation,
+    emulate_config,
     build_state_table,
     accumulate_event,
     _as_pid_list,
@@ -563,7 +563,12 @@ def test_pt_slice_rejects_non_edge_threshold(tmp_path):
         P.pt_slice(np.zeros((2, 4)), 0.8)
 
 
-# Tests for flag_config_emulation (tight/fast config-emulation branch filters)
+# Tests for emulate_config (tight/fast config-emulation branch filters).
+# emulate_config truncates at the running hole cap (branchStopper
+# semantics: stop the branch, keep the accepted prefix) rather than
+# discarding the whole branch -- see its docstring. cutoff_step is np.inf
+# when the branch never crosses max_holes, so its prefix is the whole
+# branch and these cases behave exactly as a hole-blind cut would.
 
 
 def _erows(records):
@@ -582,117 +587,199 @@ def test_config_emulations_has_tight_and_fast_exact_values():
     assert CONFIG_EMULATIONS["fast"]["nmeas_min"] == 8
 
 
-def test_flag_config_emulation_passing_branch():
-    # 9 selected rows (meets tight nmeas_min=9), all low chi2, holes<=1,
-    # pT = |1/1.0| * sin(pi/2) = 1.0 GeV > 0.4598 GeV.
+def test_emulate_config_passing_branch():
+    # 9 selected rows (meets tight nmeas_min=9), all low chi2, no holes
+    # (cutoff stays inf), pT = |1/1.0| * sin(pi/2) = 1.0 GeV > 0.4598 GeV.
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
     states = _estates([(0, 0, HALF_PI, 0, 1.0), (0, 1, HALF_PI, 1, 1.0)])
-    out = flag_config_emulation(cand, states, "tight")
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: True}
+    assert dict(zip(out.seed_id, out.cutoff_step)) == {0: np.inf}
 
 
-def test_flag_config_emulation_fails_chi2_ceiling():
+def test_emulate_config_fails_chi2_ceiling():
     # 9 selected rows (nmeas_min ok), but one row's chi2_inc = 16.5 exceeds
-    # tight's 16.255929655134203 ceiling.
+    # tight's 16.255929655134203 ceiling. No holes -> prefix = whole branch.
     cand = _erows(
         [(0, k, 100 + k, True, 1.0) for k in range(8)] + [(0, 8, 108, True, 16.5)]
     )
     states = _estates([(0, 0, HALF_PI, 0, 1.0)])
-    out = flag_config_emulation(cand, states, "tight")
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
 
-def test_flag_config_emulation_fails_nmeas_min():
+def test_emulate_config_fails_nmeas_min():
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(5)])
     states = _estates([(0, 0, HALF_PI, 0, 1.0)])
-    out = flag_config_emulation(cand, states, "tight")
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
 
-def test_flag_config_emulation_fails_hole_cap():
-    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
-    states = _estates([(0, 0, HALF_PI, 0, 1.0), (0, 1, HALF_PI, 2, 1.0)])
-    out = flag_config_emulation(cand, states, "tight")
+def test_emulate_config_trailing_holes_truncate_and_pass():
+    # 10 selected hits (steps 0-9), then 2 trailing holes (steps 10-11):
+    # n_holes crosses tight's max_holes=1 at step 11 -> cutoff_step=11,
+    # and the prefix (step_k < 11) keeps all 10 hits, well over
+    # nmeas_min=9. Matches ACTS branchStopper: the branch is stopped and
+    # its accepted prefix survives, it isn't discarded outright.
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(10)])
+    states = _estates(
+        [
+            (0, 0, HALF_PI, 0, 1.0),
+            (0, 9, HALF_PI, 0, 1.0),
+            (0, 10, HALF_PI, 1, 1.0),  # 1st hole: n_holes=1, still <= cap
+            (0, 11, HALF_PI, 2, 1.0),  # 2nd hole: n_holes=2 -> cutoff here
+        ]
+    )
+    out = emulate_config(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: True}
+    assert dict(zip(out.seed_id, out.cutoff_step)) == {0: 11.0}
+
+
+def test_emulate_config_early_holes_truncate_and_fail_nmeas():
+    # Running n_holes hits 2 (> max_holes=1) at step 3 -> cutoff_step=3.
+    # Only 2 selected hits precede the cutoff; more hits follow step 3 but
+    # are truncated away, so the prefix's accepted-hit count (2) is well
+    # under nmeas_min=9 and the branch fails.
+    cand = _erows(
+        [(0, k, 100 + k, True, 1.0) for k in range(2)]  # steps 0-1, kept
+        + [(0, k, 100 + k, True, 1.0) for k in range(4, 13)]  # steps 4-12, truncated
+    )
+    states = _estates(
+        [
+            (0, 0, HALF_PI, 0, 1.0),
+            (0, 3, HALF_PI, 2, 1.0),  # n_holes=2 at step 3 -> cutoff here
+        ]
+    )
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+    assert dict(zip(out.seed_id, out.cutoff_step)) == {0: 3.0}
 
 
-def test_flag_config_emulation_fails_pt():
+def test_emulate_config_fails_pt():
     # qop = 5.0 -> p = 0.2 GeV -> pT = 0.2 GeV, below tight's 0.4598 GeV.
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
     states = _estates([(0, 0, HALF_PI, 0, 5.0)])
-    out = flag_config_emulation(cand, states, "tight")
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
 
-def test_flag_config_emulation_zero_selected_rows_fails():
+def test_emulate_config_zero_selected_rows_fails():
     cand = _erows([(0, k, 100 + k, False, 1.0) for k in range(9)])
     states = _estates([(0, 0, HALF_PI, 0, 1.0)])
-    out = flag_config_emulation(cand, states, "tight")
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
 
-def test_flag_config_emulation_fast_ceiling_stricter_than_tight():
+def test_emulate_config_fast_ceiling_stricter_than_tight():
     # max chi2 = 16.0: under tight's ceiling (16.2559...) but over fast's
     # (15.4010...). nmeas_min=9 satisfies both tight (9) and fast (8).
     cand = _erows(
         [(0, k, 100 + k, True, 1.0) for k in range(8)] + [(0, 8, 108, True, 16.0)]
     )
     states = _estates([(0, 0, HALF_PI, 0, 1.0)])
-    tight = flag_config_emulation(cand, states, "tight")
-    fast = flag_config_emulation(cand, states, "fast")
+    tight = emulate_config(cand, states, "tight")
+    fast = emulate_config(cand, states, "fast")
     assert dict(zip(tight.seed_id, tight.passes_emulation)) == {0: True}
     assert dict(zip(fast.seed_id, fast.passes_emulation)) == {0: False}
 
 
-def test_flag_config_emulation_multi_branch_alignment():
+def test_emulate_config_multi_branch_alignment():
     """Four branches, each failing a different cut (or none), built with a
     non-sorted seed_id order and rows interleaved across seeds -- pins the
-    four per-cut boolean series (chi2/nmeas/holes/pT) to seed_id-label
-    alignment (pandas reindex) rather than positional/sorted order, which
-    a single-seed test cannot catch.
+    per-cut boolean series (chi2/nmeas/pT) and cutoff_step to seed_id-label
+    alignment (pandas reindex/map) rather than positional/sorted order,
+    which a single-seed test cannot catch.
+
+    seed 0: passes. seed 1: fails chi2. seed 2: early holes (cutoff at
+    step 2) truncate its prefix to too few hits, failing nmeas_min. seed
+    3: fails pT.
     """
 
-    def sel_rows(seed, n, bad_chi2_at=None, bad_chi2=1.0):
+    def sel_rows(seed, steps, bad_chi2_at=None, bad_chi2=1.0):
         rows = []
-        for k in range(n):
+        for k in steps:
             chi2 = bad_chi2 if k == bad_chi2_at else 1.0
             rows.append((seed, k, seed * 100 + k, True, chi2))
         return rows
 
-    r0 = sel_rows(0, 9)  # passes everything
-    r1 = sel_rows(1, 9, bad_chi2_at=8, bad_chi2=16.5)  # fails chi2 only
-    r2 = sel_rows(2, 9)  # fails holes only (via states below)
-    r3 = sel_rows(3, 9)  # fails pT only (via states below)
+    r1 = sel_rows(1, range(9), bad_chi2_at=8, bad_chi2=16.5)  # fails chi2 only
+    r3 = sel_rows(3, range(9))  # fails pT only (via states below)
+    r0 = sel_rows(0, range(9))  # passes everything
+    r2 = sel_rows(2, [0, 1])  # 2 early hits, kept in the prefix
+    r2_late = sel_rows(2, range(3, 12))  # more hits after the cutoff, truncated away
 
     # Interleave in a non-ascending, non-seed-grouped order.
     interleaved = []
-    for a, b, c, d in zip(r1, r3, r0, r2):
-        interleaved += [a, b, c, d]
+    for a, b, c in zip(r1, r3, r0):
+        interleaved += [a, b, c]
+    interleaved += r2 + r2_late
     cand = _erows(interleaved)
 
     states = _estates(
         [
-            (2, 0, HALF_PI, 2, 1.0),  # seed 2: holes=2 > max_holes=1
+            (2, 0, HALF_PI, 0, 1.0),  # seed 2 first state (for pT)
+            (2, 2, HALF_PI, 2, 1.0),  # seed 2: n_holes=2 at step 2 -> cutoff
             (0, 0, HALF_PI, 0, 1.0),  # seed 0: passes
             (3, 0, HALF_PI, 0, 5.0),  # seed 3: qop=5 -> pT=0.2 GeV, fails
-            (1, 0, HALF_PI, 0, 1.0),  # seed 1: holes/pT fine
+            (1, 0, HALF_PI, 0, 1.0),  # seed 1: fine holes/pT; chi2 fails via cand
         ]
     )
-    out = flag_config_emulation(cand, states, "tight")
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {
         0: True,
         1: False,
         2: False,
         3: False,
     }
+    assert dict(zip(out.seed_id, out.cutoff_step)) == {
+        0: np.inf,
+        1: np.inf,
+        2: 2.0,
+        3: np.inf,
+    }
 
 
-def test_flag_config_emulation_qop_zero_fails():
+def test_emulate_config_qop_zero_fails():
     # Explicit spec clause: qop == 0 must fail (not just non-finite pT).
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
     states = _estates([(0, 0, HALF_PI, 0, 0.0)])
-    out = flag_config_emulation(cand, states, "tight")
+    out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
+
+
+def test_emulate_config_prefix_filtering_drops_post_cutoff_rows():
+    """Directly exercises the filter main() applies: states/cand restricted
+    to (passing seed) AND (step_k < that seed's cutoff_step). Confirms the
+    post-cutoff hole row is dropped while the whole pre-cutoff prefix
+    (through the last hit before the cutoff) is kept.
+    """
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(10)])
+    states = _estates(
+        [
+            (0, 0, HALF_PI, 0, 1.0),
+            (0, 5, HALF_PI, 0, 1.0),
+            (0, 9, HALF_PI, 0, 1.0),
+            (0, 10, HALF_PI, 1, 1.0),  # 1st hole: n_holes=1, still <= cap
+            (0, 11, HALF_PI, 2, 1.0),  # 2nd hole: n_holes=2 -> cutoff here
+        ]
+    )
+    emu = emulate_config(cand, states, "tight")
+    assert dict(zip(emu.seed_id, emu.cutoff_step)) == {0: 11.0}
+    assert dict(zip(emu.seed_id, emu.passes_emulation)) == {0: True}
+
+    # Mirror main()'s wiring exactly.
+    passing = set(emu.loc[emu["passes_emulation"], "seed_id"])
+    cutoff_map = emu.set_index("seed_id")["cutoff_step"]
+    kept_states = states[
+        states["seed_id"].isin(passing)
+        & (states["step_k"] < states["seed_id"].map(cutoff_map))
+    ]
+    kept_cand = cand[
+        cand["seed_id"].isin(passing)
+        & (cand["step_k"] < cand["seed_id"].map(cutoff_map))
+    ]
+    assert sorted(kept_states["step_k"]) == [0, 5, 9, 10]  # step 11 dropped
+    assert len(kept_cand) == 10  # all 10 selected hits (steps 0-9) kept
 
 
 def test_render_all_extra_footer_no_exception(tmp_path):

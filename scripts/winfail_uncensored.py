@@ -12,14 +12,16 @@
 - **pT bins**: majority-particle pT binned at `PT_EDGES = (0.0, 0.7, 0.9, 1.0)`, last bin open; renders sum bins at/above a threshold that must be an edge. Primary renders: pT > 1.0 and pT > 0.9 GeV.
 - **Ambi survivor**: the branch is kept by an offline replica of ACTS `GreedyAmbiguityResolution` with `maximumSharedHits = 3` and `nMeasurementsMin = 7` (the stage-1 steering's fallback when the CKF cut is disabled). Branch hits = its `is_ckf_selected` rows' `cand_hit_id` (measurement ids, unique per event); branch chi2 = sum of those rows' `chi2_inc`. Replica semantics: drop branches with < 7 accepted hits, then iteratively evict the branch with the highest shared-hit fraction (ties: fewer hits, then higher chi2) until every branch shares < 3 hits. Stage 1 wrote no post-ambi reference, so the replica is the only route; the chi2 tie-break uses the shared-S approximation - a documented fidelity caveat affecting only exact ties.
 - η: from `state_theta` (branch state direction), 140 bins of width 0.05 over [−3.5, 3.5].
-- **Config emulation** (`flag_config_emulation`): offline filter that keeps
-  only the branches that would have survived a specific operating point's
-  cuts (`CONFIG_EMULATIONS["tight"|"fast"]`), so downstream failure rates
+- **Config emulation** (`emulate_config`): offline filter that keeps only
+  the branches (truncated to their emulated prefix) that would have
+  survived a specific operating point's cuts
+  (`CONFIG_EMULATIONS["tight"|"fast"]`), so downstream failure rates
   reflect that config's branch population instead of the loose envelope's.
-  A branch passes iff every `is_ckf_selected` row's `chi2_inc` is under the
-  config's `chi2_meas` ceiling, the accepted-hit count meets `nmeas_min`,
-  the branch's max running `n_holes` is at most `max_holes`, and the
-  reconstructed pT at the branch's first state exceeds `pt_min_gev`.
+  Matches ACTS branchStopper semantics: the prefix ends at (excludes) the
+  first step whose running `n_holes` exceeds `max_holes` (never, if it
+  never does); `nmeas_min`/`chi2_meas` are then evaluated on that prefix's
+  `is_ckf_selected` rows, and pT at the branch's first state must exceed
+  `pt_min_gev`.
 """
 
 from __future__ import annotations
@@ -251,26 +253,44 @@ def flag_ambi_survivors(
     )
 
 
-def flag_config_emulation(
+def emulate_config(
     cand: pd.DataFrame, states: pd.DataFrame, config: str
 ) -> pd.DataFrame:
     """Flag branches that would survive one MOTPE operating point's cuts.
 
-    Returns one row per seed_id in `states` with a bool `passes_emulation`.
-    Mirrors flag_ambi_survivors's seed_id-as-branch grouping over `cand`
-    (see its docstring: stage-1 envelope data has
-    seed_id == branch_id == track_nr).
+    Truncates at the running hole cap instead of discarding the branch
+    outright: ACTS's branchStopper (maxHolesAndOutliers) STOPS a branch
+    once it crosses max_holes and keeps the accepted prefix, then applies
+    terminal cuts to that truncated track. The uncensored envelope run has
+    no in-flight branch stopper, so every surviving branch accumulates
+    trailing holes; rejecting on whole-branch max(n_holes) would (and did,
+    on real data -- n_emu_pass == 0 everywhere) reject every branch.
+    Emulating the truncation instead reproduces what the real chain's
+    nmeas_min/chi2_meas cuts would see: the prefix up to (not including)
+    the hole that trips the cap.
+
+    Returns one row per seed_id in `states` with columns:
+      - `passes_emulation` : bool
+      - `cutoff_step` : float, the smallest step_k whose running n_holes
+        exceeds max_holes (np.inf if never exceeded, i.e. the branch's
+        prefix is the whole branch)
+
+    The branch's emulated prefix is `states` (and the matching `cand`
+    rows) restricted to step_k < cutoff_step. Mirrors
+    flag_ambi_survivors's seed_id-as-branch grouping over `cand` (see its
+    docstring: stage-1 envelope data has seed_id == branch_id == track_nr).
 
     A branch passes iff ALL of:
-      1. Every is_ckf_selected `cand` row's chi2_inc is below the config's
-         chi2_meas ceiling. A branch with zero selected rows fails.
-      2. The accepted-hit count (is_ckf_selected row count) is >=
-         nmeas_min.
-      3. The branch's max over `states` of the running n_holes column is
-         <= max_holes.
-      4. Reconstructed pT at the branch's first state (minimum step_k)
-         exceeds pt_min_gev, where pT = abs(1.0 / state_qop) *
-         sin(state_theta). qop == 0 or a non-finite pT fails.
+      1. Every is_ckf_selected `cand` row IN THE PREFIX has chi2_inc below
+         the config's chi2_meas ceiling. A prefix with zero selected rows
+         fails.
+      2. The prefix's accepted-hit count (is_ckf_selected row count) is
+         >= nmeas_min.
+      3. Reconstructed pT at the branch's first state (minimum step_k,
+         over the WHOLE branch -- pT is the branch's initial kinematics
+         and is unaffected by where it gets truncated) exceeds
+         pt_min_gev, where pT = abs(1.0 / state_qop) * sin(state_theta).
+         qop == 0 or a non-finite pT fails.
 
     Parameters
     ----------
@@ -291,14 +311,19 @@ def flag_config_emulation(
     p = CONFIG_EMULATIONS[config]
     all_seeds = states["seed_id"].unique()
 
-    picked = cand[cand["is_ckf_selected"]]
+    over = states[states["n_holes"] > p["max_holes"]]
+    cutoff_step = (
+        over.groupby("seed_id")["step_k"].min().reindex(all_seeds).fillna(np.inf)
+    )
+
+    sel_mask = cand["is_ckf_selected"] & (
+        cand["step_k"] < cand["seed_id"].map(cutoff_step)
+    )
+    picked = cand[sel_mask]
     max_chi2 = picked.groupby("seed_id")["chi2_inc"].max()
     n_sel = picked.groupby("seed_id").size()
     chi2_ok = max_chi2.reindex(all_seeds).lt(p["chi2_meas"]).fillna(False)
     nmeas_ok = n_sel.reindex(all_seeds).ge(p["nmeas_min"]).fillna(False)
-
-    max_holes = states.groupby("seed_id")["n_holes"].max()
-    holes_ok = max_holes.reindex(all_seeds).le(p["max_holes"]).fillna(False)
 
     first = states.sort_values("step_k", kind="stable").groupby("seed_id").head(1)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -311,13 +336,14 @@ def flag_config_emulation(
         .fillna(False)
     )
 
-    passes = (
-        chi2_ok.to_numpy()
-        & nmeas_ok.to_numpy()
-        & holes_ok.to_numpy()
-        & pt_ok.to_numpy()
+    passes = chi2_ok.to_numpy() & nmeas_ok.to_numpy() & pt_ok.to_numpy()
+    return pd.DataFrame(
+        {
+            "seed_id": all_seeds,
+            "passes_emulation": passes,
+            "cutoff_step": cutoff_step.to_numpy(),
+        }
     )
-    return pd.DataFrame({"seed_id": all_seeds, "passes_emulation": passes})
 
 
 def _holes_qop_partial(rows: pd.DataFrame) -> pd.DataFrame:
@@ -644,11 +670,22 @@ def main() -> None:
 
     n_emu_pass = None
     if emulate is not None:
-        emu = flag_config_emulation(cand, states, emulate)
+        emu = emulate_config(cand, states, emulate)
         passing = set(emu.loc[emu["passes_emulation"], "seed_id"])
         n_emu_pass = len(passing)
-        states = states[states["seed_id"].isin(passing)].reset_index(drop=True)
-        cand = cand[cand["seed_id"].isin(passing)].reset_index(drop=True)
+        cutoff_step = emu.set_index("seed_id")["cutoff_step"]
+        # Truncate each passing branch to its emulated prefix (step_k <
+        # cutoff_step): the branchStopper semantics this replicates STOP
+        # the branch at the hole cap and keep the accepted prefix, rather
+        # than discarding the whole branch (see emulate_config docstring).
+        states = states[
+            states["seed_id"].isin(passing)
+            & (states["step_k"] < states["seed_id"].map(cutoff_step))
+        ].reset_index(drop=True)
+        cand = cand[
+            cand["seed_id"].isin(passing)
+            & (cand["step_k"] < cand["seed_id"].map(cutoff_step))
+        ].reset_index(drop=True)
         _stage("emulate filter")
 
     selected = select_ckf_branch(cand)
