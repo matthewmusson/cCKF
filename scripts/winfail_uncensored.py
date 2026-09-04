@@ -18,8 +18,13 @@
   (`CONFIG_EMULATIONS["tight"|"fast"]`), so downstream failure rates
   reflect that config's branch population instead of the loose envelope's.
   Matches ACTS branchStopper semantics: the prefix ends at (excludes) the
-  first step whose running `n_holes` exceeds `max_holes` (never, if it
-  never does); `nmeas_min`/`chi2_meas` are then evaluated on that prefix's
+  first step whose running count of EMULATED holes exceeds `max_holes`
+  (never, if it never does). An emulated hole is a state with no
+  `is_ckf_selected` `cand` row whose `volume_id` is one of the nine
+  tracker sensor volumes (`SENSOR_VOLUMES`) -- deliberately not the
+  parquet's own `n_holes` column, which also counts passive-material
+  crossings and so is not usable for this cut (see `emulate_config`'s
+  docstring). `nmeas_min`/`chi2_meas` are then evaluated on that prefix's
   `is_ckf_selected` rows, and pT at the branch's first state must exceed
   `pt_min_gev`.
 """
@@ -263,17 +268,29 @@ def emulate_config(
     once it crosses max_holes and keeps the accepted prefix, then applies
     terminal cuts to that truncated track. The uncensored envelope run has
     no in-flight branch stopper, so every surviving branch accumulates
-    trailing holes; rejecting on whole-branch max(n_holes) would (and did,
+    trailing holes; rejecting on whole-branch hole count would (and did,
     on real data -- n_emu_pass == 0 everywhere) reject every branch.
     Emulating the truncation instead reproduces what the real chain's
     nmeas_min/chi2_meas cuts would see: the prefix up to (not including)
     the hole that trips the cap.
 
+    Holes are computed here from `cand`/`states` directly, NOT from any
+    n_holes column: the parquet's own running n_holes counts every
+    no-accepted-hit surface, including passive material crossings (e.g.
+    volume 20), which are not holes in the branchStopper's sense and
+    inflate the running count well past max_holes before enough sensor
+    hits accumulate (measured on event 4: median n_holes at a volume-20
+    state is 10, P90 13 -- every branch blew the cap). A state is an
+    EMULATED HOLE iff it has no is_ckf_selected `cand` row at that
+    (seed_id, step_k) AND its volume_id is one of the nine tracker sensor
+    volumes (SENSOR_VOLUMES); passive/unknown volumes are skipped
+    entirely -- neither a hole nor a hit.
+
     Returns one row per seed_id in `states` with columns:
       - `passes_emulation` : bool
-      - `cutoff_step` : float, the smallest step_k whose running n_holes
-        exceeds max_holes (np.inf if never exceeded, i.e. the branch's
-        prefix is the whole branch)
+      - `cutoff_step` : float, the smallest step_k whose running
+        (cumulative) emulated-hole count exceeds max_holes (np.inf if
+        never exceeded, i.e. the branch's prefix is the whole branch)
 
     The branch's emulated prefix is `states` (and the matching `cand`
     rows) restricted to step_k < cutoff_step. Mirrors
@@ -300,7 +317,7 @@ def emulate_config(
         here).
     states : pd.DataFrame
         One row per (seed, branch, step) with columns seed_id, step_k,
-        state_theta, n_holes, state_qop.
+        state_theta, volume_id, state_qop.
     config : str
         Key into CONFIG_EMULATIONS ("tight" or "fast").
     """
@@ -311,9 +328,24 @@ def emulate_config(
     p = CONFIG_EMULATIONS[config]
     all_seeds = states["seed_id"].unique()
 
-    over = states[states["n_holes"] > p["max_holes"]]
+    sel_steps = (
+        cand.loc[cand["is_ckf_selected"], ["seed_id", "step_k"]]
+        .drop_duplicates()
+        .assign(has_selected=True)
+    )
+    st = states.merge(sel_steps, on=["seed_id", "step_k"], how="left")
+    # merge leaves an object-dtype column (True/NaN); force real bool so
+    # `~` is logical negation, not Python's bitwise-NOT-on-int surprise
+    # (~False == -1, truthy) on an object-dtype Series.
+    st["has_selected"] = st["has_selected"].fillna(False).astype(bool)
+    is_sensor = st["volume_id"].isin(set(SENSOR_VOLUMES))
+    st["is_emu_hole"] = is_sensor & ~st["has_selected"]
+
+    st_sorted = st.sort_values(["seed_id", "step_k"], kind="stable")
+    hole_cumsum = st_sorted.groupby("seed_id")["is_emu_hole"].cumsum()
+    exceeded = st_sorted[hole_cumsum > p["max_holes"]]
     cutoff_step = (
-        over.groupby("seed_id")["step_k"].min().reindex(all_seeds).fillna(np.inf)
+        exceeded.groupby("seed_id")["step_k"].min().reindex(all_seeds).fillna(np.inf)
     )
 
     sel_mask = cand["is_ckf_selected"] & (
@@ -346,17 +378,16 @@ def emulate_config(
     )
 
 
-def _holes_qop_partial(rows: pd.DataFrame) -> pd.DataFrame:
-    """Per-batch (seed, branch, step) reduction of n_holes and state_qop.
+def _qop_partial(rows: pd.DataFrame) -> pd.DataFrame:
+    """Per-batch (seed, branch, step) reduction of state_qop.
 
-    Companion to build_state_table: n_holes/state_qop are only needed for
-    --emulate, so they're kept out of build_state_table's own output to
-    leave its (extensively tested) behavior untouched. n_holes uses max
-    (the running hole count is constant within a state; max matches the
-    "max of maxes" second-pass reduction in main()); state_qop uses first.
+    Companion to build_state_table: state_qop is only needed for
+    --emulate (for the pT check), so it's kept out of build_state_table's
+    own output to leave its (extensively tested) behavior untouched.
+    Uses first, since it's constant within a state.
     """
     g = rows.groupby(["seed_id", "branch_id", "step_k"], as_index=False)
-    return g.agg(n_holes=("n_holes", "max"), state_qop=("state_qop", "first"))
+    return g.agg(state_qop=("state_qop", "first"))
 
 
 def build_state_table(rows: pd.DataFrame) -> pd.DataFrame:
@@ -590,10 +621,13 @@ def main() -> None:
     # NOTE: chi2_inc added to the task-5 brief's column list -- it is
     # selected out of df below (for flag_ambi_survivors) but the brief's
     # iter_batches columns omitted it, which KeyErrors on real data.
-    # n_holes/state_qop are only consumed by --emulate, but are always read
-    # for simplicity -- the per-state reduction below handles them
-    # identically whether or not --emulate is set, so this is a no-op on
-    # the eventual npz contents when --emulate is None.
+    # state_qop is only consumed by --emulate (for the pT check), but is
+    # always read for simplicity -- the per-state reduction below handles
+    # it identically whether or not --emulate is set, so this is a no-op
+    # on the eventual npz contents when --emulate is None. n_holes is
+    # deliberately NOT read: the parquet's own running n_holes counts
+    # passive-material crossings too, so it isn't usable for the hole cap
+    # emulation (see emulate_config's docstring) and nothing else needs it.
     cols = [
         "seed_id",
         "branch_id",
@@ -613,13 +647,12 @@ def main() -> None:
         "majority_undefined",
         "majority_true_hit_on_surface",
         "chi2_inc",
-        "n_holes",
         "state_qop",
     ]
 
     pf = pq.ParquetFile(pq_path)
     partial_states: list[pd.DataFrame] = []
-    partial_holes_qop: list[pd.DataFrame] = []
+    partial_qop: list[pd.DataFrame] = []
     cand_parts: list[pd.DataFrame] = []
     for batch in pf.iter_batches(batch_size=2_000_000, columns=cols):
         df = batch.to_pandas()
@@ -641,7 +674,7 @@ def main() -> None:
             ]
         )
         partial_states.append(build_state_table(df))
-        partial_holes_qop.append(_holes_qop_partial(df))
+        partial_qop.append(_qop_partial(df))
     cand = pd.concat(cand_parts, ignore_index=True)
     del cand_parts
     _stage("read+reduce")
@@ -661,11 +694,11 @@ def main() -> None:
         n_true_rows=("n_true_rows", "sum"),
     )
 
-    allhq = pd.concat(partial_holes_qop, ignore_index=True)
-    del partial_holes_qop
-    g2 = allhq.groupby(["seed_id", "branch_id", "step_k"], as_index=False)
-    holes_qop = g2.agg(n_holes=("n_holes", "max"), state_qop=("state_qop", "first"))
-    states = states.merge(holes_qop, on=["seed_id", "branch_id", "step_k"], how="left")
+    allq = pd.concat(partial_qop, ignore_index=True)
+    del partial_qop
+    g2 = allq.groupby(["seed_id", "branch_id", "step_k"], as_index=False)
+    qop = g2.agg(state_qop=("state_qop", "first"))
+    states = states.merge(qop, on=["seed_id", "branch_id", "step_k"], how="left")
     _stage("state reduce")
 
     n_emu_pass = None

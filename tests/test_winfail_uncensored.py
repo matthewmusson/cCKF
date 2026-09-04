@@ -564,11 +564,17 @@ def test_pt_slice_rejects_non_edge_threshold(tmp_path):
 
 
 # Tests for emulate_config (tight/fast config-emulation branch filters).
-# emulate_config truncates at the running hole cap (branchStopper
+# emulate_config truncates at the running EMULATED hole cap (branchStopper
 # semantics: stop the branch, keep the accepted prefix) rather than
-# discarding the whole branch -- see its docstring. cutoff_step is np.inf
-# when the branch never crosses max_holes, so its prefix is the whole
-# branch and these cases behave exactly as a hole-blind cut would.
+# discarding the whole branch -- see its docstring. An emulated hole is a
+# `states` row with no matching `is_ckf_selected` `cand` row AND a sensor
+# volume_id (one of SENSOR_VOLUMES): the parquet's own n_holes column also
+# counts passive-material crossings (e.g. volume 20) and is deliberately
+# not read for this. cutoff_step is np.inf when the branch never crosses
+# max_holes, so its prefix is the whole branch.
+
+PIXEL_VOL = 17  # a SENSOR_VOLUMES key (pixel)
+PASSIVE_VOL = 20  # not in SENSOR_VOLUMES -- never a hole, never a hit
 
 
 def _erows(records):
@@ -577,7 +583,7 @@ def _erows(records):
 
 
 def _estates(records):
-    cols = ["seed_id", "step_k", "state_theta", "n_holes", "state_qop"]
+    cols = ["seed_id", "step_k", "state_theta", "volume_id", "state_qop"]
     return pd.DataFrame(records, columns=cols)
 
 
@@ -589,9 +595,10 @@ def test_config_emulations_has_tight_and_fast_exact_values():
 
 def test_emulate_config_passing_branch():
     # 9 selected rows (meets tight nmeas_min=9), all low chi2, no holes
-    # (cutoff stays inf), pT = |1/1.0| * sin(pi/2) = 1.0 GeV > 0.4598 GeV.
+    # (every state has a matching selected cand row, so cutoff stays inf),
+    # pT = |1/1.0| * sin(pi/2) = 1.0 GeV > 0.4598 GeV.
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
-    states = _estates([(0, 0, HALF_PI, 0, 1.0), (0, 1, HALF_PI, 1, 1.0)])
+    states = _estates([(0, k, HALF_PI, PIXEL_VOL, 1.0) for k in range(9)])
     out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: True}
     assert dict(zip(out.seed_id, out.cutoff_step)) == {0: np.inf}
@@ -603,32 +610,30 @@ def test_emulate_config_fails_chi2_ceiling():
     cand = _erows(
         [(0, k, 100 + k, True, 1.0) for k in range(8)] + [(0, 8, 108, True, 16.5)]
     )
-    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    states = _estates([(0, k, HALF_PI, PIXEL_VOL, 1.0) for k in range(9)])
     out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
 
 def test_emulate_config_fails_nmeas_min():
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(5)])
-    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    states = _estates([(0, k, HALF_PI, PIXEL_VOL, 1.0) for k in range(5)])
     out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
 
 def test_emulate_config_trailing_holes_truncate_and_pass():
-    # 10 selected hits (steps 0-9), then 2 trailing holes (steps 10-11):
-    # n_holes crosses tight's max_holes=1 at step 11 -> cutoff_step=11,
-    # and the prefix (step_k < 11) keeps all 10 hits, well over
-    # nmeas_min=9. Matches ACTS branchStopper: the branch is stopped and
-    # its accepted prefix survives, it isn't discarded outright.
+    # 10 selected hits (steps 0-9), then 2 trailing sensor-volume states
+    # with no selected cand row (steps 10-11): the emulated-hole cumsum
+    # crosses tight's max_holes=1 at step 11 -> cutoff_step=11, and the
+    # prefix (step_k < 11) keeps all 10 hits, well over nmeas_min=9.
+    # Matches ACTS branchStopper: the branch is stopped and its accepted
+    # prefix survives, it isn't discarded outright.
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(10)])
     states = _estates(
-        [
-            (0, 0, HALF_PI, 0, 1.0),
-            (0, 9, HALF_PI, 0, 1.0),
-            (0, 10, HALF_PI, 1, 1.0),  # 1st hole: n_holes=1, still <= cap
-            (0, 11, HALF_PI, 2, 1.0),  # 2nd hole: n_holes=2 -> cutoff here
-        ]
+        [(0, k, HALF_PI, PIXEL_VOL, 1.0) for k in range(10)]
+        + [(0, 10, HALF_PI, PIXEL_VOL, 1.0)]  # hole #1: no selected cand row
+        + [(0, 11, HALF_PI, PIXEL_VOL, 1.0)]  # hole #2: cumsum=2 -> cutoff here
     )
     out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: True}
@@ -636,18 +641,21 @@ def test_emulate_config_trailing_holes_truncate_and_pass():
 
 
 def test_emulate_config_early_holes_truncate_and_fail_nmeas():
-    # Running n_holes hits 2 (> max_holes=1) at step 3 -> cutoff_step=3.
-    # Only 2 selected hits precede the cutoff; more hits follow step 3 but
-    # are truncated away, so the prefix's accepted-hit count (2) is well
-    # under nmeas_min=9 and the branch fails.
+    # Two sensor-volume states with no selected cand row at steps 2-3: the
+    # emulated-hole cumsum crosses max_holes=1 at step 3 -> cutoff_step=3.
+    # Only the 2 selected hits at steps 0-1 precede the cutoff; more hits
+    # follow step 3 but are truncated away, so the prefix's accepted-hit
+    # count (2) is well under nmeas_min=9 and the branch fails.
     cand = _erows(
         [(0, k, 100 + k, True, 1.0) for k in range(2)]  # steps 0-1, kept
         + [(0, k, 100 + k, True, 1.0) for k in range(4, 13)]  # steps 4-12, truncated
     )
     states = _estates(
         [
-            (0, 0, HALF_PI, 0, 1.0),
-            (0, 3, HALF_PI, 2, 1.0),  # n_holes=2 at step 3 -> cutoff here
+            (0, 0, HALF_PI, PIXEL_VOL, 1.0),
+            (0, 1, HALF_PI, PIXEL_VOL, 1.0),
+            (0, 2, HALF_PI, PIXEL_VOL, 1.0),  # hole #1: no selected cand row
+            (0, 3, HALF_PI, PIXEL_VOL, 1.0),  # hole #2: cumsum=2 -> cutoff here
         ]
     )
     out = emulate_config(cand, states, "tight")
@@ -655,17 +663,34 @@ def test_emulate_config_early_holes_truncate_and_fail_nmeas():
     assert dict(zip(out.seed_id, out.cutoff_step)) == {0: 3.0}
 
 
+def test_emulate_config_passive_volume_state_is_not_a_hole():
+    # A volume-20 (passive material) state with no selected cand row must
+    # NOT count as an emulated hole -- only tracker sensor volumes do. 9
+    # selected hits (nmeas_min met) with a passive crossing between steps
+    # 4 and 6; asserting cutoff_step stays inf (not just "under the cap")
+    # pins down that it isn't a hole at all.
+    hit_steps = [0, 1, 2, 3, 4, 6, 7, 8, 9]  # 9 hits, skipping step 5
+    cand = _erows([(0, k, 100 + k, True, 1.0) for k in hit_steps])
+    states = _estates(
+        [(0, k, HALF_PI, PIXEL_VOL, 1.0) for k in hit_steps]
+        + [(0, 5, HALF_PI, PASSIVE_VOL, 1.0)]  # passive crossing between hits
+    )
+    out = emulate_config(cand, states, "tight")
+    assert dict(zip(out.seed_id, out.cutoff_step)) == {0: np.inf}
+    assert dict(zip(out.seed_id, out.passes_emulation)) == {0: True}
+
+
 def test_emulate_config_fails_pt():
     # qop = 5.0 -> p = 0.2 GeV -> pT = 0.2 GeV, below tight's 0.4598 GeV.
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
-    states = _estates([(0, 0, HALF_PI, 0, 5.0)])
+    states = _estates([(0, 0, HALF_PI, PIXEL_VOL, 5.0)])
     out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
 
 def test_emulate_config_zero_selected_rows_fails():
     cand = _erows([(0, k, 100 + k, False, 1.0) for k in range(9)])
-    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    states = _estates([(0, 0, HALF_PI, PIXEL_VOL, 1.0)])
     out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
@@ -676,7 +701,7 @@ def test_emulate_config_fast_ceiling_stricter_than_tight():
     cand = _erows(
         [(0, k, 100 + k, True, 1.0) for k in range(8)] + [(0, 8, 108, True, 16.0)]
     )
-    states = _estates([(0, 0, HALF_PI, 0, 1.0)])
+    states = _estates([(0, k, HALF_PI, PIXEL_VOL, 1.0) for k in range(9)])
     tight = emulate_config(cand, states, "tight")
     fast = emulate_config(cand, states, "fast")
     assert dict(zip(tight.seed_id, tight.passes_emulation)) == {0: True}
@@ -691,7 +716,7 @@ def test_emulate_config_multi_branch_alignment():
     which a single-seed test cannot catch.
 
     seed 0: passes. seed 1: fails chi2. seed 2: early holes (cutoff at
-    step 2) truncate its prefix to too few hits, failing nmeas_min. seed
+    step 3) truncate its prefix to too few hits, failing nmeas_min. seed
     3: fails pT.
     """
 
@@ -706,7 +731,7 @@ def test_emulate_config_multi_branch_alignment():
     r3 = sel_rows(3, range(9))  # fails pT only (via states below)
     r0 = sel_rows(0, range(9))  # passes everything
     r2 = sel_rows(2, [0, 1])  # 2 early hits, kept in the prefix
-    r2_late = sel_rows(2, range(3, 12))  # more hits after the cutoff, truncated away
+    r2_late = sel_rows(2, range(4, 13))  # more hits after the cutoff, truncated away
 
     # Interleave in a non-ascending, non-seed-grouped order.
     interleaved = []
@@ -717,11 +742,12 @@ def test_emulate_config_multi_branch_alignment():
 
     states = _estates(
         [
-            (2, 0, HALF_PI, 0, 1.0),  # seed 2 first state (for pT)
-            (2, 2, HALF_PI, 2, 1.0),  # seed 2: n_holes=2 at step 2 -> cutoff
-            (0, 0, HALF_PI, 0, 1.0),  # seed 0: passes
-            (3, 0, HALF_PI, 0, 5.0),  # seed 3: qop=5 -> pT=0.2 GeV, fails
-            (1, 0, HALF_PI, 0, 1.0),  # seed 1: fine holes/pT; chi2 fails via cand
+            (2, 0, HALF_PI, PIXEL_VOL, 1.0),  # seed 2 first state (for pT)
+            (2, 2, HALF_PI, PIXEL_VOL, 1.0),  # seed 2 hole #1: no selected row
+            (2, 3, HALF_PI, PIXEL_VOL, 1.0),  # seed 2 hole #2: cumsum=2 -> cutoff
+            (0, 0, HALF_PI, PIXEL_VOL, 1.0),  # seed 0: passes
+            (3, 0, HALF_PI, PIXEL_VOL, 5.0),  # seed 3: qop=5 -> pT=0.2 GeV, fails
+            (1, 0, HALF_PI, PIXEL_VOL, 1.0),  # seed 1: fine holes/pT; chi2 via cand
         ]
     )
     out = emulate_config(cand, states, "tight")
@@ -734,7 +760,7 @@ def test_emulate_config_multi_branch_alignment():
     assert dict(zip(out.seed_id, out.cutoff_step)) == {
         0: np.inf,
         1: np.inf,
-        2: 2.0,
+        2: 3.0,
         3: np.inf,
     }
 
@@ -742,7 +768,7 @@ def test_emulate_config_multi_branch_alignment():
 def test_emulate_config_qop_zero_fails():
     # Explicit spec clause: qop == 0 must fail (not just non-finite pT).
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(9)])
-    states = _estates([(0, 0, HALF_PI, 0, 0.0)])
+    states = _estates([(0, 0, HALF_PI, PIXEL_VOL, 0.0)])
     out = emulate_config(cand, states, "tight")
     assert dict(zip(out.seed_id, out.passes_emulation)) == {0: False}
 
@@ -756,11 +782,11 @@ def test_emulate_config_prefix_filtering_drops_post_cutoff_rows():
     cand = _erows([(0, k, 100 + k, True, 1.0) for k in range(10)])
     states = _estates(
         [
-            (0, 0, HALF_PI, 0, 1.0),
-            (0, 5, HALF_PI, 0, 1.0),
-            (0, 9, HALF_PI, 0, 1.0),
-            (0, 10, HALF_PI, 1, 1.0),  # 1st hole: n_holes=1, still <= cap
-            (0, 11, HALF_PI, 2, 1.0),  # 2nd hole: n_holes=2 -> cutoff here
+            (0, 0, HALF_PI, PIXEL_VOL, 1.0),
+            (0, 5, HALF_PI, PIXEL_VOL, 1.0),
+            (0, 9, HALF_PI, PIXEL_VOL, 1.0),
+            (0, 10, HALF_PI, PIXEL_VOL, 1.0),  # hole #1: no selected cand row
+            (0, 11, HALF_PI, PIXEL_VOL, 1.0),  # hole #2: cumsum=2 -> cutoff here
         ]
     )
     emu = emulate_config(cand, states, "tight")
