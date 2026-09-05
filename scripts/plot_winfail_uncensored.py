@@ -25,16 +25,19 @@ from matplotlib.figure import Figure  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # One brief line: only the statistics needed to reconstruct the denominator.
+# The collection-config clause is the envelope by default; a non-empty
+# extra_footer (e.g. a regenerated tight/fast run) replaces it, so a figure
+# never carries two contradictory provenance statements.
+ENVELOPE_CLAUSE = "envelope: chi2 16.26/35.75, cap 5, terminal cuts off"
 FOOTER_WIN = (
-    "all surviving branches (pre-ambi, envelope: chi2 16.26/35.75, "
-    "cap 5, terminal cuts off) · majority defined · denom: majority "
-    "simhit on surface · majority pT > {pt} GeV · uncensored "
-    "(escaped = fail; incl. undigitized) · vol 20 excluded"
+    "all surviving branches (pre-ambi, " + ENVELOPE_CLAUSE + ") · majority "
+    "defined · denom: majority simhit on surface · majority pT > {pt} GeV · "
+    "uncensored (escaped = fail; incl. undigitized) · vol 20 excluded"
 )
 FOOTER_MOD = (
-    "all surviving branches (pre-ambi, envelope: chi2 16.26/35.75, "
-    "cap 5, terminal cuts off) · majority defined · majority pT > "
-    "{pt} GeV · fail = no majority simhit on surface · vol 20 excluded"
+    "all surviving branches (pre-ambi, " + ENVELOPE_CLAUSE + ") · majority "
+    "defined · majority pT > {pt} GeV · fail = no majority simhit on surface "
+    "· vol 20 excluded"
 )
 SENSOR_LABELS = ["Pixel", "Short strip", "Long strip"]
 OCC_LABELS = ["0-1", "2-4", "5-9", "10-19", "20+"]
@@ -134,6 +137,8 @@ def _footer(
     fig.tight_layout()
     text = template.format(pt=threshold_gev) + _branch_class_suffix(branch_class)
     if extra_footer:
+        # The tag names the collection config; drop the envelope clause.
+        text = text.replace(", " + ENVELOPE_CLAUSE, "")
         text += f" · {extra_footer}"
     wrapped = _wrap_footer(text)
     fig.text(
