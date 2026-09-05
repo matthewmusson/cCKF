@@ -112,19 +112,6 @@ class CckfMeasurementSelector {
     return m_gateInference->blob();
   }
 
-  /// Look up the raw gate logit for a source-link index accepted in the most
-  /// recent select() call. Returns std::nullopt if the index was not among
-  /// the accepted candidates (e.g., it was pruned, or select() was not called
-  /// with gateWeightsPath). The CckfBranchStopperWrapper uses this to
-  /// update the sum/min gate log-odds dynamic columns on the track.
-  std::optional<float> lastGateLogit(std::size_t sourceLinkIndex) const {
-    auto it = m_acceptedLogits.find(sourceLinkIndex);
-    if (it != m_acceptedLogits.end()) {
-      return it->second;
-    }
-    return std::nullopt;
-  }
-
   /// Drop-in replacement for MeasurementSelector::select().
   /// Same signature so it can be connected to TrackStateCreator's delegate.
   template <typename traj_t>
@@ -138,9 +125,6 @@ class CckfMeasurementSelector {
         typename std::vector<typename traj_t::TrackStateProxy>::iterator>>;
 
     auto t0 = std::chrono::steady_clock::now();
-
-    // Clear accepted-logit map from the previous surface's select() call.
-    m_acceptedLogits.clear();
 
     // cCKF never emits outliers -- see the passedCandidates == 0 branch below.
     isOutlier = false;
@@ -204,10 +188,10 @@ class CckfMeasurementSelector {
     const float log_n_window = std::log(std::max(n_window, 1.0f));
 
     // Score each candidate with the gate MLP.
-    // Raw logits are stored alongside calibrated scores so the branch stopper
-    // can read them via lastGateLogit() after measurement acceptance.
+    // (The sum/min gate log-odds dynamic columns are NOT fed from these
+    // logits: CckfBranchStopperWrapper derives them from the accepted hit's
+    // chi2 via cckf::chi2LogOdds, matching build_value_cache.py.)
     std::vector<float> scores(candidates.size(), -1.0f);
-    std::vector<float> rawLogits(candidates.size(), 0.0f);
     std::vector<float> chi2s(candidates.size(), 0.0f);
     // Per-candidate feature cache for diagnostic sampling of accepted hits.
     std::vector<std::array<float, 26>> featCache(candidates.size());
@@ -265,22 +249,20 @@ class CckfMeasurementSelector {
       }
       for (std::size_t k = 0; k < batchIdx.size(); ++k) {
         const std::uint32_t i = batchIdx[k];
-        rawLogits[i] = m_batchLogits[k];
         scores[i] = m_gateInference->calibrate(m_batchLogits[k], log_n_window);
       }
     }
 
     // Partition: candidates passing the gate threshold to the front.
-    // scores and rawLogits are kept in lockstep with candidates via the
-    // paired swap below, so scores[i]/rawLogits[i] always corresponds to
-    // candidates[i] after this loop.
+    // scores/chi2s/featCache are kept in lockstep with candidates via the
+    // paired swap below, so scores[i] always corresponds to candidates[i]
+    // after this loop.
     std::size_t passedCandidates = 0;
     for (std::size_t i = 0; i < candidates.size(); ++i) {
       if (scores[i] >= m_config.gateThreshold) {
         if (passedCandidates != i) {
           std::swap(candidates[passedCandidates], candidates[i]);
           std::swap(scores[passedCandidates], scores[i]);
-          std::swap(rawLogits[passedCandidates], rawLogits[i]);
           std::swap(chi2s[passedCandidates], chi2s[i]);
           std::swap(featCache[passedCandidates], featCache[i]);
         }
@@ -368,19 +350,7 @@ class CckfMeasurementSelector {
     }
     std::copy(reordered.begin(), reordered.end(), candidates.begin());
 
-    // Apply the same permutation to rawLogits for the accepted range.
-    std::vector<float> reorderedLogits;
-    reorderedLogits.reserve(passedCandidates);
-    for (std::size_t idx : order) {
-      reorderedLogits.push_back(rawLogits[idx]);
-    }
-
     std::size_t nKeep = std::min(m_config.maxCandidates, passedCandidates);
-
-    // Store logits for accepted candidates, keyed by source-link index.
-    for (std::size_t i = 0; i < nKeep; ++i) {
-      storeAcceptedLogit(candidates[i], reorderedLogits[i]);
-    }
 
     if (m_timers) {
       m_timers->measurement_selection.record(t0,
@@ -545,19 +515,6 @@ class CckfMeasurementSelector {
                             m_branchCtx, m_sensorProps);
   }
 
-  /// Store the raw logit for an accepted candidate, keyed by its
-  /// source-link index, so CckfBranchStopperWrapper can retrieve it.
-  template <typename TrackStateProxy>
-  void storeAcceptedLogit(const TrackStateProxy& ts, float logit) const {
-    if (ts.hasUncalibratedSourceLink()) {
-      const Acts::SourceLink sl = ts.getUncalibratedSourceLink();
-      const auto* isl = sl.template getPtr<ActsExamples::IndexSourceLink>();
-      if (isl != nullptr) {
-        m_acceptedLogits[isl->index()] = logit;
-      }
-    }
-  }
-
   // Batched-inference scratch, reused across select() calls (same
   // one-instance-per-thread contract as the MLP scratch buffers).
   mutable std::vector<float> m_batchRows;
@@ -571,12 +528,6 @@ class CckfMeasurementSelector {
   SensorProps m_sensorProps;
   const Acts::GeometryContext* m_geoCtx = nullptr;
   uint32_t m_seedIndex = 0;
-
-  /// Per-surface map from source-link index to the raw gate logit for
-  /// each accepted candidate. Cleared at the start of each select() call.
-  /// Mutable because select() is const (delegate requirement) but we need
-  /// to populate this for the branch stopper to read.
-  mutable std::unordered_map<std::size_t, float> m_acceptedLogits;
 };
 
 }  // namespace cckf

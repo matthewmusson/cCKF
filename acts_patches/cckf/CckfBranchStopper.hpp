@@ -26,8 +26,11 @@ namespace cckf {
 ///
 /// These live on the TRACK container (i.e. one value per branch, carried
 /// forward as the branch is extended/forked), not the track state
-/// container: `sum`/`min` accumulate the gate's raw logit across every step
-/// of the branch so far, `x0` accumulates path length in units of radiation
+/// container: `sum`/`min` accumulate the χ²-implied log-odds
+/// (cckf::chi2LogOdds) of the branch's ACCEPTED hits — not the gate MLP's
+/// raw logit, and with no contribution at hole or material states,
+/// matching scripts/build_value_cache.py — `x0` accumulates path length in
+/// units of radiation
 /// length, and `step` is the current CKF layer index. Something upstream of
 /// this class (the CKF actor / CckfMeasurementSelector wiring, out of scope
 /// for this header -- see Task 3 report) is responsible for registering
@@ -176,7 +179,13 @@ class CckfBranchStopper {
     // in this codebase and works uniformly whether TrackProxy is itself a
     // mutable- or const-flavored proxy instantiation.
     features[7] = kSumGateLogOddsAccessor(track);
-    features[8] = kMinGateLogOddsAccessor(track);
+    // min_gate_logodds is initialised to +inf and only updated once a hit
+    // is accepted. Training's ffill().fillna(0.0) reports 0.0 for states
+    // before the first accepted hit, so map the untouched +inf to 0.0.
+    // Unreachable while minMeasurementsBeforePrune >= 1, but this keeps the
+    // feature finite (and training-consistent) for any config.
+    const float minLogOdds = kMinGateLogOddsAccessor(track);
+    features[8] = std::isfinite(minLogOdds) ? minLogOdds : 0.0f;
     features[9] = kStepKAccessor(track);
     features[10] = kAccumulatedX0Accessor(track);
 

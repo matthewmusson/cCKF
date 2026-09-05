@@ -96,6 +96,50 @@ def test_chi2_log_odds_matches_definition_mid_range():
     np.testing.assert_allclose(features.chi2_log_odds(chi2), expected, rtol=1e-9)
 
 
+def test_chi2_log_odds_cpp_fixture_roundtrip():
+    """Regenerate the fixture the standalone C++ parity test reads.
+
+    ``tests/test_chi2_logodds.cpp`` checks that ``cckf::chi2LogOdds`` in
+    ``acts_patches/cckf/CckfFeatures.hpp`` (used by CckfBranchStopperWrapper
+    to fill sum/min_gate_logodds) matches this function up to float32
+    rounding. The fixture is checked in (like gate_test.bin) because the C++
+    test runs independently of pytest: (n, 2) float64 rows of
+    (chi2, expected_log_odds).
+    """
+    from pathlib import Path
+
+    chi2 = np.array(
+        [
+            -3.0,  # negative -> clamped to 0
+            0.0,
+            1e-8,
+            0.5,
+            1.0,
+            2.0,
+            5.0,
+            9.0,
+            15.0,
+            27.6,  # just below the Lambda clip boundary
+            27.63,  # right at -2*ln(1e-6)
+            50.0,
+            100.0,
+            1e4,
+            np.inf,  # hole-row convention: most-negative clipped value
+            np.nan,  # same
+        ],
+        dtype=np.float64,
+    )
+    expected = features.chi2_log_odds(chi2)
+    assert np.all(np.isfinite(expected))
+    # Both saturations are represented.
+    logit_clip = np.log(1e-6 / (1.0 - 1e-6))
+    np.testing.assert_allclose(expected[-1], logit_clip, rtol=1e-12)
+    np.testing.assert_allclose(expected[2], -logit_clip, rtol=1e-3)
+
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    np.stack([chi2, expected], axis=1).tofile(fixtures / "chi2_logodds_ref.bin")
+
+
 def test_build_gate_features_shape_and_dtype(synthetic_df):
     X = features.build_gate_features(synthetic_df)
     assert X.shape == (len(synthetic_df), 26)

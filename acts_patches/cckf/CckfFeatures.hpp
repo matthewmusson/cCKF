@@ -4,8 +4,27 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace cckf {
+
+/// χ²-implied log-odds, log(Λ/(1−Λ)) with Λ = exp(−χ²/2).
+///
+/// Mirrors cckf/features.py::chi2_log_odds exactly (same Λ clip of 1e-6):
+/// this is the per-hit quantity the value cache (vcache_v3) accumulates
+/// into sum_gate_logodds / min_gate_logodds, so the C++ side MUST use this
+/// and not the gate MLP's raw output logit. Non-finite or negative χ² is
+/// mapped the same way as the Python (non-finite → +inf → most-negative
+/// clipped value; negative → 0).
+inline float chi2LogOdds(float chi2) {
+  constexpr double kLambdaClip = 1e-6;
+  const double c = std::isfinite(chi2)
+                       ? std::max(static_cast<double>(chi2), 0.0)
+                       : std::numeric_limits<double>::infinity();
+  const double lam =
+      std::clamp(std::exp(-c / 2.0), kLambdaClip, 1.0 - kLambdaClip);
+  return static_cast<float>(std::log(lam / (1.0 - lam)));
+}
 
 /// Branch history context, set by the CKF actor before each select() call.
 ///

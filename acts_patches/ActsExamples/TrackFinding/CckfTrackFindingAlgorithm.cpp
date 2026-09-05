@@ -344,31 +344,40 @@ class FallbackMeasurementSelectorAdapter {
 // variable, but does not prevent mutation through the proxy because
 // TrackProxy::ReadOnly is false.)
 //
-// Column update policy:
-//   step_k:            +1 for every sensitive surface (measurement, hole,
-//                      or outlier). Updated here unconditionally.
-//   sum_gate_logodds:  For measurements, += raw gate logit from the
-//                      CckfMeasurementSelector (looked up by source-link
-//                      index via lastGateLogit()). For holes, += a
-//                      pessimistic default (kHoleLogitDefault = -5.0f,
-//                      matching the Python training code's treatment).
-//   min_gate_logodds:  min(current, logit) using the same source as above.
+// Column update policy — must match scripts/build_value_cache.py::
+// _state_features, which built vcache_v3 (the cache the deployed value
+// weights were trained on):
+//   step_k:            +1 for every branch-stopper call. Updated here
+//                      unconditionally. (Known residual mismatch vs
+//                      training's step/hole counting on vol-20 material
+//                      crossings — tracked separately, out of scope here.)
+//   sum_gate_logodds:  For measurement states, += chi2LogOdds(chi2_inc) of
+//                      the accepted hit. Training accumulates
+//                      features.chi2_log_odds over is_ckf_selected rows
+//                      only and fills every other step with 0.0 in the
+//                      cumsum, so hole and material states contribute
+//                      NOTHING here. (An earlier version added a -5
+//                      "hole logit" per non-measurement call; with ~8 holes
+//                      per branch that shifted this feature by ~-40
+//                      relative to training.)
+//   min_gate_logodds:  min(current, chi2LogOdds) at measurement states
+//                      only. Training forward-fills the running min over
+//                      accepted hits, i.e. the column simply persists
+//                      through holes — so leave it untouched there.
 //   accumulated_x0:    TODO — requires per-surface material thickness.
 //                      Left at initial value (0).
+//
+// The accumulated quantity is the χ²-implied log-odds (cckf::chi2LogOdds),
+// NOT the gate MLP's raw output logit: build_value_cache.py derives
+// gate_logodds from chi2_inc, never from the gate network.
 
 class CckfBranchStopperWrapper {
  public:
   using BranchStopperResult =
       Acts::CombinatorialKalmanFilterBranchStopperResult;
 
-  /// Pessimistic gate logit for holes (no measurement was selected).
-  /// This matches the chi2_log_odds treatment in the Python training code
-  /// for holes: a strongly negative logit indicating very low confidence.
-  static constexpr float kHoleLogitDefault = -5.0f;
-
-  explicit CckfBranchStopperWrapper(cckf::CckfBranchStopper* inner,
-                                    cckf::CckfMeasurementSelector* gate)
-      : m_inner(inner), m_gate(gate) {}
+  explicit CckfBranchStopperWrapper(cckf::CckfBranchStopper* inner)
+      : m_inner(inner) {}
 
   mutable std::size_t m_nStoppedBranches = 0;
 
@@ -376,35 +385,25 @@ class CckfBranchStopperWrapper {
       const TrackContainer::TrackProxy& track,
       const TrackContainer::TrackStateProxy& trackState) const {
     std::cerr << "DIAG branchStopper: nMeas=" << track.nMeasurements() << std::endl;
-    // Update step_k: count every sensitive surface (measurement, hole, or
-    // outlier). The CKF actor calls the branch stopper for each of these.
+    // Update step_k: +1 per branch-stopper call (measurement, hole, or
+    // material state — see class doc for the known counting caveat).
     kStepKWriter(track) += 1.0f;
 
-    // Update gate log-odds columns.
-    float logit = kHoleLogitDefault;
+    // Update gate log-odds columns — measurement states only; holes and
+    // material states leave both columns unchanged (see class doc: this
+    // mirrors build_value_cache.py's fillna(0.0) cumsum / ffill'd cummin).
+    // trackState.chi2() holds the accepted hit's incremental chi2: the
+    // selector writes the predicted-residual chi2 on the candidate, and the
+    // GainMatrixUpdater's filtered chi2 equals it by the standard Kalman
+    // identity. (Outlier states are included for completeness but cCKF's
+    // selector never emits them.)
     if (trackState.typeFlags().isMeasurement() ||
         trackState.typeFlags().isOutlier()) {
-      // Look up the raw gate logit from the most recent select() call.
-      if (m_gate != nullptr && trackState.hasUncalibratedSourceLink()) {
-        const Acts::SourceLink sl = trackState.getUncalibratedSourceLink();
-        const auto* isl =
-            sl.getPtr<ActsExamples::IndexSourceLink>();
-        if (isl != nullptr) {
-          auto maybeLogit = m_gate->lastGateLogit(isl->index());
-          if (maybeLogit.has_value()) {
-            logit = *maybeLogit;
-          }
-          // If not found (shouldn't happen for accepted candidates),
-          // fall through with the hole default.
-        }
+      const float logOdds = cckf::chi2LogOdds(trackState.chi2());
+      kSumGateLogOddsWriter(track) += logOdds;
+      if (logOdds < kMinGateLogOddsWriter(track)) {
+        kMinGateLogOddsWriter(track) = logOdds;
       }
-    }
-    // For holes, logit stays at kHoleLogitDefault.
-
-    kSumGateLogOddsWriter(track) += logit;
-    float currentMin = kMinGateLogOddsWriter(track);
-    if (logit < currentMin) {
-      kMinGateLogOddsWriter(track) = logit;
     }
 
     // TODO(task5-or-later): Update accumulated X0. Requires per-surface
@@ -433,7 +432,6 @@ class CckfBranchStopperWrapper {
       Acts::hashString(cckf::CckfColumns::kAccumulatedX0)};
 
   cckf::CckfBranchStopper* m_inner;
-  cckf::CckfMeasurementSelector* m_gate;
 };
 
 // ============================================================================
@@ -826,8 +824,7 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   }
 
   // ---- Wire up branch stopper ----
-  CckfBranchStopperWrapper cckfStopperWrapper(cckfStopper.get(),
-                                              cckfSelector.get());
+  CckfBranchStopperWrapper cckfStopperWrapper(cckfStopper.get());
   PassthroughBranchStopper passthroughStopper;
 
   using Extensions = Acts::CombinatorialKalmanFilterExtensions<TrackContainer>;
