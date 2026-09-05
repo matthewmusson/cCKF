@@ -2,9 +2,9 @@
 #SBATCH --job-name=stitch_t3
 #SBATCH --nodes=1
 #SBATCH --constraint=cpu
-#SBATCH --qos=debug
+#SBATCH --qos=regular
 #SBATCH --account=atlas
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=128
 #SBATCH --mem=0
 #
@@ -14,6 +14,12 @@
 # xargs does not abort the batch on a single worker's failure, so check each
 # event's stdout/stderr for SUFFIX_CHECK / "SUFFIX GATE FAILED" after the
 # job completes.
+#
+# Timing (measured on the event-4 unbounded dry run, nsig=10, single event):
+# classify ~278s, futures ~99s, past ~77s, tier2-recompute ~46s (nsig==10
+# only) -- roughly 450-500s/event serial. At 8-way parallelism, 32 events is
+# 4 sequential batches of 8, i.e. ~30-35 min of driver work alone; --qos=
+# regular / --time=02:00:00 leaves headroom over debug QOS's 30 min cap.
 #
 # Env parameters:
 #   NSIG      required. Rollout acceptance window passed to stitch_tier3.py

@@ -171,16 +171,99 @@ def gate(report: dict, tol: float) -> bool:
     return report["disagree_rate"] < tol
 
 
+def filter_valid_tier2(targets: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Drop tier-2 rows ``compute_value_targets`` flags as unusable.
+
+    Mirrors ``scripts/build_value_cache.py::process_event``'s
+    target-validity filter (same column names, same mask) applied just
+    before ``vstar_t2`` is exposed to any consumer: a NaN ``vstar_t2``
+    means a failed PID join (the majority particle had no simhit count),
+    and ``tier_invariant_violated`` means a surface revisit double-counted
+    ``maj_hit_on_surface`` badly enough to invert the ``vstar_t1 >=
+    vstar_t2`` invariant (see ``cckf.value_target`` module docstring,
+    "Known limitation"). Skipping this filter would let the truth-suffix
+    gate compare tier-3 against known-bad tier-2 rows: a violated row's
+    disagreement reflects a tier-2 artifact, not the diagonal-seeding bias
+    the gate exists to measure, and a NaN row would silently drop out of
+    ``disagree_rate``'s numerator while poisoning the mean/max/percentile
+    diagnostics with NaN.
+
+    Parameters
+    ----------
+    targets : pandas.DataFrame
+        Output of ``cckf.value_target.compute_value_targets`` (or any frame
+        carrying its ``vstar_t2`` and ``tier_invariant_violated`` columns).
+
+    Returns
+    -------
+    tuple of (pandas.DataFrame, int)
+        The filtered frame (index reset) and the number of dropped rows.
+    """
+    valid_target = targets["vstar_t2"].notna().to_numpy()
+    not_violated = ~targets["tier_invariant_violated"].to_numpy(dtype=bool)
+    keep = valid_target & not_violated
+    n_dropped = int(len(targets) - int(keep.sum()))
+    return targets.loc[keep].reset_index(drop=True), n_dropped
+
+
+def recompute_tier2_from_frames(
+    labeled: pd.DataFrame, simhits: pd.DataFrame
+) -> pd.DataFrame:
+    """Pure core: labeled candidate rows + simhits -> validated tier-2 targets.
+
+    No parquet/CSV I/O -- takes already-loaded frames so it is testable
+    with synthetic data. Mirrors
+    ``scripts/build_value_cache.py::process_event``'s call sequence from
+    its ``build_step_table`` call through the target-validity filter
+    (``process_event``'s "Required addition 1" block), which is exactly
+    the part of that function this driver needs to reproduce for the
+    truth-suffix gate -- the state-feature construction and final
+    flatten-to-array step that follow in ``process_event`` feed only the
+    training cache and are not needed here.
+
+    Parameters
+    ----------
+    labeled : pandas.DataFrame
+        Candidate rows with ``seed_id``, ``branch_id``, ``step_k``,
+        ``cand_hit_id``, ``is_ckf_selected``, ``majority_true_hit_on_surface``,
+        ``branch_majority_pid``, ``majority_undefined``, and
+        ``label_same_particle`` already attached (the I/O wrapper attaches
+        it via ``cckf.labels.derive_labels``, a ``pyarrow.Table`` operation
+        kept out of this pure core).
+    simhits : pandas.DataFrame
+        Output of ``expansion.load_simhits`` (needs ``particle_id``).
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``seed_id``, ``step_k``, ``vstar_t2`` -- one row per valid state,
+        with NaN-target and ``tier_invariant_violated`` rows dropped (see
+        :func:`filter_valid_tier2`).
+    """
+    df = labeled.loc[~labeled["majority_undefined"].astype(bool)].reset_index(drop=True)
+    step = value_target.build_step_table(df)
+    counts = value_target.particle_simhit_counts(simhits)
+    targets = value_target.compute_value_targets(step, counts)
+    targets, n_dropped = filter_valid_tier2(targets)
+    if n_dropped:
+        print(
+            f"recompute_tier2_from_frames: dropped {n_dropped:,} tier-2 "
+            "states (NaN target from a failed PID join, or a tier-invariant "
+            "violation)",
+            flush=True,
+        )
+    return targets[["seed_id", "step_k", "vstar_t2"]]
+
+
 def _recompute_tier2(parquet_path: str, csv_dir: str, event_id: int) -> pd.DataFrame:
-    """Recompute tier-2 V^{pi-dagger} targets straight from the parquet.
+    """I/O wrapper around :func:`recompute_tier2_from_frames`.
 
     The persisted tier-2 value cache
     (``scripts/build_value_cache.py::process_event``) drops ``seed_id`` at
     its final flatten-to-array step, so it cannot be joined back to
-    ``(seed_id, step_k)`` for the truth-suffix check. This mirrors that
-    function's call sequence up through ``value_target.compute_value_targets``
-    (its lines ~148-282), omitting only the state-feature construction and
-    array flattening that feed the training cache, not this comparison.
+    ``(seed_id, step_k)`` for the truth-suffix check. This reads the same
+    columns and attaches the same label column that function does, then
+    hands off to the pure core.
 
     Parameters
     ----------
@@ -195,10 +278,8 @@ def _recompute_tier2(parquet_path: str, csv_dir: str, event_id: int) -> pd.DataF
     Returns
     -------
     pandas.DataFrame
-        One row per state with ``seed_id``, ``step_k``, ``vstar_t2`` --
-        keyed exactly as ``cckf.tier3_stitch.truth_suffix_check`` expects
-        its ``tier2_targets`` argument (``seed_id == branch_id`` on this
-        data, so no separate branch_id column is needed downstream).
+        See :func:`recompute_tier2_from_frames`. ``seed_id == branch_id``
+        on this data, so no separate branch_id column is needed downstream.
     """
     from expansion import load_simhits
 
@@ -206,12 +287,44 @@ def _recompute_tier2(parquet_path: str, csv_dir: str, event_id: int) -> pd.DataF
     derived = lab.derive_labels(table)
     df = table.to_pandas()
     df["label_same_particle"] = derived["label_same_particle"]
-    df = df.loc[~df["majority_undefined"].astype(bool)].reset_index(drop=True)
+    simhits = load_simhits(csv_dir, event_id)
+    return recompute_tier2_from_frames(df, simhits)
 
-    step = value_target.build_step_table(df)
-    counts = value_target.particle_simhit_counts(load_simhits(csv_dir, event_id))
-    targets = value_target.compute_value_targets(step, counts)
-    return targets[["seed_id", "step_k", "vstar_t2"]]
+
+def filter_majority_defined(states: pd.DataFrame, defined_seeds) -> tuple:
+    """Drop classified states whose branch has an undefined majority particle.
+
+    The rollout worklist (``cckf.tier3_walker.emit_worklist``) deliberately
+    excludes majority-undefined branches -- they can never match any hit
+    under pi-dagger -- so those branches have no rollout and no hits-file
+    entry. ``cckf.tier3_walker.classify_event`` classifies every state
+    regardless of majority definedness and does not itself carry a
+    ``majority_undefined`` column, so calling ``compose_targets`` on the
+    unfiltered frame makes every majority-undefined branch's anchor state
+    look like a genuinely missing rollout -- observed on event 4 (unbounded
+    hits, nsig=10): 1,534,557 states / 1,534,557 branches dropped as
+    "missing rollout", dwarfing the ~187 states behind the real rollout
+    losses. Filtering here first keeps ``compose_targets``'s own counter
+    meaningful.
+
+    Parameters
+    ----------
+    states : pandas.DataFrame
+        ``cckf.tier3_walker.classify_event`` output; needs ``seed_id``.
+    defined_seeds : set of int (or any container supporting ``.isin``)
+        seed_ids with a defined branch majority -- e.g.
+        ``cckf.tier3_inputs.past_counts``'s output seed_id column, which
+        already excludes majority-undefined branches by construction.
+
+    Returns
+    -------
+    tuple of (pandas.DataFrame, int)
+        The filtered frame (index reset) and the number of distinct
+        excluded seed_ids (branches, not states).
+    """
+    keep = states["seed_id"].isin(defined_seeds)
+    n_excluded_branches = int(states.loc[~keep, "seed_id"].nunique())
+    return states.loc[keep].reset_index(drop=True), n_excluded_branches
 
 
 def main() -> None:
@@ -259,6 +372,14 @@ def main() -> None:
 
     past = tier3_inputs.past_counts(p["parquet"])
     _stage("past")
+
+    states, n_excluded = filter_majority_defined(states, past["seed_id"].unique())
+    if n_excluded:
+        print(
+            f"event {args.event} nsig {nsig_tag}: excluded {n_excluded:,} "
+            "majority-undefined branches before compose_targets",
+            flush=True,
+        )
 
     csv_dir = stage1_map.csv_dir_for(args.event)
     n_total = tier3_inputs.n_total_true(p["parquet"], csv_dir, args.event)

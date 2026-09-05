@@ -11,9 +11,17 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from stitch_tier3 import attach_window, gate, paths
+from stitch_tier3 import (
+    attach_window,
+    filter_majority_defined,
+    filter_valid_tier2,
+    gate,
+    paths,
+    recompute_tier2_from_frames,
+)
 
 
 def test_attach_window_adds_constant_column():
@@ -90,3 +98,185 @@ def test_paths_worklist_independent_of_nsig():
 def test_paths_fractional_nsig_falls_back_to_str():
     p = paths(0, 3.5, "/S", None)
     assert p["hits_dir"] == "/S/tier3_nsig3.5/hits"
+
+
+# --- filter_valid_tier2 ------------------------------------------------
+
+
+def test_filter_valid_tier2_drops_nan_target_row():
+    targets = pd.DataFrame(
+        {
+            "seed_id": [0, 1],
+            "step_k": [0, 0],
+            "vstar_t2": [0.5, np.nan],
+            "tier_invariant_violated": [False, False],
+        }
+    )
+    out, n_dropped = filter_valid_tier2(targets)
+    assert n_dropped == 1
+    assert out["seed_id"].tolist() == [0]
+
+
+def test_filter_valid_tier2_drops_violated_row():
+    targets = pd.DataFrame(
+        {
+            "seed_id": [0, 1],
+            "step_k": [0, 0],
+            "vstar_t2": [0.5, 0.9],
+            "tier_invariant_violated": [False, True],
+        }
+    )
+    out, n_dropped = filter_valid_tier2(targets)
+    assert n_dropped == 1
+    assert out["seed_id"].tolist() == [0]
+
+
+def test_filter_valid_tier2_keeps_valid_rows_and_counts_zero():
+    targets = pd.DataFrame(
+        {
+            "seed_id": [0, 1],
+            "step_k": [0, 0],
+            "vstar_t2": [0.5, 0.9],
+            "tier_invariant_violated": [False, False],
+        }
+    )
+    out, n_dropped = filter_valid_tier2(targets)
+    assert n_dropped == 0
+    assert len(out) == 2
+
+
+# --- recompute_tier2_from_frames ----------------------------------------
+
+_TIER2_COLS = [
+    "seed_id",
+    "branch_id",
+    "step_k",
+    "cand_hit_id",
+    "is_ckf_selected",
+    "majority_true_hit_on_surface",
+    "branch_majority_pid",
+    "majority_undefined",
+    "label_same_particle",
+]
+
+
+def _tier2_row(**kw) -> dict:
+    row = {
+        "seed_id": 0,
+        "branch_id": 0,
+        "step_k": 0,
+        "cand_hit_id": -1,
+        "is_ckf_selected": False,
+        "majority_true_hit_on_surface": False,
+        "branch_majority_pid": 0,
+        "majority_undefined": False,
+        "label_same_particle": 0,
+    }
+    row.update(kw)
+    return row
+
+
+def test_recompute_tier2_drops_nan_target_and_violated_keeps_valid():
+    # seed 0 (pid 1, N_total=1): single accepted correct hit -> vstar_t2 = 1.0
+    # seed 1 (pid 99, no simhits at all): NaN target -> dropped
+    # seed 2 (pid 2, N_total=1): two holes both flagged
+    # majority_true_hit_on_surface=True (simulated surface revisit) ->
+    # step 0 is tier-invariant-violated (v1=0 < v2=1) and dropped; step 1
+    # is not violated (v1=v2=0) and survives.
+    rows = [
+        _tier2_row(
+            seed_id=0,
+            branch_id=0,
+            cand_hit_id=10,
+            is_ckf_selected=True,
+            majority_true_hit_on_surface=True,
+            branch_majority_pid=1,
+            label_same_particle=1,
+        ),
+        _tier2_row(
+            seed_id=1,
+            branch_id=1,
+            cand_hit_id=20,
+            is_ckf_selected=True,
+            majority_true_hit_on_surface=True,
+            branch_majority_pid=99,
+            label_same_particle=1,
+        ),
+        _tier2_row(
+            seed_id=2,
+            branch_id=2,
+            step_k=0,
+            majority_true_hit_on_surface=True,
+            branch_majority_pid=2,
+        ),
+        _tier2_row(
+            seed_id=2,
+            branch_id=2,
+            step_k=1,
+            majority_true_hit_on_surface=True,
+            branch_majority_pid=2,
+        ),
+    ]
+    labeled = pd.DataFrame(rows)[_TIER2_COLS]
+    simhits = pd.DataFrame({"particle_id": [1, 2]})  # pid 99 absent -> N_total NaN
+
+    out = recompute_tier2_from_frames(labeled, simhits)
+
+    assert set(zip(out["seed_id"], out["step_k"])) == {(0, 0), (2, 1)}
+    assert out.loc[out["seed_id"] == 0, "vstar_t2"].iloc[0] == pytest.approx(1.0)
+    assert out.loc[out["seed_id"] == 2, "vstar_t2"].iloc[0] == pytest.approx(0.0)
+    # neither the NaN-target seed (1) nor the violated (seed 2, step 0) row
+    # survive.
+    assert 1 not in set(out["seed_id"])
+    assert (2, 0) not in set(zip(out["seed_id"], out["step_k"]))
+
+
+def test_recompute_tier2_excludes_majority_undefined_branches():
+    rows = [
+        _tier2_row(
+            seed_id=0,
+            branch_id=0,
+            cand_hit_id=10,
+            is_ckf_selected=True,
+            majority_true_hit_on_surface=True,
+            branch_majority_pid=1,
+            label_same_particle=1,
+        ),
+        _tier2_row(
+            seed_id=1,
+            branch_id=1,
+            branch_majority_pid=-1,
+            majority_undefined=True,
+        ),
+    ]
+    labeled = pd.DataFrame(rows)[_TIER2_COLS]
+    simhits = pd.DataFrame({"particle_id": [1]})
+
+    out = recompute_tier2_from_frames(labeled, simhits)
+    assert set(out["seed_id"]) == {0}
+
+
+# --- filter_majority_defined ---------------------------------------------
+
+
+def test_filter_majority_defined_drops_undefined_branches():
+    states = pd.DataFrame(
+        {
+            "seed_id": [0, 0, 1, 2],
+            "step_k": [0, 1, 0, 0],
+            "state_class": ["tip", "tip", "tip", "tip"],
+        }
+    )
+    # only seeds 0 and 2 have a defined majority (e.g. past_counts' seed set)
+    defined_seeds = [0, 2]
+    out, n_excluded = filter_majority_defined(states, defined_seeds)
+    assert n_excluded == 1  # seed 1
+    assert set(out["seed_id"]) == {0, 2}
+    assert len(out) == 3  # both seed-0 rows plus the seed-2 row
+
+
+def test_filter_majority_defined_no_op_when_all_defined():
+    states = pd.DataFrame({"seed_id": [0, 1], "step_k": [0, 0]})
+    out, n_excluded = filter_majority_defined(states, [0, 1])
+    assert n_excluded == 0
+    assert len(out) == 2
