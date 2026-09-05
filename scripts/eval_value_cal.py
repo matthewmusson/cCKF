@@ -13,6 +13,12 @@ Usage:
     python scripts/eval_value_cal.py \
         --model .../value_model.pt --cal-cache .../vcache_v3/cal \
         --out-dir .../models_v3/value_t2_maj/calibration
+
+``--window-nsigma N`` (window-conditioned tier-3 value plan, Task 7)
+restricts the audit to rows whose 12th feature, ``window_nsigma``, equals
+``N`` -- for reporting ECE/reliability per rollout window on a windowed
+(12-feature) cal cache. It raises if the cache has no ``window_nsigma``
+feature (an un-windowed 11-feature cache) or if no row matches ``N``.
 """
 
 from __future__ import annotations
@@ -43,12 +49,76 @@ def load_value_split(d: Path) -> dict:
     }
 
 
+def filter_to_window(split: dict, window_nsigma: float) -> dict:
+    """Restrict a loaded value split to rows whose ``window_nsigma`` == value.
+
+    Window-conditioned tier-3 value plan, Task 7. ``split["meta"]
+    ["feature_names"]`` must contain ``"window_nsigma"`` (i.e. this is a
+    12-feature windowed cache); an 11-feature Tier-2 cache has no such column
+    and is a real usage error, not a silent no-op.
+
+    Parameters
+    ----------
+    split : dict
+        As returned by :func:`load_value_split` -- ``X``, ``y``, ``meta``.
+    window_nsigma : float
+        The rollout acceptance window to keep, compared with
+        :func:`numpy.isclose` (the cache builder writes it as an exact
+        ``float32`` broadcast of the CLI's own ``--window-nsigma``, but
+        float round-trip is never assumed exact by this comparison).
+
+    Returns
+    -------
+    dict
+        ``X`` and ``y`` restricted to the matching rows; ``meta`` unchanged
+        (still describes the full, unfiltered cache).
+
+    Raises
+    ------
+    ValueError
+        If ``feature_names`` has no ``window_nsigma`` column, or no row
+        matches ``window_nsigma``.
+    """
+    feature_names = split["meta"]["feature_names"]
+    if "window_nsigma" not in feature_names:
+        raise ValueError(
+            "--window-nsigma requires a windowed (12-feature) cal cache "
+            f"with 'window_nsigma' in feature_names; got feature_names="
+            f"{feature_names}"
+        )
+    idx = feature_names.index("window_nsigma")
+    X = np.asarray(split["X"])
+    mask = np.isclose(X[:, idx], window_nsigma)
+    n_kept = int(mask.sum())
+    if n_kept == 0:
+        present = sorted(set(np.unique(X[:, idx]).tolist()))
+        raise ValueError(
+            f"no rows with window_nsigma == {window_nsigma} "
+            f"(values present in cache: {present})"
+        )
+    return {
+        "X": X[mask],
+        "y": np.asarray(split["y"])[mask],
+        "meta": split["meta"],
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True)
     ap.add_argument("--cal-cache", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument(
+        "--window-nsigma",
+        type=float,
+        default=None,
+        help=(
+            "Restrict to rows whose window_nsigma (the 12th feature) equals "
+            "this value, for per-window reliability on a windowed cal "
+            "cache. Errors if the cache has no window_nsigma feature."
+        ),
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -62,6 +132,9 @@ def main() -> None:
     model.eval()
 
     split = load_value_split(Path(args.cal_cache))
+    if args.window_nsigma is not None:
+        split = filter_to_window(split, args.window_nsigma)
+        print(f"--window-nsigma {args.window_nsigma}: {len(split['y']):,} rows kept")
     mu = np.asarray(ckpt["mu"], dtype=np.float32)
     sigma = np.asarray(ckpt["sigma"], dtype=np.float32)
     sigma = np.where(sigma > 1e-30, sigma, 1.0).astype(np.float32)
@@ -112,6 +185,7 @@ def main() -> None:
         "excess_bce": bce - entropy_floor,
         "ece": float(ece),
         "mce": float(mce),
+        "window_nsigma": args.window_nsigma,
     }
     (out_dir / "value_cal_audit.json").write_text(json.dumps(audit, indent=2))
     print(json.dumps(audit, indent=2))
@@ -124,7 +198,12 @@ def main() -> None:
     sc = ax.scatter(mp, ob, s=np.clip(np.sqrt(ct), 4, 60), c="tab:blue")
     ax.set_xlabel("mean predicted V")
     ax.set_ylabel("mean observed target")
-    ax.set_title(f"V_phi reliability (cal split)  ECE={audit['ece']:.4f}")
+    window_suffix = (
+        f", nsig={args.window_nsigma}" if args.window_nsigma is not None else ""
+    )
+    ax.set_title(
+        f"V_phi reliability (cal split{window_suffix})  ECE={audit['ece']:.4f}"
+    )
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_dir / "value_reliability_cal.png", dpi=150)

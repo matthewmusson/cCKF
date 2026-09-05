@@ -52,7 +52,14 @@ def export(checkpoint_path, standardization_path, calibration_path,
         assert n_hidden == 128, f"Gate expects 128 hidden, got {n_hidden}"
         assert n_layers == 3, f"Gate expects 3 hidden layers, got {n_layers}"
     elif model_type == "value":
-        assert n_features == 11, f"Value expects 11 features, got {n_features}"
+        # 11 = Tier-2 VALUE_FEATURES; 12 = window-conditioned Tier-3
+        # VALUE_FEATURES_WINDOWED (window-conditioned tier-3 value plan,
+        # Task 7). The blob header carries input_dim, so no format change is
+        # needed for the extra feature -- only this width check relaxes.
+        assert n_features in (11, 12), (
+            f"Value expects 11 (Tier 2) or 12 (windowed Tier 3) features, "
+            f"got {n_features}"
+        )
         assert n_hidden == 128, f"Value expects 128 hidden, got {n_hidden}"
         assert n_layers == 2, f"Value expects 2 hidden layers, got {n_layers}"
 

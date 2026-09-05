@@ -6,6 +6,24 @@ Usage
         --train-cache /data/cache/value/train \\
         --val-cache /data/cache/value/val \\
         --out-dir /data/models/value_v0 --wandb-project cckf-value
+
+Cache layouts
+-------------
+``--train-cache``/``--val-cache`` accept either a flat cache directory
+(``X.f32``/``y.f32``/``aux.f32``/``meta.json``, optionally ``norm_stats.npz``
+-- today's un-windowed Tier-2 layout) or a parent directory holding one
+``nsig*/`` subdirectory per rollout window (window-conditioned Tier-3 value
+plan, Task 6's windowed layout, e.g. ``.../train/nsig3/``,
+``.../train/nsig5/``, ``.../train/nsig10/``). In the second case the subdirs'
+``X``/``y``/``aux`` are concatenated into one training set -- the same state
+appears once per window with a different 12th feature (``window_nsigma``) and
+a different soft target, which is the intended design (see
+:data:`cckf.features.VALUE_FEATURES_WINDOWED`). The model's input width and
+feature order come from the cache's own ``meta.json`` (``n_features``,
+``feature_names``), not a hardcoded constant, so this script trains an
+11-feature (Tier 2) or 12-feature (windowed Tier 3) value function
+identically. The training recipe itself (loss, optimiser, epochs, early
+stopping, splits) is unchanged and untouched by any of this.
 """
 
 from __future__ import annotations
@@ -20,6 +38,7 @@ from sklearn.metrics import roc_auc_score
 
 from cckf import features as feat
 from cckf import models, train
+from cckf.cache import compute_norm_stats
 
 #: spec §3.8 expectations
 RED_FLAGS = {"train_bce": 0.20, "val_bce": 0.25, "auc_roc_min": 0.90}
@@ -43,6 +62,113 @@ def _load(cache_dir: str) -> dict:
         "aux": np.memmap(d / "aux.f32", dtype=np.float32, mode="r", shape=(n, 3)),
         "meta": meta,
     }
+
+
+def discover_cache_dirs(cache_dir: str) -> list[Path]:
+    """Resolve one ``--*-cache`` argument to a list of leaf cache directories.
+
+    A leaf cache directory is one with its own ``meta.json`` directly inside
+    it. ``cache_dir`` is either such a directory itself (today's flat
+    layout), or a parent directory holding one or more ``nsig*/`` leaf
+    directories (Task 6's windowed layout). The returned list is sorted for
+    deterministic concatenation order.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``cache_dir`` is neither -- no ``meta.json`` in it, and no
+        ``nsig*/meta.json`` subdirectory either.
+    """
+    d = Path(cache_dir)
+    if (d / "meta.json").exists():
+        return [d]
+    subdirs = sorted(p for p in d.glob("nsig*") if (p / "meta.json").exists())
+    if not subdirs:
+        raise FileNotFoundError(
+            f"{d} is neither a flat value cache (no meta.json found) nor a "
+            "windowed parent directory (no nsig*/meta.json subdirs found)"
+        )
+    return subdirs
+
+
+def load_value_cache(cache_dir: str) -> dict:
+    """Load one ``--*-cache`` argument, concatenating windowed subdirs.
+
+    Delegates to :func:`discover_cache_dirs` to find the leaf directories,
+    then :func:`_load`\\ s each. A single leaf directory is returned as-is
+    (``X``/``aux`` stay memmapped, as before). Multiple leaf directories
+    (a windowed parent) are concatenated into real in-memory arrays -- the
+    training set genuinely is their union, one row per ``(state, window)``
+    pair, so there is no way to preserve memmapping across the join.
+
+    Returns
+    -------
+    dict
+        ``X``, ``y``, ``aux``, ``meta`` (with ``n_rows``, ``n_features``,
+        ``feature_names`` reflecting the concatenation), and ``cache_dirs``
+        (the sorted list of leaf directories this was built from -- used by
+        :func:`get_norm_stats` to decide whether a single ``norm_stats.npz``
+        applies).
+
+    Raises
+    ------
+    ValueError
+        If the leaf directories disagree on ``n_features`` or
+        ``feature_names`` -- concatenating columns that do not mean the same
+        thing would silently corrupt training.
+    """
+    dirs = discover_cache_dirs(cache_dir)
+    parts = [_load(str(d)) for d in dirs]
+
+    n_features = parts[0]["meta"]["n_features"]
+    feature_names = parts[0]["meta"]["feature_names"]
+    for d, p in zip(dirs[1:], parts[1:]):
+        if p["meta"]["n_features"] != n_features:
+            raise ValueError(
+                f"cache subdir n_features mismatch: {dirs[0]} has "
+                f"{n_features}, {d} has {p['meta']['n_features']}"
+            )
+        if p["meta"]["feature_names"] != feature_names:
+            raise ValueError(
+                f"cache subdir feature_names mismatch: {dirs[0]} has "
+                f"{feature_names}, {d} has {p['meta']['feature_names']}"
+            )
+
+    if len(parts) == 1:
+        return {**parts[0], "cache_dirs": dirs}
+
+    X = np.concatenate([np.asarray(p["X"]) for p in parts], axis=0)
+    y = np.concatenate([p["y"] for p in parts], axis=0)
+    aux = np.concatenate([np.asarray(p["aux"]) for p in parts], axis=0)
+    meta = {
+        "n_rows": int(len(y)),
+        "n_features": n_features,
+        "feature_names": feature_names,
+        "concatenated_from": [str(d) for d in dirs],
+    }
+    return {"X": X, "y": y, "aux": aux, "meta": meta, "cache_dirs": dirs}
+
+
+def get_norm_stats(tr: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Standardisation stats for a cache loaded by :func:`load_value_cache`.
+
+    A single leaf cache directory carries its own ``norm_stats.npz``, fit
+    once at cache-build time on exactly that data -- used verbatim. A
+    concatenated windowed cache (multiple ``nsig*/`` subdirs) has no single
+    ``norm_stats.npz`` describing the concatenation: each subdir's own file
+    was fit on that subdir's window slice alone. Rather than picking one
+    subdir's stats (which would silently privilege whichever window happens
+    to sort first) or combining several ``(mu, sigma)`` pairs after the fact,
+    this recomputes mu/sigma directly over the concatenated ``X`` -- using
+    :func:`cckf.cache.compute_norm_stats` with the same
+    :data:`cckf.features.NO_STANDARDIZE` skip-list the cache builder itself
+    uses, so the windowed run is standardised against the population it
+    actually trains on.
+    """
+    if len(tr["cache_dirs"]) == 1:
+        stats = np.load(Path(tr["cache_dirs"][0]) / "norm_stats.npz", allow_pickle=True)
+        return stats["mu"], stats["sigma"]
+    return compute_norm_stats(tr["X"], feat.NO_STANDARDIZE, tr["meta"]["feature_names"])
 
 
 def main() -> None:
@@ -69,9 +195,20 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tr, va = _load(args.train_cache), _load(args.val_cache)
-    stats = np.load(Path(args.train_cache) / "norm_stats.npz", allow_pickle=True)
-    mu, sigma = stats["mu"], stats["sigma"]
+    tr, va = load_value_cache(args.train_cache), load_value_cache(args.val_cache)
+    n_features = tr["meta"]["n_features"]
+    feature_names = tr["meta"]["feature_names"]
+    if (
+        va["meta"]["n_features"] != n_features
+        or va["meta"]["feature_names"] != feature_names
+    ):
+        raise ValueError(
+            "train/val cache feature schema mismatch: train has "
+            f"n_features={n_features}, feature_names={feature_names}; val has "
+            f"n_features={va['meta']['n_features']}, "
+            f"feature_names={va['meta']['feature_names']}"
+        )
+    mu, sigma = get_norm_stats(tr)
 
     # Labels are bimodal: most branches clearly succeed or clearly fail. The
     # marginal band is where the decision actually matters, so it can be
@@ -110,9 +247,7 @@ def main() -> None:
             config={**vars(args), "n_train_rows": len(y_train)},
         )
 
-    model = models.ValueMLP(
-        n_features=len(feat.VALUE_FEATURES), width=args.width, depth=args.depth
-    )
+    model = models.ValueMLP(n_features=n_features, width=args.width, depth=args.depth)
     print(f"parameters: {models.count_parameters(model):,}")
     result = train.train_model(model, X_train, y_train, X_val, y_val, config, wandb_run)
 
@@ -156,10 +291,10 @@ def main() -> None:
     torch.save(
         {
             "state_dict": result["best_state"],
-            "n_features": len(feat.VALUE_FEATURES),
+            "n_features": n_features,
             "width": args.width,
             "depth": args.depth,
-            "feature_names": list(feat.VALUE_FEATURES),
+            "feature_names": list(feature_names),
             "mu": mu,
             "sigma": sigma,
         },

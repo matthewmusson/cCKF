@@ -14,11 +14,12 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from cckf.models import GateMLP
+from cckf.models import GateMLP, ValueMLP
 from scripts.export_weights import export
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -78,6 +79,52 @@ def test_roundtrip():
             FIXTURES_DIR / "gate_test_expected.bin")
 
         print("PASS")
+
+
+def _export_value_model(tmp: str, n_features: int) -> Path:
+    """Export a tiny ValueMLP with the given input width, model_type='value'."""
+    torch.manual_seed(0)
+    model = ValueMLP(n_features=n_features, width=128, depth=2)
+    model.eval()
+
+    ckpt_path = Path(tmp) / "value_model.pt"
+    torch.save(model.state_dict(), ckpt_path)
+
+    std_path = Path(tmp) / "std.npz"
+    np.savez(
+        std_path,
+        mean=np.zeros(n_features, dtype=np.float32),
+        std=np.ones(n_features, dtype=np.float32),
+    )
+
+    blob_path = Path(tmp) / "value.bin"
+    export(str(ckpt_path), str(std_path), "identity", str(blob_path), "value")
+    return blob_path
+
+
+@pytest.mark.parametrize("n_features", [11, 12])
+def test_value_export_accepts_tier2_and_windowed_tier3_widths(tmp_path, n_features):
+    """Window-conditioned tier-3 value plan, Task 7: the exporter's
+    ``n_features == 11`` assert must relax to accept the windowed 12-feature
+    value function too, since the blob header already carries ``input_dim``
+    and needs no format change."""
+    blob_path = _export_value_model(str(tmp_path), n_features)
+
+    with open(blob_path, "rb") as f:
+        assert f.read(4) == b"CCKF"
+        version, n_feat, n_hid, n_layers = struct.unpack("<IIII", f.read(16))
+        assert version == 1
+        assert n_feat == n_features
+        assert n_hid == 128
+        assert n_layers == 2
+
+
+def test_value_export_rejects_unexpected_width(tmp_path):
+    """A value checkpoint with neither 11 nor 12 inputs is a real error
+    (wrong feature vector, not a new deliberate width) and must still fail
+    loudly rather than being silently accepted."""
+    with pytest.raises(AssertionError):
+        _export_value_model(str(tmp_path), 13)
 
 
 if __name__ == "__main__":
