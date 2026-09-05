@@ -53,20 +53,51 @@ Three facts the later tasks must not guess. Record results in this file.
 **Files:**
 - Modify: this file (fill the "Recon results" block)
 
-- [ ] **Step 1: Locate the value trainer used for the current v3 weights** - `grep -rn "value" modal_train.py cckf/train.py scripts/*.py | grep -i "train"` locally, and on NERSC `ls $SCRATCH/cckf/ | grep -i train` + `sacct -u mussonm -S 2026-08-26 -E 2026-08-29 -X -n -o JobName%20 | sort -u` to identify the sbatch/entry that produced the deployed value weights (the tg_* training jobs). Record: entry script, config/hyperparams file, output layout, and the exact command to launch one training run.
+- [x] **Step 1: Locate the value trainer used for the current v3 weights** - `grep -rn "value" modal_train.py cckf/train.py scripts/*.py | grep -i "train"` locally, and on NERSC `ls $SCRATCH/cckf/ | grep -i train` + `sacct -u mussonm -S 2026-08-26 -E 2026-08-29 -X -n -o JobName%20 | sort -u` to identify the sbatch/entry that produced the deployed value weights (the tg_* training jobs). Record: entry script, config/hyperparams file, output layout, and the exact command to launch one training run.
 
-- [ ] **Step 2: Record tier-2's N_total_true convention** - read `cckf/value_target.py` and note whether its completeness denominator counts the majority particle's MEASUREMENTS or SIMHITS, and from which table. `cckf/tier3_inputs.py` (Task 3) MUST use the same convention or the truth-suffix gate compares different quantities.
+- [x] **Step 2: Record tier-2's N_total_true convention** - read `cckf/value_target.py` and note whether its completeness denominator counts the majority particle's MEASUREMENTS or SIMHITS, and from which table. `cckf/tier3_inputs.py` (Task 3) MUST use the same convention or the truth-suffix gate compares different quantities.
 
-- [ ] **Step 3: Record the exact pybind block** for TruthRolloutAlgorithm in `scripts/apply_cckf_integration.sh` (line numbers + the ACTS_PYTHON_MEMBER pattern used) so Task 2 patches the right site.
+- [x] **Step 3: Record the exact pybind block** for TruthRolloutAlgorithm in `scripts/apply_cckf_integration.sh` (line numbers + the ACTS_PYTHON_MEMBER pattern used) so Task 2 patches the right site.
 
-- [ ] **Step 4: Fill in below, commit** (`docs: record recon for window-conditioned tier3 plan`).
+- [x] **Step 4: Fill in below, commit** (`docs: record recon for window-conditioned tier3 plan`).
 
-```markdown
 #### Recon results (Task 1)
-- Value trainer entry + launch command: ...
-- Tier-2 N_total_true convention: ...
-- Pybind block location/pattern: ...
-```
+
+- **Value trainer entry + launch command** (verified on NERSC: job `57623950`, `train_value_v3.sbatch`, COMPLETED 2026-08-26 12:26:43→14:31:24, produced the deployed `models_v3/value_t2_maj/` weights):
+  - Entry script: `scripts/train_value.py`. Launched via `$SCRATCH/cckf/train_value_v3.sbatch` (1 node, `--constraint=cpu`, `--qos=regular`, `--account=atlas`, `--time=06:00:00`, `--cpus-per-task=128`, `--mem=0`), inside `shifter --image=ghcr.io/opendatadetector/sw:0.2.2_linux-ubuntu24.04_gcc-13.3.0` with venv `/global/cfs/cdirs/atlas/mussonm/venvs/modal`, repo `/global/cfs/cdirs/atlas/mussonm/cCKF`.
+  - Exact command: `python scripts/train_value.py --train-cache $SCRATCH/cckf/vcache_v3/train --val-cache $SCRATCH/cckf/vcache_v3/val --out-dir $SCRATCH/cckf/models_v3/value_t2_maj --device cpu`.
+  - **Input width is NOT read from cache meta** — `train_value.py:113-115` builds `models.ValueMLP(n_features=len(feat.VALUE_FEATURES), ...)`, hardcoding the module constant (currently 11). `_load()` (`train_value.py:28-45`) *does* read `meta["n_features"]` to shape the memmapped `X.f32`, so the cache itself is dimension-driven, but the model constructor is not — **Task 7 must change this call site** to use `tr["meta"]["n_features"]` (or `X_train.shape[1]`) instead of `len(feat.VALUE_FEATURES)`, or a 12-wide windowed cache will silently truncate/crash against an 11-wide model.
+  - Hyperparameter source: plain argparse CLI defaults, no external hyperparam config file. Defaults: `--depth 2 --width 128 --max-epochs 50 --seed 0 --oversample-marginal 0.0`; `--device` defaults to cuda-if-available else cpu (the sbatch pins `--device cpu`). Any hyperparameter change is a CLI-flag change to the sbatch, not a config file edit.
+  - Output layout in `--out-dir` (verified: `$SCRATCH/cckf/models_v3/value_t2_maj/`): `value_model.pt` (dict with `state_dict`, `n_features`, `width`, `depth`, `feature_names`, `mu`, `sigma` — this is the single checkpoint, not a directory of epoch checkpoints), `value_metrics.json` (train/val BCE, MSE, AUC-ROC, tier-gap, red flags, full loss history), `value_val_predictions.npz` (`pred`, `target`, `aux` arrays for the val split). A `calibration/` subdirectory also exists under `value_t2_maj/` (populated by a separate calibration step, not by `train_value.py` itself — not investigated further, out of scope for this recon).
+
+- **Tier-2 `N_total_true` convention** (from `cckf/value_target.py`, verified against `cckf/labels.py` and `expansion.py`):
+  - The denominator counts **SIMHITS**, not measurements. `particle_simhit_counts()` (`value_target.py:152-166`) does `simhits.groupby("particle_id").size()` on the output of `expansion.load_simhits(csv_dir, event_id)` — i.e. every simhit row in `simhits.csv` for that particle, with no measurement/clustering step involved.
+  - `simhits.csv`'s `particle_id` column is produced by `expansion.encode_particle_id(...)` from the five `particle_id_{pv,sv,part,gen,subpart}` columns (`expansion.py:687-692`) — the project's custom-encoded particle id, **not** the raw ACTS/edm4hep barcode.
+  - The majority-particle id used to look up this count is `branch_majority_pid` (`value_target.py:262-266`, `.map(particle_nhits)`), which is produced upstream by `expansion.py` (column listed at `expansion.py:209`) using the **same** `encode_particle_id` scheme, so the join is in a consistent id space. `cckf/tier3_inputs.py` (Task 3) must therefore compute `N_total_true` the same way: `expansion.load_simhits(csv_dir, event_id)` grouped by encoded `particle_id`, matched against `branch_majority_pid` — counting simhits, never measurements.
+  - **Concern for Task 5** (not asked for by name, but load-bearing for the truth-suffix gate): the persisted tier-2 value **cache** (`scripts/build_value_cache.py::process_event`, `build_value_cache.py:148-282`) does NOT retain `seed_id`/`branch_id` in its on-disk arrays. `X.f32` is feature-only, `y.f32` is the bare `vstar_t2` float column, and `aux.f32` is only `(vstar_t1, step_k, eta)` (`build_value_cache.py:274-281`, meta `"aux_columns": ["vstar_t1", "step_k", "eta"]`) — `seed_id` is dropped at the `np.column_stack` step. The target column name in the pre-flatten per-event frame is `vstar_t2` (merged in at `build_value_cache.py:253-266`), but there is no on-disk cache file that can be joined back to `(seed_id, step_k)` for a specific event. **Task 5's `truth_suffix_check` against "the tier-2 target cache" cannot read `$SCRATCH/cckf/vcache_v3/*` directly** — it must instead recompute tier-2 targets per event by calling `value_target.build_step_table` + `value_target.compute_value_targets` directly on the same expanded parquet (exactly what `process_event` does internally, minus the final flatten-to-array step), to get a frame keyed on `(seed_id, branch_id, step_k)` to compare against tier-3's `(seed_id, step_k, vstar_tier3)`. Flag this explicitly when Task 5 is executed.
+  - Cache file layout: one directory per `--split` (`train`/`val`/`cal`, e.g. `$SCRATCH/cckf/vcache_v3/{train,val}`), each containing `X.f32`, `y.f32`, `aux.f32`, `meta.json`; `norm_stats.npz` (`mu`, `sigma`, `feature_names`) is written only for `--split train` (`build_value_cache.py:451-463`). No further per-event sub-splitting on disk — `meta.json`'s `"events"` list records which event ids were concatenated into that one flat cache.
+
+- **Pybind block location/pattern** for `TruthRolloutAlgorithm`, in `scripts/apply_cckf_integration.sh` (verified by line number):
+  - Section header comment `# --- TruthRolloutAlgorithm binding (tier-3 rollout executor) ---` at **line 184**.
+  - The binding is written by a Python heredoc (`PYEOF2`, opened line 185, closed line 214) that patches `${ACTS_SOURCE}/Python/Examples/src/TrackFinding.cpp`. Guard at line 190 (`if "TruthRolloutAlgorithm" in text: skip`) makes the patch idempotent.
+  - Include anchor (line ~196-199): inserts `#include "ActsExamples/TrackFinding/TruthRolloutAlgorithm.hpp"` right after the existing `CckfTrackFindingAlgorithm.hpp` include.
+  - Binding-block anchor (line ~200): matches the tail of the *previous* (`CckfTrackFindingAlgorithm`) binding block, `"        outputTimingPath, digiConfigPath);\n  }\n"`, and appends after it.
+  - The exact appended block (lines 204-211 as constructed in the heredoc):
+    ```cpp
+    {
+      using RAlg = TruthRolloutAlgorithm;
+      auto [ralg, rc] = declareAlgorithm<RAlg, IAlgorithm>(mex, "TruthRolloutAlgorithm");
+      ACTS_PYTHON_STRUCT(rc, inputMeasurements, outputTracks, worklistDir,
+          outputDir, csvDir, trackingGeometry, magneticField, findTracks,
+          maxSteps, maxRollouts);
+    }
+    ```
+  - **This is the exact member list Task 2 Step 4 must extend** — add `windowNsigma` inside the `ACTS_PYTHON_STRUCT(rc, ...)` call (e.g. appended after `maxRollouts`), matching the pattern already used for the sibling `CckfTrackFindingAlgorithm` binding (`ACTS_PYTHON_STRUCT(c, ...)` at lines 163-171, preceded by `declareAlgorithm<Alg, IAlgorithm>` at line 152) which lists its `Config` fields the same way (comma-separated identifiers matching the C++ `Config` struct's member names verbatim — `ACTS_PYTHON_STRUCT` reads field names, not types).
+  - Related, not to be confused: the file also patches `Examples/Algorithms/TrackFinding/CMakeLists.txt` (line 68) to add `TruthRolloutAlgorithm.cpp` to the build's source list — no change needed there for a config-field-only addition.
+
+- **`cckf/features.py` `VALUE_FEATURES`** (verified, `features.py:108-120`): exactly 11 entries — `eta, state_qop, sigma2_l0, sigma2_l1, n_hits, n_holes, n_seq_holes, sum_gate_logodds, min_gate_logodds, step_k, x0_accumulated`. `NO_STANDARDIZE = {"n_hits", "n_holes", "n_seq_holes"}` (unaffected by the 12th feature, since `window_nsigma` is a genuine float meant to be standardized like the others — confirm this design choice in Task 6, not assumed here).
+
+- **`scripts/export_weights.py` hardcodes a feature count**: yes — `export_weights.py:55` has `assert n_features == 11, f"Value expects 11 features, got {n_features}"` (and line 51 the analogous `== 26` assert for the gate). Both asserts read `n_features` from `weights[0].shape[1]` (the first-layer weight matrix, line 46) — the blob header packs `n_features` from that same value (line 94), so the binary format itself is dimension-agnostic (confirmed independently by the plan's "Recorded facts" note that `WeightBlob` carries `input_dim`). **Task 7 Step 3 must change the `== 11` assert to `in (11, 12)`** (or drop it in favor of a print) or the exporter will hard-fail on a 12-feature windowed checkpoint.
 
 ---
 
