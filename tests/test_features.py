@@ -37,8 +37,13 @@ def test_value_source_columns_all_exist_in_schema():
         assert col in SCHEMA_76, col
 
 
-def test_no_standardize_is_exactly_the_three_branch_counters():
-    assert features.NO_STANDARDIZE == frozenset({"n_hits", "n_holes", "n_seq_holes"})
+def test_no_standardize_is_exactly_the_branch_counters_and_window_nsigma():
+    """The three integer branch counters, plus (window-conditioned tier-3
+    value plan, Task 6) the windowed value function's constant 12th feature,
+    ``window_nsigma`` -- see :data:`features.VALUE_FEATURES_WINDOWED`."""
+    assert features.NO_STANDARDIZE == frozenset(
+        {"n_hits", "n_holes", "n_seq_holes", "window_nsigma"}
+    )
 
 
 def test_eta_from_theta_at_ninety_degrees_is_zero():

@@ -66,6 +66,13 @@ whose absolute values carry meaning, and z-scoring them would make the value
 "three sequential holes" depend on the dataset composition. Binary features are
 likewise exempt (none are in the primary vector). Everything else is
 standardised with train-split μ and σ.
+
+``window_nsigma`` (the windowed value function's 12th feature — see
+:data:`VALUE_FEATURES_WINDOWED`) is exempt for a related reason: it is
+constant within any one cache build (one rollout window ``n`` per pass) and
+takes only the plan's small fixed set of values (0, 3, 5, 10). Standardising
+it would make the same raw window value map to a different z-score depending
+on which windows happen to be concatenated into a given training run.
 """
 
 from __future__ import annotations
@@ -119,7 +126,17 @@ VALUE_FEATURES: tuple[str, ...] = (
     "x0_accumulated",
 )
 
-NO_STANDARDIZE: frozenset[str] = frozenset({"n_hits", "n_holes", "n_seq_holes"})
+#: Window-conditioned value function's feature vector (window-conditioned
+#: tier-3 value plan, Task 6): :data:`VALUE_FEATURES` plus a 12th constant
+#: feature, the rollout acceptance window (in units of sigma) the row's
+#: target was generated under. One cache build covers one window; training
+#: concatenates builds across windows so the network learns to condition on
+#: this column.
+VALUE_FEATURES_WINDOWED: tuple[str, ...] = tuple(VALUE_FEATURES) + ("window_nsigma",)
+
+NO_STANDARDIZE: frozenset[str] = frozenset(
+    {"n_hits", "n_holes", "n_seq_holes", "window_nsigma"}
+)
 
 #: Parquet columns needed to build the gate feature matrix.
 GATE_SOURCE_COLUMNS: tuple[str, ...] = (

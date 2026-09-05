@@ -136,7 +136,10 @@ def test_compute_norm_stats_skips_branch_counters(synthetic_parquet, tmp_path):
         loaded["X"], skip=features.NO_STANDARDIZE, names=features.GATE_FEATURES
     )
     idx = {n: i for i, n in enumerate(features.GATE_FEATURES)}
-    for name in features.NO_STANDARDIZE:
+    # NO_STANDARDIZE is shared across the gate and (windowed) value feature
+    # vectors; window_nsigma is value-only, so restrict to names actually in
+    # GATE_FEATURES.
+    for name in features.NO_STANDARDIZE & set(features.GATE_FEATURES):
         assert mu[idx[name]] == 0.0
         assert sigma[idx[name]] == 1.0
     # A standardised feature with real spread gets a non-unit sigma.
