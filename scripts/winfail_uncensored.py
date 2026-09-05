@@ -606,6 +606,24 @@ def main() -> None:
         "MOTPE operating point's cuts (see CONFIG_EMULATIONS); default "
         "None reproduces the uncensored envelope population unchanged",
     )
+    ap.add_argument(
+        "--parquet-dir",
+        default=None,
+        help="directory holding expanded_event{E:09d}.parquet; default "
+        "{scratch_base}/reexpanded (the envelope stage-1 layout)",
+    )
+    ap.add_argument(
+        "--csv-dir",
+        default=None,
+        help="directory holding the per-event stage-1 CSVs (simhits etc.); "
+        "default resolves the envelope pilot dir via cckf.stage1_map",
+    )
+    ap.add_argument(
+        "--out-dir",
+        default=None,
+        help="npz output directory; default {scratch_base}/winfail_unc "
+        "(or winfail_unc_emu_<config> under --emulate)",
+    )
     args = ap.parse_args()
     ev, S, emulate = args.event, args.scratch_base, args.emulate
 
@@ -617,7 +635,8 @@ def main() -> None:
         print(f"event {ev}: [{name}] {now - t_prev:.1f}s", flush=True)
         t_prev = now
 
-    pq_path = f"{S}/reexpanded/expanded_event{ev:09d}.parquet"
+    parquet_dir = args.parquet_dir or f"{S}/reexpanded"
+    pq_path = f"{parquet_dir}/expanded_event{ev:09d}.parquet"
     # NOTE: chi2_inc added to the task-5 brief's column list -- it is
     # selected out of df below (for flag_ambi_survivors) but the brief's
     # iter_batches columns omitted it, which KeyErrors on real data.
@@ -737,15 +756,16 @@ def main() -> None:
     states = states.merge(survivors, on="seed_id", how="left")
     states["survived_ambi"] = states["survived_ambi"].fillna(False).astype(bool)
 
-    pt_lut = particle_pt_lookup(str(csv_dir_for(ev)), ev)
+    csv_dir = args.csv_dir or str(csv_dir_for(ev))
+    pt_lut = particle_pt_lookup(csv_dir, ev)
     out = accumulate_event(states, pt_lut)
     _stage("accumulate")
 
     if emulate is not None:
         out["counters"]["n_emu_pass"] = n_emu_pass
-        out_dir = f"{S}/winfail_unc_emu_{emulate}"
+        out_dir = args.out_dir or f"{S}/winfail_unc_emu_{emulate}"
     else:
-        out_dir = f"{S}/winfail_unc"
+        out_dir = args.out_dir or f"{S}/winfail_unc"
     os.makedirs(out_dir, exist_ok=True)
     np.savez(
         f"{out_dir}/winfail_unc_event{ev:03d}.npz",
