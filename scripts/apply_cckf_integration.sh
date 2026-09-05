@@ -183,12 +183,32 @@ PYEOF
 
 # --- TruthRolloutAlgorithm binding (tier-3 rollout executor) ---
 python3 - "${ACTS_SOURCE}/Python/Examples/src/TrackFinding.cpp" <<'PYEOF2'
+import re
 import sys
 path = sys.argv[1]
 with open(path) as f:
     text = f.read()
+members = (
+    "    ACTS_PYTHON_STRUCT(rc, inputMeasurements, outputTracks, worklistDir,\n"
+    "        outputDir, csvDir, trackingGeometry, magneticField, findTracks,\n"
+    "        maxSteps, maxRollouts, windowNsigma);\n")
 if "TruthRolloutAlgorithm" in text:
-    print("TrackFinding.cpp: TruthRolloutAlgorithm already bound, skipping")
+    # Binding already present from an earlier bootstrap. REFRESH the member
+    # list rather than skipping: a Config field added to the C++ but missing
+    # here is silently ignored at runtime (no build error), and this script
+    # is re-run against long-lived source trees on NERSC.
+    new_text, n = re.subn(r"[ \t]*ACTS_PYTHON_STRUCT\(rc,.*?\);\n", members,
+                          text, count=1, flags=re.S)
+    if n != 1:
+        raise SystemExit(
+            "ERROR: TruthRolloutAlgorithm bound but ACTS_PYTHON_STRUCT(rc, ...) "
+            "member list not found")
+    if new_text == text:
+        print("TrackFinding.cpp: TruthRolloutAlgorithm binding already current")
+    else:
+        with open(path, "w") as f:
+            f.write(new_text)
+        print("TrackFinding.cpp: TruthRolloutAlgorithm binding members refreshed")
     sys.exit(0)
 inc_anchor = '#include "ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.hpp"'
 if inc_anchor not in text:
@@ -206,7 +226,7 @@ block = (
     "    auto [ralg, rc] = declareAlgorithm<RAlg, IAlgorithm>(mex, \"TruthRolloutAlgorithm\");\n"
     "    ACTS_PYTHON_STRUCT(rc, inputMeasurements, outputTracks, worklistDir,\n"
     "        outputDir, csvDir, trackingGeometry, magneticField, findTracks,\n"
-    "        maxSteps, maxRollouts);\n"
+    "        maxSteps, maxRollouts, windowNsigma);\n"
     "  }\n")
 text = text.replace(anchor, anchor + block, 1)
 with open(path, "w") as f:

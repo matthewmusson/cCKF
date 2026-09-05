@@ -162,10 +162,15 @@ class TruthHitMap {
 /// pi-dagger tie-break (lowest chi2) if more than one survives and marks a
 /// hole when none do.
 ///
-/// Deliberately NO chi2 window and NO MLP: pi-dagger selects by identity.
-/// The covariance therefore cannot change WHICH hit is chosen on a reached
-/// surface -- the property that makes diagonal-seeded offline rollouts
-/// viable (spec: docs/superpowers/specs/2026-08-25-tier3-rollout-design.md).
+/// Deliberately NO chi2 window and NO MLP on IDENTITY selection: pi-dagger
+/// picks WHICH hit by identity, never by chi2. The covariance therefore
+/// cannot change which hit is chosen on a reached surface -- the property
+/// that makes diagonal-seeded offline rollouts viable (spec:
+/// docs/superpowers/specs/2026-08-25-tier3-rollout-design.md).
+///
+/// `windowNsigma` (below) gates only ACCEPTANCE of the already-identified
+/// true hit, so identity selection stays covariance-independent; the window
+/// merely decides whether the reachable true hit counts as reached.
 struct TruthRolloutContext {
   /// Packed barcode of the branch's majority particle for the CURRENT
   /// rollout. Set by the algorithm before each findTracks call. Plain
@@ -173,6 +178,14 @@ struct TruthRolloutContext {
   /// instance; each worker thread owns its own instance, same threading
   /// contract as CckfMeasurementSelector.
   std::uint64_t majorityPid = 0;
+
+  /// Chi2 window for pi-dagger acceptance: the true hit is taken iff
+  /// chi2 < windowNsigma^2. <= 0 disables the window (unbounded pi-dagger,
+  /// the pre-2026-09 behavior). Matches the deployed gate pre-filter
+  /// semantics (CckfMeasurementSelector nSigma: chi2 < nsigma^2), so
+  /// V(n) conditions on exactly what the deployed chain can reach.
+  double windowNsigma = 0.0;
+
   const TruthHitMap* hitMap = nullptr;
 
   bool isTruthMeasurement(std::uint64_t measIndex) const {

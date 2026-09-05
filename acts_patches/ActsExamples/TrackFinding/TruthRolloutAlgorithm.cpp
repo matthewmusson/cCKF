@@ -34,8 +34,11 @@ namespace {
 /// measurement carries the rollout's majority particle; among several
 /// (module overlaps, shared clusters -- 0.011% of states on event 1) the
 /// lowest-chi2 one, matching the RATIFIED rule in cckf/tier3_walker.py.
-/// No window, no MLP: pi-dagger selects by identity, which is what makes
-/// diagonal-seeded offline rollouts viable.
+/// No MLP, and no window on IDENTITY: pi-dagger selects by identity, which
+/// is what makes diagonal-seeded offline rollouts viable. When
+/// TruthRolloutContext::windowNsigma > 0 the identified true hit is
+/// additionally required to satisfy chi2 < windowNsigma^2 to be ACCEPTED;
+/// otherwise the surface is a hole.
 class TruthSelectorAdapter {
  public:
   using Traj = Acts::VectorMultiTrajectory;
@@ -68,8 +71,11 @@ class TruthSelectorAdapter {
       }
     }
 
-    if (best == candidates.size()) {
-      // No truth candidate on this surface: hole, continue propagating.
+    const double nsig = m_ctx->windowNsigma;
+    if (best == candidates.size() ||
+        (nsig > 0.0 && bestChi2 >= nsig * nsig)) {
+      // No truth candidate, or the true hit sits outside the configured
+      // search window: hole, continue propagating.
       return std::make_pair(candidates.begin(), candidates.begin());
     }
     if (best != 0) {
@@ -201,6 +207,8 @@ ProcessCode TruthRolloutAlgorithm::execute(const AlgorithmContext& ctx) const {
 
   cckf::TruthRolloutContext rolloutCtx;
   rolloutCtx.hitMap = &hitMap;
+  // Window is per-configuration, not per-rollout: set once here.
+  rolloutCtx.windowNsigma = m_cfg.windowNsigma;
   TruthSelectorAdapter selector(&rolloutCtx);
   NeverStopBranchStopper neverStop;
 

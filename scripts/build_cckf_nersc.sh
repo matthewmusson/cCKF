@@ -233,6 +233,20 @@ rsync -a --checksum --itemize-changes \
 rsync -a --checksum --itemize-changes \
     "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/CckfTrackFindingAlgorithm.cpp" \
     "${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/src/"
+rsync -a --checksum --itemize-changes \
+    "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/TruthRolloutAlgorithm.hpp" \
+    "${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/include/ActsExamples/TrackFinding/"
+rsync -a --checksum --itemize-changes \
+    "${REPO_ROOT}/acts_patches/ActsExamples/TrackFinding/TruthRolloutAlgorithm.cpp" \
+    "${ACTS_SOURCE}/Examples/Algorithms/TrackFinding/src/"
+
+# NOTE: the sync above moves SOURCE only. Adding a field to a Config struct
+# also needs the pybind member list in scripts/apply_cckf_integration.sh --
+# a field missing there is silently ignored at runtime (no build error). That
+# script is idempotent, so after such a change re-run it against this tree
+# before building:
+#   ACTS_SOURCE=$ACTS_SOURCE CCKF_REPO=$REPO_ROOT \
+#       bash $REPO_ROOT/scripts/apply_cckf_integration.sh
 
 # -------------------------------------------------------------------------
 # BUILD

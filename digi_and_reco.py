@@ -143,6 +143,7 @@ def addTruthRollout(
     output_dir: str,
     csv_dir: str,
     max_rollouts: int = 0,
+    window_nsigma: float = 0.0,
     prefix: str = "",
     logLevel=None,
 ):
@@ -182,6 +183,8 @@ def addTruthRollout(
             trackingGeometry, field, customLogLevel()
         ),
         maxRollouts=max_rollouts,
+        # chi2 acceptance window for pi-dagger (0 = unbounded, legacy).
+        windowNsigma=window_nsigma,
     )
     s.addAlgorithm(rollout)
     return rollout
@@ -690,6 +693,7 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
                 output_dir=getattr(config, "rollout_output_dir"),
                 csv_dir=getattr(config, "rollout_csv_dir"),
                 max_rollouts=int(getattr(config, "rollout_max", 0)),
+                window_nsigma=float(getattr(config, "rollout_window_nsigma", 0.0)),
             )
             return s
 

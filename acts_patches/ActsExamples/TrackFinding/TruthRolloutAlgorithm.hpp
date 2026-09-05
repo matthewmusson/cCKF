@@ -75,6 +75,10 @@ class TruthRolloutAlgorithm final : public IAlgorithm {
     unsigned int maxSteps = 100000;
     /// Cap on rollouts per event (0 = no cap). For smoke tests.
     std::size_t maxRollouts = 0;
+    /// Chi2 acceptance window for the truth-greedy selector: the identified
+    /// true hit is taken iff chi2 < windowNsigma^2. <= 0 disables the window
+    /// (unbounded pi-dagger, the pre-2026-09 behavior).
+    double windowNsigma = 0.0;
   };
 
   TruthRolloutAlgorithm(Config cfg,
