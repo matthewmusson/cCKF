@@ -2,16 +2,15 @@
 
 Code that produced a logged result and is no longer on the active path.
 Nothing here is imported by the pipeline or the tests. Each file is kept so
-the corresponding `experiments/LOG.md` entry (or the parent repo's
-`SURP/experiments/LOG.md`) stays reproducible. Git history has the full
+the corresponding `experiments/LOG.md` entry stays reproducible. Git history has the full
 provenance; these copies are for reading without checking out old commits.
 
 ## july_ckf_optimization/  (July 2026, classical CKF tuning on Modal/NERSC)
 
 | File | What it was | Logged in |
 |------|-------------|-----------|
-| `analyze_sweep.py` | Post-processed the one-parameter CKF sweeps (χ², branch cap, nMeas) into ε/f tables | `SURP/experiments/LOG.md` Stage 1-3 |
-| `optimizer.sbatch` | NERSC job wrapper for the Optuna optimizer (the optimizer itself was removed in 17b57ea) | `SURP/experiments/LOG.md` Stage 5 |
+| `analyze_sweep.py` | Post-processed the one-parameter CKF sweeps (χ², branch cap, nMeas) into ε/f tables | `experiments/LOG.md` Part I, Stages 1-3 |
+| `optimizer.sbatch` | NERSC job wrapper for the Optuna optimizer (the optimizer itself was removed in 17b57ea) | `experiments/LOG.md` Part I, Stage 5 |
 | `sweep.sbatch` | NERSC job wrapper for the config sweeps (`configs/sweep_*.yaml`) | same |
 | `run_single_event.sh` | Phase-1 validation: one ttbar event through digi+reco | same |
 

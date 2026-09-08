@@ -1,116 +1,586 @@
 # cCKF Experiment Log
 
-## 2026-07-20 — Seeding Bayesian optimization (Modal)
+## Part I — Classical CKF tuning, July 2026 (imported 2026-09-08 from SURP/experiments/LOG.md)
 
-- **Stage:** seeding only (`num_seeds_per_spm`, `seed_minPt`, `seed_impactMax`); CKF frozen incl. `numMeasurementsCutOff=1`
-- **Setup:** 8 events/trial, 8 ACTS threads, 4 parallel Modal trials; 8 random + 16 guided (24 total)
-- **Score:** `-(eff - 1.0*fake)` post-ambi particle metrics
-- **Data:** ColliderML full_pileup ttbar `edm4hep.root` on `surp-acts-data`
-- **History:** `experiments/seeding_opt_history.csv` (also `/optimizer/seeding/` on volume)
-- **Modal run:** https://modal.com/apps/musson28/main/ap-q8FhuhYV526jzlC8kG9SGt
+This block is the full record of the classical seeding/CKF optimisation that produced the tight / medium / fast operating points. It was written in the parent repo before this one existed; the three short July entries it replaces were summaries of Stages 1-3. Modal paths below no longer exist; the data lives in `experiments/` here (trial CSVs, `joint_motpe/`, `plots/`).
 
-### Best by score
-| param | value |
-|---|---|
-| num_seeds_per_spm | ~37 |
-| seed_minPt | ~0.43 GeV |
-| seed_impactMax | 1.0 mm |
-| efficiency | 89.7% |
-| fakerate | 2.7% |
-| duplicaterate | 0.0% |
-| wall_time (8 evt) | ~126 s |
+**Project:** RL for particle track reconstruction (SURP 2026, Berkeley/Stanford)
+**Goal:** Establish an optimized CKF baseline on ColliderML ttbar μ=200, then beat it with learned policies.
+**Dataset:** ColliderML full_pileup ttbar v1 (edm4hep.root on Modal volume `surp-acts-data`). Each event is a single pp bunch crossing with ~200 pileup interactions, producing ~214k hits and ~46k particles.
 
-### Notes
-- Highest efficiency trial reached ~90.3% eff / ~4.1% fake (more seeds/spm, slightly higher impactMax, slower).
-- `seed_minPt` dominates: ≥~1 GeV collapses efficiency to ~20–60%.
-- Baseline-ish (`seeds/spm≈40`, `minPt=0.5`) sits near the Pareto front; tight `impactMax=1` trades a bit of eff for lower fake.
-- Next: freeze seeding at 3 Pareto points, jointly optimize CKF params (including `numMeasurementsCutOff`) via Optuna NSGA-II.
+**Event split (Modal volume currently has 64 events, not 128):**
+| Split | Event IDs | Count | Use |
+|-------|-----------|-------|-----|
+| Optimize / test | `[0, 32)` | 32 | Optuna trials (future re-run) |
+| Evaluation | `[32, 64)` | 32 | Held-out reporting: ACTS defaults baseline + final Pareto validation |
 
-## 2026-07-21 — Seeding re-optimization v2 (Optuna NSGA-II, 4-param)
+Prior Stage 2/3 Optuna runs used events `[0, 8)` only — those sit inside the optimize split. The evaluation set `[32, 64)` has never been used. To restore the planned 96/32 of 128, upload another 64 events from NERSC.
 
-- **Motivation:** Stage 1 seeding used xopt with 3 params and per-particle fake rate (wrong metric). Re-running with correct DM-matched track-level metrics, and adding `sigmaScattering` which interacts with `maxSeedsPerSpM`.
-- **Parameters:**
-  | Param | Range | Type | Rationale |
-  |-------|-------|------|-----------|
-  | `num_seeds_per_spm` | [1, 80] | int | Controls how many seed candidates survive per middle SP |
-  | `seed_minPt` | [0.3, 2.0] GeV | float | Minimum pT for seeds; below 0.3 unphysical, above 2.0 kills soft tracks |
-  | `seed_impactMax` | [1.0, 10.0] mm | float | Max transverse impact; 1mm = primaries only, 10mm = includes secondaries |
-  | `seed_sigmaScattering` | [2.0, 10.0] | float | Scattering window width (units of σ_MS). Interacts with `maxSeedsPerSpM`. |
-- **CKF frozen at ACTS defaults:** `chi2Meas=15`, `chi2Out=25`, `branchCap=1`, `nMeasMin=6`, `holesOut=3`, `ptMin=0.7`
-- **Objectives:** ε_DM↑ (particle eff), f_DM↓ (track fake), d_DM↓ (track dup), runtime↓
-- **Setup:** 200 trials, 8 events/trial, 8 ACTS threads, 8 parallel Modal trials
-- **pT threshold for T:** pT > 1 GeV, |η| < 3, ≥6 measurements, ≥3 pixel hits, charged only
-- **History:** Optuna SQLite at `/optimizer/seeding_v2/optuna.db`, CSV at `trials.csv`; local at `experiments/seeding_v2_trials.csv`
-- **Modal run:** https://modal.com/apps/musson28/main/ap-yckmpEkqaoBEYYtYqJobjW
+**Detector:** Open Data Detector (ODD) v5.0.0, all-silicon ITk-like geometry.
+**Framework:** ACTS (via Python bindings in a Modal container built from `ghcr.io/opendatadetector/sw:0.2.2`).
 
-### Results (200/200 trials, 0 failures)
+---
 
-- ε_DM range: [24.0%, 90.3%], f_DM range: [6.5%, 55.9%]
-- Pareto front: 17 non-dominated points (ε↑, f↓)
-- `sigmaScattering` interaction confirmed: Pareto-optimal points span σ ∈ [2.1, 8.7]
+### Metric definitions
 
-### Selected operating points (tercile on seeds/spm, eff > 80%)
+We use **double-majority (DM) matching** throughout. A reconstructed track r matches a true particle t if:
+- |Hits(r) ∩ Hits(t)| / |Hits(r)| > 0.5 AND |Hits(r) ∩ Hits(t)| / |Hits(t)| > 0.5
 
-| Point | seeds/spm | minPt | impactMax | σ_scat | ε_DM | f_DM | rt(8e) |
-|-------|-----------|-------|-----------|--------|------|------|--------|
-| Tight | 5 | 0.698 | 6.1 | 4.2 | 85.7% | 14.2% | 33s |
-| Medium | 18 | 0.328 | 1.6 | 4.1 | 88.6% | 22.3% | 115s |
-| Loose | 62 | 0.662 | 1.6 | 2.1 | 89.1% | 31.5% | 122s |
+From this:
+- **ε_DM** (particle efficiency) = |{t ∈ T : ∃ r matching t}| / |T|
+- **f_DM** (track fake rate) = |{r ∈ R : ∄ t matching r}| / |R|
+- **d_DM** (track duplicate rate) = |{r ∈ R : r is DM-matched but another r' with higher score also matches the same t}| / |R|
 
-### Notes
+**The set T** (true "reconstructable" particles) is defined by `ParticleSelectorConfig` in `digi_and_reco.py`:
+- pT > 1 GeV (see known limitation below)
+- |η| < 3.0
+- ≥ 6 total digitized measurements
+- ≥ 3 pixel-layer measurements (ODD volumes 16, 17, 18)
+- Charged only (neutrals removed)
+- Vertex within ρ < 24 mm, |z| < 1 m
+- Secondaries included
+
+**The set R** (reconstructed tracks) is all tracks surviving CKF + ambiguity resolution. The CKF applies its own `TrackSelectorConfig` (pT > `ckf_ptMin`, |η| < 3.5, ≥ `nMeasurementsMin` measurements), and the greedy ambiguity resolver removes lower-scored tracks sharing > 3 hits.
+
+---
+
+### Decision log
+
+#### Why Optuna NSGA-II instead of xopt?
+
+**Stage 1** used `xopt` with `ExpectedImprovementGenerator` and a scalar objective `-(ε - w·f)`. This has two problems: (1) the scalarization forces a single tradeoff weight, hiding the Pareto structure; (2) xopt's Bayesian surrogate is designed for continuous spaces and doesn't handle the mixed int/float parameter space gracefully. **Switched to Optuna NSGA-II** for native multi-objective optimization with 4 objectives (ε↑, f↓, d↓, runtime↓). NSGA-II handles mixed types, conditional constraints, and returns the full Pareto front.
+
+#### Why staged optimization (seeding → CKF) instead of joint?
+
+The full parameter space is 10-dimensional (4 seeding + 6 CKF). Joint optimization would need ≥500 trials to cover this space adequately with NSGA-II. By freezing CKF defaults during seeding optimization and vice versa, we reduce each stage to 4–6 dimensions and need only 200 + 300 = 500 total trials instead of ≥1000. The interaction between seeding and CKF parameters is weak — seeding controls *what enters* the CKF, CKF controls *how it's processed* — so the staged decomposition loses little.
+
+#### Why 3 seeding operating points?
+
+A single seeding configuration would conflate seeding quality with CKF quality. By running CKF optimization at 3 structurally distinct seeding densities (tight=5, medium=18, loose=62 seeds/spm), we can observe:
+1. Whether CKF tuning can compensate for sparse seeding (it can't fully — tight peaks at 92% vs loose at 97%)
+2. Whether the optimal CKF parameters depend on seeding density (they do — nMeasMin=9 is optimal everywhere, but chi2 and branchCap preferences shift)
+3. Whether a system-level Pareto envelope favors one seeding regime (loose dominates 10/14 envelope points)
+
+Selection method: filter to ε > 80%, sort by `num_seeds_per_spm`, split into terciles, pick the lowest-fake trial within each tercile. This ensures structural diversity in seed density while choosing data-backed (not interpolated) operating points.
+
+#### Why `sigmaScattering` was added to the seeding search
+
+`sigmaScattering` controls the angular window width for forming doublet candidates. It interacts with `maxSeedsPerSpM`: at σ=5 with seeds=12, many candidates form but only 12 survive (cap is binding). At σ=2 with seeds=12, fewer candidates form and the cap may not bind. These two parameters control the same funnel from opposite ends — optimizing one with the other fixed misses the interaction. Range [2, 10]: below 2 rejects true doublets from high-scatter particles; above 10 forms essentially all SP pairs.
+
+#### Why `cotThetaMax` was excluded
+
+`cotThetaMax` controls η acceptance — it's a geometric boundary matching ODD coverage (|η| < 3 → cot θ_max ≈ 10). Sweeping it trades forward tracking coverage for purity, which isn't the tradeoff we want to explore. Kept at the ACTS default.
+
+#### Why `chi2CutOffOutlier` is constrained > `chi2CutOffMeasurement`
+
+The measurement chi2 cut defines the search window for compatible hits. The outlier chi2 cut flags hits that were accepted but contribute poorly to the fit. If outlier < measurement, every accepted hit would immediately be flagged as an outlier — nonsensical. Enforced via sampling a non-negative margin: `chi2CutOffOutlier = chi2CutOffMeasurement + margin`.
+
+#### Why `nMeasurementsMin + maxHolesAndOutliers < 12`
+
+ODD has ~12 measurement layers. A track with nMeasMin hits and maxHolesAndOutliers allowed gaps can span at most nMeasMin + maxHolesAndOutliers layers. If this exceeds 12, the constraint is unphysical — you're allowing more gaps than layers exist. Enforced by clamping `maxHolesAndOutliers` when the sum reaches 12.
+
+#### Why track-level f_DM instead of particle-level fake rate
+
+Stage 1 seeding optimization accidentally used `fakeratio_particles` (fraction of true particles that have at least one fake-classified track). This is not the standard definition. The standard f_DM = |fake tracks| / |all tracks| is what papers report (e.g., ATLAS CTIDE, HEPTv2). Corrected in Stage 2 onward.
+
+---
+
+### Stage 1 — Seeding optimization v1 (July 20, 2026)
+
+**Status:** Completed, superseded by v2.
+
+Exploratory run using xopt with scalar objective, 3 parameters, 24 trials. Used per-particle fake rate (wrong metric) and did not include `sigmaScattering`. Results informed the design of Stage 2 but are not directly comparable due to metric mismatch.
+
+See `cCKF/experiments/LOG.md` for raw results.
+
+---
+
+### Stage 2 — Seeding optimization v2 (July 21, 2026)
+
+**Status:** Completed.
+
+| Detail | Value |
+|--------|-------|
+| Optimizer | Optuna NSGA-II (seed=42) |
+| Parameters | `num_seeds_per_spm` [1,80], `seed_minPt` [0.3,2.0] GeV, `seed_impactMax` [1.0,10.0] mm, `seed_sigmaScattering` [2.0,10.0] |
+| CKF frozen at | chi2Meas=15, chi2Out=25, branchCap=1, nMeasMin=6, holesOut=3, ptMin=0.7 |
+| Objectives | ε_DM↑, f_DM↓, d_DM↓, runtime↓ |
+| Trials | 200 (200 valid) |
+| Events/trial | 8 ttbar pu200 |
+| Parallelism | 8 concurrent trials on Modal (each: 8 ACTS threads, 8 CPU, 64 GB) |
+| Metrics threshold | pT > 1 GeV |
+| Data | `experiments/seeding_v2_trials.csv` |
+| Modal run | [ap-yckmpEkqaoBEYYtYqJobjW](https://modal.com/apps/musson28/main/ap-yckmpEkqaoBEYYtYqJobjW) |
+
+#### Results
+
+Pareto front: 17 non-dominated points spanning ε ∈ [81.3%, 90.3%], f ∈ [6.5%, 48.4%].
+
+Selected 3 operating points (tercile on seeds/spm, eff > 80%, lowest f within each):
+
+| Point | seeds/spm | minPt (GeV) | impactMax (mm) | σ_scat | ε_DM (pT>1) | f_DM (pT>1) |
+|-------|-----------|-------------|----------------|--------|-------------|-------------|
+| Tight | 5 | 0.698 | 6.1 | 4.2 | 85.7% | 14.2% |
+| Medium | 18 | 0.328 | 1.6 | 4.1 | 88.6% | 22.3% |
+| Loose | 62 | 0.662 | 1.6 | 2.1 | 89.1% | 31.5% |
+
+Key observations:
 - `seed_minPt` ∈ [0.3, 0.7] for all high-eff points; above ~0.7 GeV efficiency collapses
-- Tight point originally selected at seeds=1 (81.3% eff), upgraded to seeds=5 for CKF compatibility
-- These fake rates are under DM track-level matching (f_DM), much higher than v1's particle-level fakes
+- `sigmaScattering` interaction confirmed: Pareto-optimal points span σ ∈ [2.1, 8.7]
+- Note: these fake rates are seeding-only (CKF at greedy defaults); the CKF stage dramatically reduces them
 
-## 2026-07-22 — Joint CKF optimization (Optuna NSGA-II, per seeding point)
+---
 
-- **Stage:** CKF params optimized jointly: `chi2CutOffMeasurement`, `chi2CutOffOutlier` (constrained > chi2Meas), `numMeasurementsCutOff`, `nMeasurementsMin`, `maxHolesAndOutliers` (constrained + nMeasMin < 12), `ptMin`
-- **Switched from xopt EI (scalar) to Optuna NSGA-II (true multi-objective):** 4 objectives: ε_DM↑, f_DM↓, d_DM↓, runtime↓
-- **Metrics:** particle-level ε_DM, track-level f_DM and d_DM (standard DM matching)
-- **pT threshold for T:** pT > 1 GeV (same as seeding stage)
-- **Setup:** 100 trials/seeding point, 8 events/trial, 8 ACTS threads, 8 parallel Modal trials. 300 trials total.
-- **Data:** ColliderML full_pileup ttbar pu200, 8 events per trial on `surp-acts-data`
-- **History:** Optuna SQLite + CSV on volume at `/optimizer/ckf_{tight,medium,loose}/`; local at `experiments/ckf_{tight,medium,loose}_trials.csv`
-- **Modal runs:** https://modal.com/apps/musson28/main/ap-nRU9qAi4WxFfpSLlj0hEkM (tight+loose), https://modal.com/apps/musson28/main/ap-u8KIffK3hirLmlZbjFqp9I (medium)
+### Stage 3 — Joint CKF optimization (July 22, 2026)
 
-### Results
+**Status:** Completed.
 
-All 300 trials completed (tight 100/100, medium 94/100 valid, loose 89/100 valid).
+| Detail | Value |
+|--------|-------|
+| Optimizer | Optuna NSGA-II (seed=42), one study per seeding point |
+| Parameters | `chi2CutOffMeasurement` [5,30], `chi2CutOffOutlier` [chi2Meas + margin, margin ∈ [0,30]], `numMeasurementsCutOff` [1,5], `nMeasurementsMin` [4,9], `maxHolesAndOutliers` [1,6], `ptMin` [0.3,1.2] GeV |
+| Seeding frozen at | 3 operating points from Stage 2 |
+| Objectives | ε_DM↑, f_DM↓, d_DM↓, runtime↓ |
+| Trials | 100 per seeding point (300 total; tight 100, medium 94, loose 89 valid) |
+| Events/trial | 8 ttbar pu200 |
+| Parallelism | 8 concurrent trials per study on Modal |
+| Metrics threshold | pT > 1 GeV |
+| Data | `experiments/ckf_{tight,medium,loose}_trials.csv` |
+
+#### Results
 
 #### Per-seeding Pareto highlights (pT > 1 GeV)
 
-| Regime | Best ε | Best low-f (ε>85%) | Balanced (ε>85%, f<5%) |
+| Regime | Peak ε | Best low-f (ε>85%) | Balanced (ε>85%, f<5%) |
 |--------|--------|---------------------|------------------------|
-| Tight (seeds=5) | 92.3% / 32.1% f (br=5) | 89.6% / 1.75% f (br=5) | 89.5% / 0.63% f (br=2) |
-| Medium (seeds=18) | 95.8% / 21.6% f (br=2) | 95.0% / 1.67% f (br=3) | 93.9% / 0.77% f (br=1) |
-| Loose (seeds=62) | 97.0% / 15.7% f (br=5) | 94.4% / 1.75% f (br=1) | 93.6% / 0.27% f (br=3) |
+| Tight (seeds=5) | 92.3% / 32.1% f | 89.6% / 1.75% f | 89.5% / 0.63% f |
+| Medium (seeds=18) | 95.8% / 21.6% f | 95.0% / 1.67% f | 93.9% / 0.77% f |
+| Loose (seeds=62) | 97.0% / 15.7% f | 94.4% / 1.75% f | 93.6% / 0.27% f |
 
-#### System Pareto envelope (14 points)
+#### System Pareto envelope (pT > 1 GeV)
 
-Dominated by loose seeding (10/14 points). Key operating points:
+14 non-dominated points; loose seeding contributes 10/14.
 
-| ε_DM | f_DM | Seeding | Branch | χ²_meas | ptMin |
-|------|------|---------|--------|---------|-------|
-| 91.5% | 0.07% | loose | 3 | 6.7 | 0.39 |
-| 93.0% | 0.22% | loose | 1 | 14.0 | 0.50 |
-| 93.6% | 0.27% | loose | 3 | 12.1 | 0.35 |
-| 95.0% | 1.67% | medium | 3 | 25.2 | 0.61 |
-| 96.0% | 3.47% | loose | 5 | 7.8 | 0.44 |
-| 97.0% | 15.7% | loose | 5 | 24.0 | 0.54 |
+| ε_DM | f_DM | Seeding | Branch | χ²_meas | nMeasMin | ptMin | rt(8e) |
+|------|------|---------|--------|---------|----------|-------|--------|
+| 91.5% | 0.07% | loose | 3 | 6.7 | 9 | 0.39 | 66s |
+| 93.0% | 0.22% | loose | 1 | 14.0 | 9 | 0.50 | 59s |
+| 93.6% | 0.27% | loose | 3 | 12.1 | 9 | 0.35 | 72s |
+| 94.0% | 0.49% | loose | 4 | 14.4 | 9 | 0.60 | 88s |
+| 94.7% | 1.57% | medium | 1 | 13.5 | 7 | 0.60 | 98s |
+| 95.0% | 1.67% | medium | 3 | 25.2 | 8 | 0.61 | 97s |
+| 95.1% | 2.52% | loose | 3 | 6.2 | 6 | 0.39 | 63s |
+| 96.0% | 3.47% | loose | 5 | 7.8 | 6 | 0.44 | 94s |
+| 96.8% | 10.6% | loose | 2 | 23.9 | 5 | 0.65 | 58s |
+| 97.0% | 15.7% | loose | 5 | 24.0 | 5 | 0.54 | 87s |
 
-### Key findings
+#### Key findings
 
-1. **Loose seeding dominates.** More seed candidates (62/spm) give the CKF enough input to achieve both high ε and low f simultaneously when paired with strict quality cuts.
-2. **Branching gain is modest.** numMeasurementsCutOff contributes only +1–1.3% ε beyond branch=1. The Pareto front is populated by all branch values — no clear optimal.
-3. **nMeasurementsMin=9 is the fake killer.** Nearly all sub-1% fake configs require ≥9 measurements per track. This aggressive quality cut eliminates fragmented fakes at mild efficiency cost.
-4. **Tight seeding is bottlenecked.** Peak ε=92.3% vs loose's 97.0%. The CKF can't reconstruct particles that were never seeded.
-5. **Best CKF baseline for RL comparison:** loose seeding, 93.6% ε / 0.27% f (br=3, χ²=12.1, nMeas=9).
+1. **Loose seeding + strict CKF is the winning strategy.** Flood the CKF with candidates (62 seeds/spm), then use tight quality cuts (nMeasMin=9, moderate χ²) to filter fakes. This achieves both high ε and low f.
 
-### Known limitations
+2. **`nMeasurementsMin` is the primary fake-rate control.** Every sub-0.5% fake configuration uses nMeasMin=9. This requires tracks to have ≥9 measurement hits (out of ~12 ODD layers), which eliminates fragmented and short fakes.
 
-- All metrics at pT > 1 GeV threshold. Need to re-run with lower particle selector threshold and `writeMatchingDetails=True` for arbitrary-threshold reporting.
-- 8 events per trial — small statistics. Pareto-optimal configs should be validated on larger event samples.
-- Only ttbar pu200 evaluated. Generalization to other physics processes not tested.
+3. **Branching (`numMeasurementsCutOff`) has modest value.** Efficiency gain from branch=1 → branch=5 is only +1–1.3%. The greedy CKF (branch=1) already performs well when other parameters are tuned. Branching increases runtime without proportionate gains.
+
+4. **Seeding density sets the efficiency ceiling.** Tight (5 seeds/spm) peaks at 92.3%, medium (18) at 95.8%, loose (62) at 97.0%. No amount of CKF tuning can reconstruct a particle that was never seeded.
+
+5. **χ² acceptance window matters less than expected.** Pareto-optimal configurations span χ² ∈ [6, 30] with no clear sweet spot — it interacts with branchCap and nMeasMin.
+
+6. **Proposed CKF baseline for RL comparison:** loose seeding (62/spm, minPt=0.662, impact=1.6, σ=2.1) with nMeasMin=9, χ²=12.1, branchCap=3 → **93.6% ε / 0.27% f** at pT > 1 GeV.
+
+---
+
+### Stage 4 — ACTS ODD defaults baseline on held-out eval set (July 22, 2026)
+
+**Status:** Completed.
+
+| Detail | Value |
+|--------|-------|
+| Config | `cCKF/configs/acts_odd_defaults.yaml` |
+| Source | `full_chain_odd.py --ttbar` + `GridTripletSeedingAlgorithm` C++ defaults |
+| Events | `[32, 64)` — 32 held-out evaluation events (`skip=32`; Modal file has 64 total) |
+| Threads | 8 |
+| Metrics threshold | pT > 1 GeV (same ParticleSelector as Stages 2–3) |
+| Modal run | [ap-RI7Qs6BxK6uSuD6XiTIsPl](https://modal.com/apps/musson28/main/ap-RI7Qs6BxK6uSuD6XiTIsPl) |
+| Output | `/data/results/ckf_acts_odd_defaults_1784779531` |
+
+#### Parameters (exact)
+
+| Parameter | Value |
+|-----------|-------|
+| `maxSeedsPerSpM` | 5 |
+| `seed_minPt` | 0.4 GeV |
+| `seed_impactMax` | 20 mm |
+| `seed_sigmaScattering` | 5 |
+| `chi2CutOffMeasurement` | 15 |
+| `chi2CutOffOutlier` | 25 |
+| `numMeasurementsCutOff` | 2 |
+| `nMeasurementsMin` | 7 |
+| `maxHoles` / `maxOutliers` | 2 / 2 (separate; no combined cap) |
+| `maxPixelHoles` / `maxStripHoles` | 1 / 2 |
+| `ckf_ptMin` | 1.0 GeV |
+| `absEtaMax` | 3.0 |
+| `loc0` | ±4 mm |
+| Ambi `nMeasurementsMin` | 7 |
+
+**One variable:** ACTS published defaults, measured on the clean evaluation split. No optimization.
+
+#### Results (pT > 1 GeV, DM matching, post-ambi)
+
+| Metric | Value |
+|--------|-------|
+| ε_DM (particle) | **37.26%** |
+| f_DM (track) | **1.14%** |
+| d_DM (track) | **0.00%** |
+| Wall time (32 events, 8 threads) | 149.6 s (~4.7 s/event wall) |
+
+Note: ε_DM is much lower than Stage 3 Optuna points (~90–97%). The ODD default `loc0 ∈ [-4, 4] mm` track-selector cut and `maxSeedsPerSpM=5` are the main suspects — our Optuna configs did not apply a `loc0` cut. Pre-ambi duplicate rate was ~54% (ambi cleans this to 0).
+
+Note: Modal volume edm4hep file reported a ROOT read warning on entry 53 (`badread`); run completed anyway. Prefer re-uploading a clean 128-event subset before the next Optuna campaign.
+
+#### Ablation: drop `loc0` cut (July 23, 2026)
+
+Re-ran identical defaults on `[32, 64)` with `ckf_loc0_max` removed.
+
+| Metric | With loc0 ±4 mm | Without loc0 |
+|--------|-----------------|--------------|
+| ε_DM | 37.26% | **37.26%** |
+| f_DM | 1.14% | **1.24%** |
+| d_DM | 0.00% | **0.00%** |
+| Wall (32 evt) | 149.6 s | 104.7 s |
+
+**Conclusion:** `loc0` is not the efficiency bottleneck. The ~37% ε_DM is driven by other defaults (most likely `maxSeedsPerSpM=5`, hole caps, and/or `constrainToVolumes`). Modal run: [ap-iq8yK2ILAA27vBXln8W0ib](https://modal.com/apps/musson28/main/ap-iq8yK2ILAA27vBXln8W0ib).
+
+#### Ablation: `maxSeedsPerSpM=15` (July 23, 2026)
+
+Same defaults as no-loc0 run, only `num_seeds_per_spm` raised 5 → 15. Eval `[32, 64)`.
+
+| Metric | seeds=5 | seeds=15 |
+|--------|---------|----------|
+| ε_DM | 37.26% | **42.19%** |
+| f_DM | 1.24% | **2.24%** |
+| d_DM | 0.00% | **0.00%** |
+| Wall (32 evt) | 104.7 s | 173.4 s |
+
+Raising seed density helps (~+5 pp ε) but does not close the gap to Optuna (~90%). Modal: [ap-9CZBl8x6CW0htG9TFPy0G3](https://modal.com/apps/musson28/main/ap-9CZBl8x6CW0htG9TFPy0G3).
+
+---
+
+### Stage 5 — MOTPE joint seeding+CKF (July 23, 2026)
+
+**Status:** Complete (opt + eval validation + plots).
+
+**Note on sampler name:** Optuna 4.x removed `MOTPESampler`. We use `TPESampler(seed=42, n_startup_trials=20)`, the official MO-TPE successor (same algorithm family; informed proposals after warmup).
+
+**Note on W&B:** Modal secret `wandb` is attached, but `wandb.init` fails with TLS (`x509: certificate signed by unknown authority`). Trials are persisted to Optuna SQLite (`/data/optimizer/joint_motpe/optuna.db`) and `trials.csv`. Sync to W&B post-hoc if needed.
+
+#### Optimization outcome (July 23, 2026)
+
+Study finished in ~6 h (`17:17`→`23:11` UTC). App terminated cleanly enough to write `trials.csv`.
+
+| State | Count |
+|-------|-------|
+| COMPLETE | **437** |
+| PRUNED (ε&lt;50%) | **63** |
+| RUNNING (orphaned) | 4 |
+| Total registered | 504 |
+
+Opt-set highlights: peak ε≈97.7% (high fake); strong tradeoffs e.g. ε≈92.3%/f≈0.10%, ε≈89.7%/f≈0.10%.
+
+#### Eval-set validation (completed July 23, 2026)
+
+Re-ran the full 4D Optuna Pareto front (**139/139 configs**) on held-out `[32, 64)`.
+
+- Modal: [ap-j8vreLJGbJksQKu4xdhMvA](https://modal.com/apps/musson28/main/ap-j8vreLJGbJksQKu4xdhMvA) (stopped after completion)
+- Results: `/data/optimizer/joint_motpe/eval_pareto_4d.csv` and `cCKF/experiments/joint_motpe/eval_pareto_4d.csv`
+
+**Overfit gap (eval − opt):** Δε mean **−0.07 pp** (range −0.35…+0.39); Δf mean **−0.27 pp**. Essentially no overfitting — metrics transfer cleanly.
+
+**Suggested operating points (eval set) — updated Jul 27:**
+
+| Point | Trial | Selection rule | notes |
+|-------|-------|----------------|-------|
+| Tight | 79 | min \(f\) on 2D \((\varepsilon,f)\) Pareto among \(\varepsilon\ge 90\%\) | purity knee (“Tight” ≠ tight seeding) |
+| Medium | 70 | max \(\varepsilon\) on that Pareto among \(f&lt;1\%\) | high-ε clean point |
+| Fast | 331 | min wall among 3D Pareto with \(\varepsilon\ge 93\%\), \(f\le 0.5\%\) | near convex bump; t356 nearby |
+| Loose (legacy) | 284 | max \(\varepsilon\) among \(f&lt;5\%\) | replaced by Fast for reporting |
+
+(Absolute max ε is t76: 97.7% / 16.1% f — usually too dirty for a baseline.)
+
+Full 10D configs live in `JOINT_OP_POINTS` (`cCKF/modal_acts.py`) and
+`cCKF/experiments/joint_motpe/{tight_t79,medium_t70,fast_t331}_per_event.json`.
+
+#### Per-event metrics + profiler timing (Jul 24–27, 2026)
+
+**ε / f uncertainties:** unweighted mean ± sample stdev (`ddof=1`) over \(N=32\)
+per-event digi+reco jobs on eval `[32, 64)` (`events=1` each).
+
+| Point | Trial | \(\varepsilon_{\mathrm{DM}}\) (%) | \(f_{\mathrm{DM}}\) (%) | \(t_{\mathrm{seed}\to\mathrm{trk}}\) (s/evt) |
+|-------|-------|-----------------------------------|-------------------------|-----------------------------------------------|
+| Tight | 79 | \(92.34\pm1.03\) | \(0.121\pm0.108\) | 24.92 |
+| Medium | 70 | \(96.23\pm0.74\) | \(0.773\pm0.362\) | 48.42 |
+| Fast | 331 | \(93.14\pm0.93\) | \(0.163\pm0.182\) | 9.81 |
+
+\(d_{\mathrm{DM}}=0\) post-ambi for all three. Artifacts:
+`*_per_event.json`, `op_points_timing.json` under `cCKF/experiments/joint_motpe/`.
+
+**Stage breakdown** (ACTS `time_perevent_s`; Seeding = SPM+Seeding+TPE+STPT+PTTT;
+CKF = `TrackFindingAlgorithm` only; Ambi = `GreedyAmbiguityResolution`):
+
+| Point | Seeding | CKF | Ambi | Total |
+|-------|---------|-----|------|-------|
+| Tight | 2.81 (11.3%) | 22.00 (88.3%) | 0.107 (0.4%) | 24.92 |
+| Medium | 4.04 (8.3%) | 44.28 (91.4%) | 0.100 (0.2%) | 48.42 |
+| Fast | 2.17 (22.2%) | 7.58 (77.3%) | 0.052 (0.5%) | 9.81 |
+
+CKF dominates. Runtime tracks **downstream combinatorics**, not the “Tight” label:
+Medium (seeds/spm=46) is slowest; Fast is quickest. Seeding stage itself only moves ~2 s.
+
+#### Runtime metrics: Optuna wall vs profiler work (important)
+
+| | **Optuna 4th objective** | **Reported \(t_{\mathrm{seed}\to\mathrm{trk}}\)** |
+|--|--------------------------|--------------------------------------------------|
+| Definition | digi+reco **job wall** / \(N\) | \(\sum\) ACTS `time_perevent_s` over seed→ambi |
+| Parallelism | Depends on `threads=8` (event MT) | Mean per-event **thread** time (mostly MT-agnostic) |
+| Includes | Digi, IO, writers, overlap | Reco stages only |
+
+ACTS Sequencer sums each algorithm call’s duration across workers, then ÷ \(N\).
+Overlapping events are not de-overlapped, so profiler s/evt ≫ wall/evt under MT.
+**Do not compare raw profiler CKF s/evt to Optuna wall/evt without that caveat.**
+
+Ordering of configs by wall vs by \(t_{\mathrm{seq}}\) is **mostly preserved** when CKF
+dominates variable cost and parallel efficiency is similar (our three op points agree:
+Fast ≪ Tight ≪ Medium). Not guaranteed for every pair (Amdahl / digi-bound fast
+configs; contention). The 4D Pareto “speed” knee can shift slightly if the runtime
+objective is swapped; ε/\(f\) fronts do not.
+
+For portable algorithm-cost claims: cite profiler stages.
+For “what MOTPE optimized”: cite wall/evt.
+
+Interactive 3D viewer: `cCKF/experiments/plots/joint_motpe/pareto_eff_fake_runtime_3d.html`
+(filters + optional smooth RBF surface on visible Pareto points).
+
+#### Provenance (for later model benchmarking)
+
+Full table: [`cCKF/experiments/joint_motpe/PROVENANCE.md`](../cCKF/experiments/joint_motpe/PROVENANCE.md).
+
+| Item | ID |
+|------|-----|
+| SURP commit | `c1bd85f7d3f634f76a76cebc6c0bb041e91272c8` |
+| KalmanML submodule | `d4b93df1ea2808b8c92910d197940aff0b349f1c` |
+| ACTS submodule (ref) | `4de1dcbbb` |
+| ODD | v5.0.0 |
+| Modal ACTS | spack `acts-main-udwtnx3aoh5lh6s76slc2fzc5szhwe7y` in `ghcr.io/opendatadetector/sw:0.2.2_…` |
+| Material maps SHA256 | `aa8c168f8046c1b252e41af030b53787c7cf59b86cfb3ab49ada656a97ec883a` |
+| edm4hep Modal path | `surp-acts-data:/events/edm4hep.root` |
+| edm4hep SHA256 | `7656dca207dfc96bb37c67ac524a6966d1a3ad10ebaaa4a9d3c0d493a874996f` |
+| edm4hep size | 6 612 819 004 bytes · 64 events used ([0,32)/[32,64)) |
+| Upstream | NERSC ColliderML `full_pileup/ttbar/v1/runs/{N}/edm4hep.root` |
+
+#### Plots
+
+Regenerated Stage-3-style suite for joint MO-TPE:
+
+```
+cCKF/experiments/plots/joint_motpe/
+  pareto_eff_vs_fake.png
+  pareto_eff_vs_runtime.png
+  fake_vs_runtime.png
+  three_objective_bubble.png
+  duplicate_rate.png
+  nmeas_min_effect.png
+  branch_cap_effect.png
+  branch_cap_marginals.png
+  branch_cap_controlled.png
+  pareto_param_marginals.png
+  opt_vs_eval_gap.png   # new: transfer histograms
+```
+
+Script: `cCKF/scripts/plot_joint_motpe_pareto.py`.
+
+#### Why this re-run
+
+Stage 3 NSGA-II completed only ~2 generations (≈ random search). Seeding and CKF interact across the greedy↔combinatorial regime change, so staged optimization with an unconverged seeding front is insufficient. MOTPE updates its surrogate after every trial; joint 10D search covers the interaction.
+
+#### Data split (64-event Modal file)
+
+| Split | Events | Purpose |
+|-------|--------|---------|
+| Optimization | `[0, 32)` | Every Optuna trial |
+| Evaluation | `[32, 64)` | Held out; same set as ACTS defaults baseline |
+
+#### ACTS defaults baseline (eval `[32, 64)`, pT > 1 GeV)
+
+From Stage 4 (`acts_odd_defaults.yaml`, with loc0 ±4 mm):
+
+| Metric | Value |
+|--------|-------|
+| ε_DM | **37.3%** |
+| f_DM | **1.14%** |
+| d_DM | **0.00%** |
+| Wall (32 evt, 8 thr) | 150 s (~4.7 s/event) |
+
+Config: seeds=5, minPt=0.4, impactMax=20, χ²=15/25, branch=2, nMeasMin=7, holes/outliers=2/2, loc0=±4 mm, ptMin=1.0.
+
+**Note:** Ablation showed removing loc0 does **not** change ε_DM (still 37.3%). Stage 5 Optuna runs **without** loc0 (fair vs prior Optuna; not identical to published ODD defaults).
+
+#### Fair-box ACTS baseline: `impactMax=5` mm (July 24, 2026)
+
+ACTS default `impactMax=20` mm sits **outside** the Stage 5 search box `[0.5, 5]`. Re-ran defaults on eval `[32, 64)` with only that knob clipped to **5 mm** (upper edge of our range). Config: `acts_odd_defaults_impact5.yaml`. Modal: [ap-re4NNsylCTfwIVKAz5Jkuo](https://modal.com/apps/musson28/main/ap-re4NNsylCTfwIVKAz5Jkuo).
+
+| Metric | ACTS default (impact=20) | Fair-box (impact=5) |
+|--------|--------------------------|---------------------|
+| ε_DM | 37.3% | **41.0%** |
+| f_DM | 1.14% | **1.28%** |
+| d_DM | 0.00% | **0.00%** |
+| Wall (32 evt, 8 thr) | ~150 s | 140 s |
+
+Clipping \(d_0\) into our box **raises** ε by ~+3.7 pp (fewer displaced/pileup seeds competing). Still far below Optuna medium (~96%). Use **impact=5** as the apples-to-apples ACTS reference when quoting Optuna gains inside the search box; keep impact=20 as the published ODD default.
+
+#### Study metadata
+
+| Detail | Value |
+|--------|-------|
+| Sampler | `TPESampler(seed=42, n_startup_trials=20)` — Optuna 4 successor to `MOTPESampler` (removed in v4.0; same MO-TPE algorithm) |
+| Trials | 500 |
+| Parallel | 4 concurrent trials × 8 ACTS threads |
+| Objectives | ε_DM↑, f_DM↓ (track-level), d_DM↓, wall_s/event↓ |
+| DM threshold | 0.5 both sides |
+| Reconstructability (T) | pT > 1 GeV, \|η\| < 3, ≥6 measurements, ≥3 pixel hits, secondaries **included** |
+| Ambi | greedy, fixed (`maximumSharedHits=3`, `nMeasurementsMin=6`) |
+| loc0 | **removed** |
+| Storage | `/data/optimizer/joint_motpe/optuna.db` |
+| W&B project | `cckf-baseline-optimization` (Modal secret `wandb`) |
+| Entrypoint | `modal run --detach modal_acts.py::run_joint_motpe_optimizer` |
+| ODD | v5.0.0 (`/opt/ODD_v5`) |
+| ACTS | from Modal image (ghcr.io opendatadetector/sw + built bindings); exact commit logged at run start |
+| edm4hep | Modal volume `surp-acts-data:/events/edm4hep.root` (64-event ColliderML full_pileup ttbar subset) |
+| DM matching | double-majority, threshold 0.5 both sides (`hits_shared/hits_on_track` and `hits_shared/hits_on_particle`) |
+| Ambi (fixed) | greedy; `maximumSharedHits=3`, `nMeasurementsMin=6` |
+
+#### Parameter ranges (10D)
+
+| Parameter | Range | Type |
+|-----------|-------|------|
+| `num_seeds_per_spm` | [5, 80] | int |
+| `seed_minPt` | [0.3, 1.2] GeV | float |
+| `seed_impactMax` | [0.5, 5.0] mm | float |
+| `seed_sigmaScattering` | [2, 10] | float |
+| `ckf_chi2CutOffMeasurement` | [5, 30] | float |
+| `ckf_chi2CutOffOutlier` | chi2Meas + margin, margin ∈ [0, 30] | float |
+| `ckf_numMeasurementsCutOff` | [1, 5] | int |
+| `ckf_nMeasurementsMin` | [4, 9] | int |
+| `ckf_maxHolesAndOutliers` | [1, 6] (clamped so sum with nMeasMin < 12) | int |
+| `ckf_ptMin` | [0.3, 1.2] GeV | float |
+
+#### Hard constraints (trial pruned)
+
+- ε_DM < 50%
+- NaN metrics / ACTS crash
+- Wall > 20 min for 32 events
+
+#### Post-optimization plan
+
+1. Extract Pareto front from 500 trials (opt set)
+2. Re-evaluate each Pareto config on `[32, 64)`
+3. Report opt vs eval gap (overfit diagnostic)
+4. Select tight/medium/**fast** operating points (loose demoted; see above)
+5. Diagnostics: ε(η), ε(pT), pulls, purity for those 3
+6. ~~Done:~~ per-event mean±σ; ACTS profiler seed→ambi stage times; document wall vs profiler
+---
+
+### Known limitations & next steps
+
+#### Limitation: pT > 1 GeV threshold (resolved for op points)
+
+Stage 5 Motpe trials still only have scalar metrics at the baked-in ~1 GeV floor.
+**Tight / Medium / Fast** were re-run (Jul 28) with `truth_pt_min=0.15` + matching
+dumps so ε/f can be scanned vs cutoff post-hoc (see below).
+
+#### Done: ε / f vs true-pT cutoff (Tight / Medium / Fast)
+
+**One variable:** matching dumps only (op-point reco params unchanged). No Motpe re-opt.
+Runtime vs cutoff not plotted (`seed_minPt` / `ckf_ptMin` already differ per config).
+
+**Command:**
+```bash
+modal run modal_acts.py::run_op_points_matching_scan --points tight,medium,fast --truth-pt-min 0.15
+# local:
+python scripts/plot_eff_fake_vs_pt.py \
+  --scan-dir experiments/joint_motpe/pt_scan \
+  --out-dir experiments/plots/joint_motpe
+```
+
+**Artifacts:** `cCKF/experiments/joint_motpe/pt_scan/{tight_t79,medium_t70,fast_t331}/`
+(`particles_selected.root`, `performance_finding_ambi.root` + `matchingdetails`,
+`tracksummary_ambi.root`); plot
+`cCKF/experiments/plots/joint_motpe/eff_fake_vs_pt_cutoff.{png,csv}`.
+
+**ε at 1 GeV (matches Stage 5 scalars):**
+
+| Point | ε(1 GeV) | Stage 5 ε |
+|-------|----------|-----------|
+| Tight | 92.41% | 92.34±1.03% |
+| Medium | 96.25% | 96.23±0.74% |
+| Fast | 93.19% | 93.14±0.93% |
+
+**Fake-rate caveat:** LOG \(f_{\mathrm{DM}}\) at cutoff \(c\) counts a track as fake if it is
+not Matched/Duplicate to a `particles_selected` particle with \(p_T≥c\). Soft-matched
+tracks therefore become “fake” as \(c\) rises (Fast/Medium/Tight \(f(1\,\mathrm{GeV})\) ≈
+9.5% / 23% / 27%). ACTS built-in `fakerate` on the same dumps is ≈ Unknown-only
+(0.12% / 0.79% / 0.17%) and does **not** re-threshold soft matches — so it is not
+the curve on the right-hand plot. Prefer ACTS Unknown-rate when comparing to Stage 5
+scalar \(f\); prefer LOG \(f_{\mathrm{DM}}(c)\) when discussing cutoff dependence.
+
+**Infra notes:** Modal spack `addTrackWriters` lacks `writeMatchingDetails` — digi uses
+`_add_track_writers` to register `RootTrackFinderPerformanceWriter` directly.
+`run_op_points_matching_scan` calls `data_vol.reload()` after each `run_ckf.remote`
+before copying into `pt_scan/` (stale mount previously left empty dirs).
+
+#### Done: purity / completeness (Tight / Medium / Fast)
+
+**Sample:** post-ambi Matched/Duplicate tracks with majority-particle \(p_T\geq 1\) GeV
+on eval dumps in `pt_scan/` (same digi+reco as matching scan).
+
+**Defs:** purity \(= n_{\mathrm{maj}}/(n_{\mathrm{meas}}+n_{\mathrm{out}})\);
+completeness \(= n_{\mathrm{maj}}/\texttt{number\_of\_hits}(t)\) from `particles_selected`.
+
+| Point | \(N_{\mathrm{trk}}\) | \(\langle p\rangle_{\mathrm{evt}}\pm\mathrm{SEM}\) | \(\langle c\rangle_{\mathrm{evt}}\pm\mathrm{SEM}\) |
+|-------|----------------------|-----------------------------------------------------|-----------------------------------------------------|
+| Tight | 24361 | \(0.9806\pm0.0005\) | \(0.9715\pm0.0006\) |
+| Medium | 25374 | \(0.9794\pm0.0004\) | \(0.9685\pm0.0006\) |
+| Fast | 24567 | \(0.9807\pm0.0005\) | \(0.9728\pm0.0006\) |
+
+Plots: `purity_completeness_hist.png`, `purity_completeness_per_event.png`
+(`scripts/plot_purity_completeness.py`).
+
+#### Other next steps
+
+- Validate Pareto-optimal configs on larger event samples (64–128 events) for tighter error bars
+- Test on additional physics processes (dihiggs, ggf) to check generalization
+- Generate Pareto front plots via `plot_pareto_fronts` on Modal
+- **NERSC re-optimization (planned):** rebuild the joint MOTPE study on NERSC using
+  ColliderML public full_pileup ttbar `edm4hep.root` files that coincide with the
+  HuggingFace / public release (same physics, larger \(N\), clean baskets). Prefer
+  optimizing the 4th objective on **profiler** \(t_{\mathrm{seed}\to\mathrm{trk}}\)
+  (or CKF `time_perevent_s`) rather than Modal wall, so rankings are portable across
+  node thread counts. Keep the same metric contract (DM 0.5, T definition, ambi fixed,
+  no loc0) and the same opt/eval event split protocol (or document a new one).
+  Upstream path today:
+  `/global/cfs/cdirs/m4958/data/ColliderML/simulation/full_pileup/ttbar/v1/runs/{N}/edm4hep.root`.
+  Cross-check SHA256 / event indices against the public ColliderML release before claiming
+  bit-identical events to the Modal 64-event subset (`7656dca2…`).
+- Wire `profile_op_points` / per-event eval into the NERSC entrypoint once ACTS+ODD v5
+  edm4hep path is unblocked (historically geometry/material-map issues; Modal remains
+  the active path as of Jul 2026).
+- Begin RL integration: use the 93.6% ε / 0.27% f config as the baseline to beat
+
+---
+
+
+---
+
+## Part II — cCKF (August 2026 onward)
 
 ## 2026-08-08 — ACTS instrumentation for cCKF gate features
 
@@ -1132,8 +1602,8 @@ value target being inverted (2026-09-08 entry), which was not known yet.
 **Status:** Classical re-runs complete; resolver harness paused by Matthew.
 **Configs:** `configs/_classical_{tight,medium,loose}.yaml` (seeding_v2 point +
 joint NSGA-II CKF trial, July), `configs/_motpe_{tight,medium,fast}_{greedy,scoring}.yaml`
-(MOTPE joint trials 79 / 70 / 331; provenance in the parent repo's
-`SURP/experiments/LOG.md`, Stage 5). Same event 4 harness and truth selection
+(MOTPE joint trials 79 / 70 / 331; provenance in Part I of this log,
+Stage 5). Same event 4 harness and truth selection
 as the sweeps (pT > 1 GeV). Runs: `$SCRATCH/cckf/runs_classical`, `runs_resolvers`.
 
 | Config | ε_DM | f_DM |

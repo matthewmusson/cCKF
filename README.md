@@ -1,16 +1,16 @@
 # cCKF — calibrated Combinatorial Kalman Filter
 
-Research code from Matthew Musson's summer 2026 project (Stanford/SLAC,
-supervised by Lauren Tompkins, mentored by Rocky Garg) on replacing the
-hand-tuned decision heuristics inside the ACTS Combinatorial Kalman Filter
-(CKF) with learned, calibrated decision functions. The Kalman engine is not touched; learning is confined to three decisions the classical CKF 
-makes with fixed cuts: whether a candidate hit belongs to the track (the
-**gate** g_ψ, replacing the χ² cut), whether a branch is worth continuing
-(the **value function** V_φ, replacing the hole and branch caps), and which
-candidates to keep at the end (a score q_ω plus set packing, replacing greedy
-ambiguity resolution; not built). Data are ColliderML ttbar events at 200
-pileup on the Open Data Detector (ODD), simulated with Geant4, reconstructed
-with ACTS on NERSC Perlmutter. 
+Research code from Matthew Musson's summer 2026 project (Stanford/SLAC,  
+supervised by Lauren Tompkins, mentored by Rocky Garg) on replacing the  
+hand-tuned decision heuristics inside the ACTS Combinatorial Kalman Filter  
+(CKF) with learned, calibrated decision functions. 
+
+The Kalman engine is not touched; learning is confined to three decisions the classical CKF   
+makes with fixed cuts: whether a candidate hit belongs to the track (the  
+**gate** g_ψ, replacing the χ² cut), whether a branch is worth continuing  
+(the **value function** V_φ, replacing the hole and branch caps), and which candidates to keep at the end (a score q_ω plus set packing, replacing greedy ambiguity resolution; not built). 
+
+Data are ColliderML ttbar events at 200 pileup on the Open Data Detector (ODD), simulated with Geant4, reconstructed with ACTS on NERSC Perlmutter. 
 
 **State on 2026-09-08.** A trained gate and value function run inside ACTS
 and produce a (τ_g, τ_v) Pareto front on one event, but the front sits an
@@ -38,29 +38,36 @@ NERSC lives, read `NERSC.md`.
 The directory map below tags each directory with the phase that produced it.
 The phases, in order:
 
-| Tag | When | Phase | What came out of it |
-|-----|------|-------|---------------------|
-| P1 | Jul 15 – 28 | Classical CKF tuning on Modal (seeding, then joint seeding+CKF with Optuna) | the tight / medium / fast operating points (`configs/tight_t79.yaml`, `medium_t70.yaml`, `_motpe_*`), `experiments/joint_motpe/` |
-| P2 | Aug 3 – 12 | ACTS instrumentation (innovation covariance, X/X₀, cluster shape written into the track-states ROOT) and the pilot data collection + expansion | `instrumentation.patch`, `expansion.py`, the first parquets, the first window-failure plots |
-| P3 | Aug 13 – 18 | Gate and value training on the pilot data; calibration audit | `cckf/`, `scripts/train_*.py`, `figures/gate/`, `results/calib_maj/` |
-| P4 | Aug 19 – 24 | The C++ integration into ACTS and the first real-weights runs (three SIGSEGV cycles, the Eigen `.eval()` rule, the nσ pre-filter) | `acts_patches/`, `scripts/build_cckf_nersc.sh`, `digi_and_reco.py` |
-| P5 | Aug 25 – 29 | Move to NERSC; endcap geometry-id fix and full re-expansion; weights_v3; grid and qEHVI Pareto sweeps; gate-window scan | `$SCRATCH/cckf/reexpanded`, `weights_v3/`, `results/pareto_*.csv` on NERSC, `scripts/ehvi_sweep.py` |
-| P6 | Sep 2 – 4 | Uncensored window-failure and module-failure plots; classical points through the harness; regeneration of tight/fast data | `scripts/winfail_uncensored.py`, `figures/winfail_*`, `scripts/nersc/regen_*` |
-| P7 | Sep 4 – 8 | Tier-3 (re-propagated) value target with a χ² window; its acceptance gate failed; root cause = state order; handoff cleanup | `cckf/tier3_*`, `scripts/stitch_tier3.py`, `scripts/audit_expansion.py`, this README |
+
+| Tag | When        | Phase                                                                                                                                          | What came out of it                                                                                                              |
+| --- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | Jul 15 – 28 | Classical CKF tuning on Modal (seeding, then joint seeding+CKF with Optuna)                                                                    | the tight / medium / fast operating points (`configs/tight_t79.yaml`, `medium_t70.yaml`, `_motpe_*`), `experiments/joint_motpe/` |
+| P2  | Aug 3 – 12  | ACTS instrumentation (innovation covariance, X/X₀, cluster shape written into the track-states ROOT) and the pilot data collection + expansion | `instrumentation.patch`, `expansion.py`, the first parquets, the first window-failure plots                                      |
+| P3  | Aug 13 – 18 | Gate and value training on the pilot data; calibration audit                                                                                   | `cckf/`, `scripts/train_*.py`, `figures/gate/`, `results/calib_maj/`                                                             |
+| P4  | Aug 19 – 24 | The C++ integration into ACTS and the first real-weights runs (three SIGSEGV cycles, the Eigen `.eval()` rule, the nσ pre-filter)              | `acts_patches/`, `scripts/build_cckf_nersc.sh`, `digi_and_reco.py`                                                               |
+| P5  | Aug 25 – 29 | Move to NERSC; endcap geometry-id fix and full re-expansion; weights_v3; grid and qEHVI Pareto sweeps; gate-window scan                        | `$SCRATCH/cckf/reexpanded`, `weights_v3/`, `results/pareto_*.csv` on NERSC, `scripts/ehvi_sweep.py`                              |
+| P6  | Sep 2 – 4   | Uncensored window-failure and module-failure plots; classical points through the harness; regeneration of tight/fast data                      | `scripts/winfail_uncensored.py`, `figures/winfail_*`, `scripts/nersc/regen_*`                                                    |
+| P7  | Sep 4 – 8   | Tier-3 (re-propagated) value target with a χ² window; its acceptance gate failed; root cause = state order; handoff cleanup                    | `cckf/tier3_*`, `scripts/stitch_tier3.py`, `scripts/audit_expansion.py`, this README                                             |
+
+
+
 
 ## Directory map
 
-Everything Noe needs is in this repository plus the NERSC filesystem
-(`NERSC.md`). Phase tags refer to the table above. Ignored directories (not
-in git) are listed at the end because they exist on the working machines.
+Everything is in this repository plus the NERSC filesystem (`NERSC.md`). Phase tags refer to the table above. 
+
+Ignored directories (not in git) are listed at the end because they exist on the working machines.
 
 ```
 cCKF/
 ├── README.md                 this file
-├── NEXT_STEPS.md             the handoff plan: what to do, in what order, with the gate after each step
+├── NEXT_STEPS.md             the handoff plan: what to do, in what order, with the requirements after each step
+|
 ├── NERSC.md                  where every input, output, build and job lives on Perlmutter
-├── CLAUDE.md                 instructions for coding agents; build-error table; tier glossary
-├── experiments/LOG.md        the dated experiment record (P2 onward); July tuning is in ../experiments/LOG.md
+|
+├── CLAUDE.md                 instructions for coding agents
+|
+├── experiments/LOG.md        the dated experiment record: Part I the July classical tuning, Part II cCKF
 │
 ├── expansion.py              [P2] ROOT track states + digi CSVs -> one expanded Parquet per event: every
 │                             in-window candidate per CKF state with truth labels, cluster features,
@@ -150,3 +157,4 @@ Ignored (exist on disk, never committed):
     output/*.root, output/gate.bin  ACTS run outputs
     .claude/, .superpowers/   agent worktrees and plan-execution ledgers
 ```
+
