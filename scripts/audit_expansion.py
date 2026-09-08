@@ -278,7 +278,11 @@ def check_selected_flag(states: pd.DataFrame, root: pd.DataFrame,
     ROOT says the CKF accepted a measurement (l_x_hit finite), the fraction
     carrying exactly one is_ckf_selected row. States with in-window
     candidates that the CKF rejected legitimately have no selected row, so
-    'states with candidates' is the wrong denominator."""
+    'states with candidates' is the wrong denominator.
+
+    Order-coupled like majority_label: the join is on (seed_id, step_k) in
+    propagation order, so on a wrongly ordered parquet it fails for the same
+    reason parquet_vs_root does (event 4 pre-fix: 0.4355)."""
     # Vectorised: a Python lambda per state group is minutes at 40M rows.
     n_sel = states.groupby(["seed_id", "step_k"])["is_ckf_selected"].sum().rename("n_sel")
     multi = int((n_sel > 1).sum())
