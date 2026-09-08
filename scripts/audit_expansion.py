@@ -228,10 +228,13 @@ def recompute_majority(states: pd.DataFrame) -> pd.DataFrame:
     and needs >= 2 agreeing.
     """
     sel = states[states["is_ckf_selected"] & (states["cand_hit_id"] >= 0)].copy()
+    # Restrict to the three innermost selected states BEFORE touching the
+    # list column: the per-row mode is Python-level and 40M rows is minutes.
+    sel = sel.sort_values(["seed_id", "step_k"])
+    sel = sel.groupby("seed_id").head(3)
     sel = sel[sel["contrib_pids"].map(lambda c: c is not None and len(c) > 0)]
     sel["primary"] = sel["contrib_pids"].map(lambda c: _mode(np.asarray(c, dtype=np.int64)))
-    sel = sel.sort_values(["seed_id", "step_k"])
-    first3 = sel.groupby("seed_id").head(3)
+    first3 = sel
 
     def _maj(g: pd.Series) -> int:
         if len(g) < 3:
@@ -257,8 +260,12 @@ def check_majority_label(states: pd.DataFrame, min_agreement: float) -> Check:
 
 
 def check_selected_flag(states: pd.DataFrame, min_joinable: float) -> Check:
-    per_state = states.groupby(["seed_id", "step_k"]).agg(
-        n_sel=("is_ckf_selected", "sum"), has_cand=("cand_hit_id", lambda s: (s >= 0).any()))
+    # Vectorised: a Python lambda per state group is minutes at 40M rows.
+    g = states.groupby(["seed_id", "step_k"])
+    per_state = pd.DataFrame({
+        "n_sel": g["is_ckf_selected"].sum(),
+        "has_cand": g["cand_hit_id"].max() >= 0,
+    })
     multi = int((per_state["n_sel"] > 1).sum())
     with_cand = per_state[per_state["has_cand"]]
     joinable = float((with_cand["n_sel"] == 1).mean()) if len(with_cand) else 1.0

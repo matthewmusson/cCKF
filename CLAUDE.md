@@ -1,6 +1,21 @@
 # CLAUDE.md — cCKF Subrepo
 
-This is the **cCKF** (calibrated CKF) implementation repo, a git submodule under `/Users/matthewm/SURP/`. The parent repo's `CLAUDE.md` has the full project context, research plan, and physics background. This file covers the repo structure and build system.
+This is the **cCKF** (calibrated CKF) implementation repo, a standalone git repository nested under `/Users/matthewm/SURP/` (the parent declares no submodule for it). The parent repo's `CLAUDE.md` has the full project context, research plan, and physics background. This file covers the repo structure and build system. **Start with `README.md`** for the current state, the pipeline map, and the handoff plan.
+
+## Value-target tier naming (glossary)
+
+The code names the value targets by the order they were built, which is the
+reverse of how they bound performance. Decided 2026-09-08; the code keeps its
+names until the next retrain, the docs use the new ones:
+
+| Code name | Columns / functions | Meaning | Preferred name |
+|-----------|---------------------|---------|----------------|
+| tier 1 | `n_findable_t1`, `vstar_t1` | every remaining simhit of the particle counts, reachable or not | upper bound (diagnostic only) |
+| tier 2 | `n_findable_t2`, `vstar_t2`, `vstar_soft`, `value_target.py` | remaining hits on surfaces the *logged branch* visited | **tier 3** (lower bound: no re-propagation) |
+| tier 3 | `tier3_walker.py`, `tier3_stitch.py`, `stitch_tier3.py`, `vstar_tier3` | remaining hits a truth-greedy rollout *re-propagated* from the last correct state actually finds | **tier 2** (tighter bound: perfect decisions from k) |
+
+Do not rename code columns piecemeal; when the rename happens it must be one
+commit across the walker, stitcher, cache builder, trainer and tests.
 
 ## Repo Structure
 
