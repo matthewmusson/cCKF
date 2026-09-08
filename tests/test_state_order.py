@@ -48,10 +48,20 @@ def test_check_propagation_order_accepts_increasing_path_length():
     expansion.check_propagation_order(track_nr, state_idx, path_len)
 
 
-def test_check_propagation_order_allows_ties_and_nan():
+def test_check_propagation_order_tolerates_mid_branch_resets():
+    # The CKF restarts pathLength when it resumes a forked branch (82% of
+    # event-4 tracks carry a drop). Orientation, not monotonicity, is the
+    # invariant: seed at 0, outermost above it, first step up.
+    track_nr = np.array([0, 0, 0, 0, 0, 0])
+    state_idx = np.array([5, 4, 3, 2, 1, 0])
+    path_len = np.array([900.0, 170.0, 4.4, 300.0, 100.0, 0.0])
+    expansion.check_propagation_order(track_nr, state_idx, path_len)
+
+
+def test_check_propagation_order_allows_nan():
     track_nr = np.array([0, 0, 0, 0])
     state_idx = np.array([3, 2, 1, 0])
-    path_len = np.array([np.nan, 100.0, 100.0, 0.0])
+    path_len = np.array([np.nan, 100.0, 50.0, 0.0])
     expansion.check_propagation_order(track_nr, state_idx, path_len)
 
 
@@ -67,8 +77,18 @@ def test_check_propagation_order_rejects_nonzero_seed_path_length():
     track_nr = np.array([0, 0])
     state_idx = np.array([1, 0])
     path_len = np.array([250.0, 5.0])
-    with pytest.raises(ValueError, match="seed"):
+    with pytest.raises(ValueError, match="pathLength 0"):
         expansion.check_propagation_order(track_nr, state_idx, path_len)
+
+
+def test_check_propagation_order_fraction_threshold():
+    # 1 of 2 tracks mis-oriented -> 0.5 < 0.99 -> raise; 0.5 floor -> pass
+    track_nr = np.array([0, 0, 1, 1])
+    state_idx = np.array([1, 0, 1, 0])
+    path_len = np.array([100.0, 0.0, 0.0, 100.0])
+    with pytest.raises(ValueError):
+        expansion.check_propagation_order(track_nr, state_idx, path_len)
+    expansion.check_propagation_order(track_nr, state_idx, path_len, min_frac=0.5)
 
 
 def _write_trackstates(path, tracks: list[dict]) -> None:

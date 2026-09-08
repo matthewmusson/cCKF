@@ -8,6 +8,9 @@ Why these checks (each one caught, or would have caught, a real defect):
 
   root_order          ROOT stores states outermost-first; step_k must be
                       propagation order (LOG 2026-09-08: inverted for a month).
+                      Orientation test: seed state at pathLength 0, outermost
+                      above it, first step increasing. pathLength is NOT
+                      monotone along a branch (the CKF resets it on resume).
   parquet_vs_root     the parquet's (seed_id, step_k) -> (volume, layer) must
                       equal ROOT's propagation-order sequence.
   volumes             candidates in all nine sensitive ODD volumes and the
@@ -91,11 +94,12 @@ def load_root_sequence(trackstates: str, event_id: int) -> pd.DataFrame:
 
     with uproot.open(trackstates) as fh:
         tree = fh["trackstates"]
+        keys = set(tree.keys())
         fields = ["volume_id", "layer_id"]
-        has_pl = "pathLength" in set(tree.keys())
-        if has_pl:
-            fields.append("pathLength")
-        has_ev = "event_nr" in set(tree.keys())
+        has_pl = "pathLength" in keys
+        has_hit = "l_x_hit" in keys      # all-state branch, NaN at holes
+        fields += (["pathLength"] if has_pl else []) + (["l_x_hit"] if has_hit else [])
+        has_ev = "event_nr" in keys
         arrays = tree.arrays(fields + (["event_nr"] if has_ev else []), library="ak")
     if has_ev:
         arrays = arrays[ak.to_numpy(arrays["event_nr"]) == int(event_id)]
@@ -109,6 +113,10 @@ def load_root_sequence(trackstates: str, event_id: int) -> pd.DataFrame:
     out["pathLength"] = (
         ak.to_numpy(ak.flatten(arrays["pathLength"], axis=1)).astype(np.float64)
         if has_pl else np.nan
+    )
+    out["has_measurement"] = (
+        np.isfinite(ak.to_numpy(ak.flatten(ak.fill_none(arrays["l_x_hit"], np.nan), axis=1)).astype(np.float64))
+        if has_hit else False
     )
     return out
 
@@ -126,9 +134,11 @@ def check_root_order(root: pd.DataFrame) -> Check:
     except ValueError as exc:
         return Check("root_order", False, None, str(exc))
     seed = root[root.step_k == 0]
-    return Check("root_order", True, float(seed["pathLength"].abs().max()),
-                 f"pathLength non-decreasing along step_k on {root.track_nr.nunique():,} "
-                 f"tracks; max |pathLength| at step 0 = {seed['pathLength'].abs().max():.3g} mm")
+    frac0 = float((seed["pathLength"].abs() < 1e-3).mean())
+    return Check("root_order", True, frac0,
+                 f"orientation holds on {root.track_nr.nunique():,} tracks: seed state at "
+                 f"pathLength 0 on {frac0:.4f}, outermost above seed, first step increasing "
+                 "(pathLength is NOT globally monotone: the CKF resets it on branch resume)")
 
 
 def check_parquet_vs_root(states: pd.DataFrame, root: pd.DataFrame) -> Check:
@@ -247,6 +257,9 @@ def recompute_majority(states: pd.DataFrame) -> pd.DataFrame:
 
 
 def check_majority_label(states: pd.DataFrame, min_agreement: float) -> Check:
+    """Meaningful only when parquet_vs_root passes: both sides read the
+    parquet's step_k, so on a wrongly ordered parquet the check compares the
+    label with itself (event 4 pre-fix: 0.9998 agreement, vacuous)."""
     stored = states.drop_duplicates("seed_id")[
         ["seed_id", "branch_majority_pid", "majority_undefined"]]
     stored = stored[~stored["majority_undefined"]]
@@ -259,20 +272,29 @@ def check_majority_label(states: pd.DataFrame, min_agreement: float) -> Check:
                  f"{agree:.4f} of {len(j):,} majority-defined branches (floor {min_agreement})")
 
 
-def check_selected_flag(states: pd.DataFrame, min_joinable: float) -> Check:
+def check_selected_flag(states: pd.DataFrame, root: pd.DataFrame,
+                        min_joinable: float) -> Check:
+    """Same floor as scripts/patch_is_selected.py: among parquet states where
+    ROOT says the CKF accepted a measurement (l_x_hit finite), the fraction
+    carrying exactly one is_ckf_selected row. States with in-window
+    candidates that the CKF rejected legitimately have no selected row, so
+    'states with candidates' is the wrong denominator."""
     # Vectorised: a Python lambda per state group is minutes at 40M rows.
-    g = states.groupby(["seed_id", "step_k"])
-    per_state = pd.DataFrame({
-        "n_sel": g["is_ckf_selected"].sum(),
-        "has_cand": g["cand_hit_id"].max() >= 0,
-    })
-    multi = int((per_state["n_sel"] > 1).sum())
-    with_cand = per_state[per_state["has_cand"]]
-    joinable = float((with_cand["n_sel"] == 1).mean()) if len(with_cand) else 1.0
+    n_sel = states.groupby(["seed_id", "step_k"])["is_ckf_selected"].sum().rename("n_sel")
+    multi = int((n_sel > 1).sum())
+    if "has_measurement" not in root or not root["has_measurement"].any():
+        return Check("selected_flag", multi == 0, None,
+                     f"{multi:,} states with >1 selected row; ROOT has no l_x_hit branch, "
+                     "joinable fraction not computed")
+    meas = root.loc[root["has_measurement"], ["track_nr", "step_k"]].rename(
+        columns={"track_nr": "seed_id"})
+    j = meas.merge(n_sel.reset_index(), on=["seed_id", "step_k"], how="inner")
+    joinable = float((j["n_sel"] == 1).mean()) if len(j) else 1.0
     ok = multi == 0 and joinable >= min_joinable
     return Check("selected_flag", ok, joinable,
-                 f"{multi:,} states with >1 selected row; {joinable:.4f} of states with "
-                 f"candidates carry exactly one selected row (floor {min_joinable})")
+                 f"{multi:,} states with >1 selected row; {joinable:.4f} of the {len(j):,} "
+                 f"parquet states where ROOT accepted a hit carry exactly one selected row "
+                 f"(floor {min_joinable})")
 
 
 def check_vstar_range(states: pd.DataFrame) -> Check:
@@ -296,7 +318,7 @@ def run_all(states: pd.DataFrame, root: pd.DataFrame,
         check_candidate_shares(states, reference, tol),
         check_history(states),
         check_majority_label(states, min_agreement),
-        check_selected_flag(states, min_joinable),
+        check_selected_flag(states, root, min_joinable),
         check_vstar_range(states),
     ]
 

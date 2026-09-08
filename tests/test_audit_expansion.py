@@ -36,10 +36,13 @@ def _good_branch(seed=0, maj=1001):
 
 def _root_for(states):
     st = states.drop_duplicates(["seed_id", "step_k"]).sort_values(["seed_id", "step_k"])
+    sel = states[states.is_ckf_selected].drop_duplicates(["seed_id", "step_k"])[["seed_id", "step_k"]]
+    key = set(zip(sel.seed_id, sel.step_k))
     return pd.DataFrame({
         "track_nr": st.seed_id.to_numpy(), "step_k": st.step_k.to_numpy(),
         "volume_id": st.volume_id.to_numpy(), "layer_id": st.layer_id.to_numpy(),
         "pathLength": st.step_k.to_numpy() * 100.0,
+        "has_measurement": [(s, k) in key for s, k in zip(st.seed_id, st.step_k)],
     })
 
 
@@ -118,9 +121,23 @@ def test_majority_label_recomputed_from_innermost_hits():
 
 def test_selected_flag_rejects_two_selected_rows_on_one_state():
     rows = _good_branch()
+    states = _states(rows)
+    assert au.check_selected_flag(states, _root_for(states), 0.95).passed
     rows[1]["is_ckf_selected"] = True
-    c = au.check_selected_flag(_states(rows), 0.95)
+    bad = _states(rows)
+    c = au.check_selected_flag(bad, _root_for(bad), 0.95)
     assert not c.passed and "1 states with >1" in c.detail
+
+
+def test_selected_flag_denominator_is_root_measurement_states():
+    # A state with candidates the CKF rejected has no selected row and must
+    # not count against the floor; a ROOT measurement state with no selected
+    # row must.
+    states = _states(_good_branch())
+    root = _root_for(states)
+    root.loc[(root.track_nr == 0) & (root.step_k == 3), "has_measurement"] = True  # hole state claimed as hit
+    c = au.check_selected_flag(states, root, 0.95)
+    assert not c.passed and c.value == pytest.approx(4 / 5)
 
 
 def test_vstar_range():

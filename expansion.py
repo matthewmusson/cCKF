@@ -407,46 +407,64 @@ def propagation_order_index(jagged, mask=None) -> np.ndarray:
 
 
 def check_propagation_order(
-    track_nr: np.ndarray, state_idx: np.ndarray, path_length: np.ndarray
+    track_nr: np.ndarray, state_idx: np.ndarray, path_length: np.ndarray,
+    min_frac: float = 0.99,
 ) -> None:
-    """Refuse to continue unless ``state_idx`` follows the particle outward.
+    """Refuse to continue unless ``state_idx`` is oriented seed -> outward.
 
-    Along propagation order the accumulated path length must be
-    non-decreasing (ties allowed: overlapping modules and layer surfaces at
-    the same radius), and the seed-surface state (index 0) must sit at path
-    length 0. NaN path lengths are skipped.
+    ``pathLength`` is NOT globally monotone along a branch: the CKF resets
+    its stepper whenever it resumes a forked branch, so the value restarts
+    at that state (event 4: 82% of tracks carry at least one drop, 6% of
+    steps; measured 2026-09-08). What does hold, and what distinguishes the
+    two orders, is the orientation:
+
+    * the state at ``state_idx`` 0 (the seed surface) has pathLength 0
+      (99.6% of tracks on event 4; the rest start on a non-seed surface),
+    * the outermost state has a larger pathLength than the seed state
+      (100%), and
+    * the first step away from the seed increases pathLength (~100%).
+
+    Each fraction must reach ``min_frac`` over the tracks that carry finite
+    values. In ROOT's native order the "seed" state is the outermost one
+    at ~1-3 m, so every criterion fails at once.
 
     Raises
     ------
     ValueError
-        With the offending track number, so a wrongly ordered file is caught
-        at load time instead of silently inverting the pipeline again.
+        Naming the failed criterion and its fraction, so a wrongly ordered
+        file is caught at load time instead of silently inverting the
+        pipeline again.
     """
     track_nr = np.asarray(track_nr)
     state_idx = np.asarray(state_idx)
     pl = np.asarray(path_length, dtype=np.float64)
     if len(track_nr) == 0:
         return
-    order = np.lexsort((state_idx, track_nr))
-    t, s, p = track_nr[order], state_idx[order], pl[order]
-    finite = np.isfinite(p)
-    same_track = t[1:] == t[:-1]
-    both = finite[1:] & finite[:-1]
-    decreasing = same_track & both & (p[1:] < p[:-1] - 1e-6)
-    if decreasing.any():
-        bad = int(t[1:][decreasing][0])
-        raise ValueError(
-            f"track {bad}: pathLength decreases along state_idx -- states are "
-            "not in propagation order. ROOT stores states outermost-first; "
-            "derive state_idx with propagation_order_index()."
-        )
-    at_seed = (s == 0) & finite
-    if at_seed.any() and (np.abs(p[at_seed]) > 1e-3).any():
-        bad = int(t[at_seed][np.abs(p[at_seed]) > 1e-3][0])
-        raise ValueError(
-            f"track {bad}: state_idx 0 has pathLength {p[at_seed][np.abs(p[at_seed]) > 1e-3][0]:.3g} "
-            "mm; the seed-surface state must sit at path length 0."
-        )
+    df = pd.DataFrame({"t": track_nr, "s": state_idx, "p": pl})
+    df = df[np.isfinite(df["p"])]
+    if df.empty:
+        return
+    df = df.sort_values(["t", "s"])
+    pos = df.groupby("t").cumcount().to_numpy()
+    first = df[pos == 0].set_index("t")["p"]      # lowest state_idx: seed end
+    last = df.groupby("t")["p"].last()            # highest state_idx: outer end
+    second = df[pos == 1].set_index("t")["p"]     # first step away from the seed
+    seed_zero = float((first.abs() < 1e-3).mean())
+    outer_above = float((last > first + 1e-6).mean())
+    step1_up = (float((second > first.loc[second.index] + 1e-6).mean())
+                if len(second) else 1.0)
+    checks = [
+        ("state_idx 0 at pathLength 0", seed_zero),
+        ("outermost pathLength above the seed state", outer_above),
+        ("first step away from the seed increases pathLength", step1_up),
+    ]
+    for name, frac in checks:
+        if frac < min_frac:
+            raise ValueError(
+                f"states are not in propagation order: '{name}' holds on only "
+                f"{frac:.3f} of tracks (need {min_frac}). ROOT stores states "
+                "outermost-first; derive state_idx with propagation_order_index()."
+            )
 
 
 def load_trackstates(root_path: str, event_id: int) -> pd.DataFrame:
@@ -455,8 +473,8 @@ def load_trackstates(root_path: str, event_id: int) -> pd.DataFrame:
     States come out in PROPAGATION order: ``state_idx`` 0 is the seed
     surface, the largest index the outermost state. ROOT stores them the
     other way round (see :func:`propagation_order_index`); the ``pathLength``
-    branch, when present, is checked with :func:`check_propagation_order`
-    and a wrongly ordered file raises.
+    branch, when present, is checked for that orientation with
+    :func:`check_propagation_order` and a wrongly ordered file raises.
 
     Filters ROOT entries by the standard ACTS ``event_nr`` branch (a single
     trackstates file can hold multiple events, e.g. Stage 1's pilot run

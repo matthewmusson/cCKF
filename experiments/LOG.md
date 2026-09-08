@@ -1300,6 +1300,9 @@ script (path length decreasing, seed at zero, layer ids monotone, all volumes
 present, hole fraction near previous), rebuild caches, retrain gate and value,
 regenerate tier-3 worklists and rollouts, re-run learned-pair sweeps.
 
+
+**Addendum (same day, audit run 58080160 on the pre-fix event 4 parquet):** pathLength is NOT globally monotone along a branch: the CKF resets its stepper when it resumes a forked branch, so 82.5% of tracks carry at least one drop (6.0% of steps, median drop 313 mm, concentrated at the third state from the seed and at strip-volume entries). The loader guard and the audit test ORIENTATION instead: seed state at pathLength 0 (99.6% of tracks), outermost above the seed (100%), first step increasing (~100%). The audit's demonstration result: parquet_vs_root FAIL with 96.0% of states on a different (volume, layer) than ROOT's propagation-order state, i.e. the inversion is caught; volumes, history, vstar_range PASS; majority_label is vacuous on a pre-fix parquet (both sides read the parquet's order).
+
 ---
 
 ## 2026-09-08 — Repository consolidation for handoff
