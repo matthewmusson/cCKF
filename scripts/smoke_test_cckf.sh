@@ -22,15 +22,15 @@ set -eo pipefail
 cd "$(dirname "$0")/.."
 
 echo "=== Step 1/3: Build patched ACTS (includes CckfTrackFindingAlgorithm) ==="
-modal run modal_build_acts.py::build_acts --force
+modal run modal_apps/modal_build_acts.py::build_acts --force
 
 echo
 echo "=== Step 2/3: Generate random gate/value weight blobs ==="
-modal run modal_build_acts.py::generate_dummy_weights
+modal run modal_apps/modal_build_acts.py::generate_dummy_weights
 
 echo
 echo "=== Step 3/3: Run cCKF on 2 test events ==="
-modal run modal_build_acts.py::run_cckf --events 2 --gate-threshold 0.5 --value-threshold 0.1
+modal run modal_apps/modal_build_acts.py::run_cckf --events 2 --gate-threshold 0.5 --value-threshold 0.1
 
 echo
 echo "Smoke test complete. Inspect the printed metrics dict above for:"

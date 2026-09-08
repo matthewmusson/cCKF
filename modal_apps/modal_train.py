@@ -11,10 +11,10 @@ reintroduce ``starmap`` for any step that commits.
 
 Usage
 -----
-    modal run modal_train.py::patch_selected
-    modal run modal_train.py::build_caches
-    modal run --detach modal_train.py::train_gate_all
-    modal run modal_train.py::audit --model-dir /data/models/gate_A
+    modal run modal_apps/modal_train.py::patch_selected
+    modal run modal_apps/modal_train.py::build_caches
+    modal run --detach modal_apps/modal_train.py::train_gate_all
+    modal run modal_apps/modal_train.py::audit --model-dir /data/models/gate_A
 """
 
 from __future__ import annotations
@@ -214,7 +214,7 @@ def diagnose_selected_join(event_id: int = 0) -> dict:
 
 @app.local_entrypoint()
 def diagnose_join(event_id: int = 0) -> None:
-    """Usage: modal run modal_train.py::diagnose_join --event-id 0"""
+    """Usage: modal run modal_apps/modal_train.py::diagnose_join --event-id 0"""
     import json
 
     print(json.dumps(diagnose_selected_join.remote(event_id=event_id), indent=2))
@@ -888,7 +888,7 @@ def export_weights(
 ) -> None:
     """Export trained weights to CCKF blobs on the data volume.
 
-    Usage: modal run modal_train.py::export_weights [--use-platt 2param]
+    Usage: modal run modal_apps/modal_train.py::export_weights [--use-platt 2param]
     """
     import json
 
@@ -902,7 +902,7 @@ def export_weights(
 
 @app.local_entrypoint()
 def export_curves(arms: str = "A,B,C") -> None:
-    """Usage: modal run modal_train.py::export_curves --arms A,B,C"""
+    """Usage: modal run modal_apps/modal_train.py::export_curves --arms A,B,C"""
     print(export_gate_curves.remote(arms=arms))
 
 
@@ -938,7 +938,7 @@ def build_gate_cache_staged(only_events: str, split: str = "train") -> None:
 
     Usage
     -----
-        modal run modal_train.py::build_gate_cache_staged \\
+        modal run modal_apps/modal_train.py::build_gate_cache_staged \\
             --only-events 0,1 --split train
     """
     print(
@@ -965,7 +965,7 @@ def build_value_cache_staged(only_events: str, split: str = "train") -> None:
 
     Usage
     -----
-        modal run modal_train.py::build_value_cache_staged \\
+        modal run modal_apps/modal_train.py::build_value_cache_staged \\
             --only-events 0,1 --split train
     """
     print(
@@ -992,7 +992,7 @@ def audit(model_dir: str = f"{MODEL_DIR}/gate_B", value_predictions: str = "") -
 
 @app.local_entrypoint()
 def build_pure(splits: str = "train,val,cal") -> None:
-    """Build pure-seed caches. Usage: modal run --detach modal_train.py::build_pure"""
+    """Build pure-seed caches. Usage: modal run --detach modal_apps/modal_train.py::build_pure"""
     import json
     print(json.dumps(build_pure_caches.remote(splits_to_build=splits), indent=2))
 
@@ -1000,7 +1000,7 @@ def build_pure(splits: str = "train,val,cal") -> None:
 @app.local_entrypoint()
 def train_pure_all(skip_cache: bool = False) -> None:
     """Full pure-seed pipeline: build caches → train gate → train value.
-    Usage: modal run --detach modal_train.py::train_pure_all"""
+    Usage: modal run --detach modal_apps/modal_train.py::train_pure_all"""
     import json
 
     if not skip_cache:

@@ -8,40 +8,40 @@ image with ODD v5.0.0 geometry built from source.
 Usage:
     # One-time: seed official ODD v5 material maps from GitLab LFS (~14 MB)
     # Prefer this over generate_material_maps — ColliderML used these maps.
-    modal run modal_acts.py::seed_material_maps
+    modal run modal_apps/modal_acts.py::seed_material_maps
 
     # Alternative: generate material maps from scratch (~30 min, 100k events)
-    modal run modal_acts.py::generate_material_maps --n-events 100000
+    modal run modal_apps/modal_acts.py::generate_material_maps --n-events 100000
 
     # Smoke test without edm4hep (particle gun + Fatras + digi + CKF)
-    modal run modal_acts.py::run_full_chain --n-events 8
+    modal run modal_apps/modal_acts.py::run_full_chain --n-events 8
 
     # Run CKF benchmark on edm4hep files (needs input data on the volume)
-    modal run modal_acts.py::run_ckf --config baseline --events 128
+    modal run modal_apps/modal_acts.py::run_ckf --config baseline --events 128
 
     # Stage 1: Seeding optimizer (xopt EI, already completed)
-    modal run modal_acts.py::run_optimizer \\
+    modal run modal_apps/modal_acts.py::run_optimizer \\
         --opt-vars seeding --events-per-trial 8 --threads-per-trial 8 \\
         --max-parallel-trials 4 --n-seed-trials 8 --n-guided-trials 16
 
     # Stage 3 (legacy): NSGA-II CKF per seeding point
-    modal run --detach modal_acts.py::app.launch_ckf_studies
+    modal run --detach modal_apps/modal_acts.py::app.launch_ckf_studies
 
     # Stage 4: Joint MO-TPE seeding+CKF (10D, 500 trials, 32/32 split)
     # (Optuna 4: TPESampler replaces removed MOTPESampler)
-    modal run --detach modal_acts.py::run_joint_motpe_optimizer \\
+    modal run --detach modal_apps/modal_acts.py::run_joint_motpe_optimizer \\
         --n-trials 500 --events-per-trial 32 --threads-per-trial 8 \\
         --max-parallel-trials 4
 
     # Stage 4b: Re-evaluate Pareto configs on held-out [32, 64)
-    modal run --detach modal_acts.py::validate_joint_motpe_eval \\
+    modal run --detach modal_apps/modal_acts.py::validate_joint_motpe_eval \\
         --front 4d --max-parallel 8
 
     # Generate Pareto front plots (after optimization completes)
-    modal run modal_acts.py::plot_pareto_fronts
+    modal run modal_apps/modal_acts.py::plot_pareto_fronts
 
     # Download results
-    modal run modal_acts.py::app.download --output-dir ./results
+    modal run modal_apps/modal_acts.py::app.download --output-dir ./results
 """
 
 import modal
@@ -58,7 +58,7 @@ SPACK_PYTHON = "/spack/opt/spack/linux-x86_64/python-3.13.11-awxtqzerpdzhatylv3u
 ODD_INSTALL = "/opt/ODD_v5/install/share/OpenDataDetector"
 
 image = (
-    modal.Image.from_dockerfile("Dockerfile.modal", add_python="3.13")
+    modal.Image.from_dockerfile("modal_apps/Dockerfile.modal", add_python="3.13")
     .run_commands(
         "pip install torch --index-url https://download.pytorch.org/whl/cpu",
     )
@@ -1423,7 +1423,7 @@ def run_seeding_optimizer(
         4. wall time                    — MINIMIZE
 
     Usage:
-        modal run --detach modal_acts.py::run_seeding_optimizer \\
+        modal run --detach modal_apps/modal_acts.py::run_seeding_optimizer \\
             --n-trials 200 --max-parallel-trials 8
     """
     import os
@@ -1635,7 +1635,7 @@ def run_ckf_optimizer(
         4. wall time                          — MINIMIZE
 
     Usage:
-        modal run modal_acts.py::run_ckf_optimizer \\
+        modal run modal_apps/modal_acts.py::run_ckf_optimizer \\
             --seeding-point medium --n-trials 100 \\
             --events-per-trial 8 --threads-per-trial 8 \\
             --max-parallel-trials 4
@@ -2115,7 +2115,7 @@ def run_joint_motpe_optimizer(
     evaluation split here — validate Pareto configs separately with skip=32.
 
     Usage:
-        modal run --detach modal_acts.py::run_joint_motpe_optimizer \\
+        modal run --detach modal_apps/modal_acts.py::run_joint_motpe_optimizer \\
             --n-trials 500 --events-per-trial 32 --threads-per-trial 8 \\
             --max-parallel-trials 4
     """
@@ -2326,10 +2326,10 @@ def validate_joint_motpe_eval(
     Resumes from an existing ``eval_pareto_{front}.csv`` if present.
 
     Usage:
-        modal run --detach modal_acts.py::validate_joint_motpe_eval \\
+        modal run --detach modal_apps/modal_acts.py::validate_joint_motpe_eval \\
             --front 4d --max-parallel 8
         # cheaper 2D (ε,f) front (~40 configs):
-        modal run --detach modal_acts.py::validate_joint_motpe_eval --front 2d
+        modal run --detach modal_apps/modal_acts.py::validate_joint_motpe_eval --front 2d
     """
     import csv
     import json
@@ -2709,7 +2709,7 @@ def run_acts_baseline_per_event(
     """Evaluate ACTS-defaults (impactMax clipped) once per event for mean±std.
 
     Usage:
-        modal run --detach modal_acts.py::run_acts_baseline_per_event \\
+        modal run --detach modal_apps/modal_acts.py::run_acts_baseline_per_event \\
             --impact-max 5 --max-parallel 8
     """
     config_name = (
@@ -2766,7 +2766,7 @@ def profile_op_points(
     """Run each operating point once and scrape ACTS seed→tracks profiler times.
 
     Usage:
-        modal run modal_acts.py::profile_op_points --points tight,medium,fast
+        modal run modal_apps/modal_acts.py::profile_op_points --points tight,medium,fast
     """
     import json
 
@@ -2859,7 +2859,7 @@ def run_op_points_matching_scan(
     study artifacts; writes under optimizer/joint_motpe/pt_scan/<point>/.
 
     Usage:
-        modal run --detach modal_acts.py::run_op_points_matching_scan \\
+        modal run --detach modal_apps/modal_acts.py::run_op_points_matching_scan \\
             --points tight,medium,fast --truth-pt-min 0.15
     """
     import json
@@ -2956,7 +2956,7 @@ def run_op_points_per_event(
     """Per-event mean±std for joint-MOTPE operating points on the eval split.
 
     Usage:
-        modal run --detach modal_acts.py::run_op_points_per_event \\
+        modal run --detach modal_apps/modal_acts.py::run_op_points_per_event \\
             --points tight,medium,loose --max-parallel 8
     """
     import json
@@ -3001,8 +3001,8 @@ def launch_ckf_studies(
 
     IMPORTANT: Use --detach so the runs survive local disconnection:
 
-        modal run --detach modal_acts.py::app.launch_ckf_studies
-        modal run --detach modal_acts.py::app.launch_ckf_studies \\
+        modal run --detach modal_apps/modal_acts.py::app.launch_ckf_studies
+        modal run --detach modal_apps/modal_acts.py::app.launch_ckf_studies \\
             --seeding-points medium --n-trials 50
 
     Without --detach, Ctrl-C or disconnect kills the remote jobs.
@@ -3028,7 +3028,7 @@ def launch_ckf_studies(
 
     print(f"\n{len(handles)} jobs spawned.")
     print("Monitor at: https://modal.com/apps")
-    print("Download results: modal run modal_acts.py::app.download")
+    print("Download results: modal run modal_apps/modal_acts.py::app.download")
 
     # Block on all handles so --detach keeps the app alive until completion
     for sp, handle in handles:
@@ -3177,7 +3177,7 @@ def run_gate_pilot(
     """Phase-1 pilot: envelope digi+seeds, Tight seeds, checks 1–2, schema skeleton.
 
     Usage:
-        modal run modal_acts.py::run_gate_pilot --events 2
+        modal run modal_apps/modal_acts.py::run_gate_pilot --events 2
 
     digi_variant: 'geometric' (default, required for cluster feats) or 'smearing'
     (control — expected to fail check 1).
@@ -3764,7 +3764,7 @@ def chi2_gate_calib(
 ):
     """Collect [0, n_events) under envelope + analyze χ²-gate calibration.
 
-    Prefer: ``modal run --detach modal_acts.py::chi2_gate_calib --n-events 32``
+    Prefer: ``modal run --detach modal_apps/modal_acts.py::chi2_gate_calib --n-events 32``
     """
     if smoke:
         n_events = 2
@@ -3935,7 +3935,7 @@ def calib_medium(
 ):
     """Collect Medium CKF all-candidates data for reliability diagrams.
 
-    Usage: modal run --detach modal_acts.py::calib_medium --n-events 32
+    Usage: modal run --detach modal_apps/modal_acts.py::calib_medium --n-events 32
     """
     if smoke:
         n_events = 2

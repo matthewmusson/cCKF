@@ -6,16 +6,16 @@ the existing pipeline uses, extended with cmake for building from source.
 
 Usage:
     # Full build with Python bindings + unit tests
-    modal run modal_build_acts.py
+    modal run modal_apps/modal_build_acts.py
 
     # Just build (skip tests)
-    modal run modal_build_acts.py::build_acts
+    modal run modal_apps/modal_build_acts.py::build_acts
 
     # Run unit tests on cached build
-    modal run modal_build_acts.py::run_unit_tests
+    modal run modal_apps/modal_build_acts.py::run_unit_tests
 
     # Run 1-event CKF to verify new ROOT branches
-    modal run modal_build_acts.py::verify_root_branches
+    modal run modal_apps/modal_build_acts.py::verify_root_branches
 """
 
 import json
@@ -34,7 +34,7 @@ ACTS_INSTALL = f"{BUILD_PATH}/acts-install"
 ODD_INSTALL = "/opt/ODD_v5/install/share/OpenDataDetector"
 
 image = (
-    modal.Image.from_dockerfile("Dockerfile.modal", add_python="3.13")
+    modal.Image.from_dockerfile("modal_apps/Dockerfile.modal", add_python="3.13")
     .apt_install("cmake", "make", "git")
     .pip_install("uproot", "awkward", "pyyaml", "pandas", "pyarrow", "numpy", "jinja2", "matplotlib", "scipy")
     .add_local_file(
@@ -47,7 +47,7 @@ image = (
     )
     .add_local_dir("configs", remote_path="/app/configs")
     .add_local_file("digi_and_reco.py", remote_path="/app/digi_and_reco.py")
-    .add_local_file("window_failure.py", remote_path="/app/window_failure.py")
+    .add_local_file("archive/superseded/window_failure.py", remote_path="/app/window_failure.py")
     .add_local_file("expansion.py", remote_path="/app/expansion.py")
     .add_local_dir("utils", remote_path="/app/utils")
     .add_local_dir("scripts", remote_path="/app/scripts")
@@ -3237,7 +3237,7 @@ def pareto_sweep(
     re-running already-completed grid points.
 
     Usage:
-        modal run --detach modal_build_acts.py::pareto_sweep \\
+        modal run --detach modal_apps/modal_build_acts.py::pareto_sweep \\
             --gate-thresholds 0.1,0.3,0.5,0.7,0.9 \\
             --value-thresholds 0.01,0.05,0.1,0.2,0.5 \\
             --events 32 --max-parallel 8

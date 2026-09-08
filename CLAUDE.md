@@ -45,9 +45,7 @@ cCKF/
 │   ├── pareto_sweep.py              # Threshold grid sweep (τ_g × τ_v)
 │   └── smoke_test_cckf.sh           # End-to-end: build → dummy weights → run 2 events
 │
-├── modal_build_acts.py              # Modal app: build_acts, generate_dummy_weights
-├── modal_acts.py                    # Modal app: run_cckf, run_baseline_ckf
-├── modal_train.py                   # Modal app: gate/value training
+├── modal_apps/                      # LEGACY Modal apps (build, run, train); run from the repo root
 ├── digi_and_reco.py                 # Python ACTS pipeline (addCKFTracks / addCckfTracks)
 ├── expansion.py                     # Parquet expansion (truth-matching, track states)
 ├── instrumentation.patch            # Git patch adding S_k, X/X₀, cluster features to ACTS track states
@@ -79,7 +77,7 @@ The cCKF integrates into ACTS via source-level patching at build time. **No fork
 - **Include dirs are PUBLIC** (not PRIVATE) because `CckfTrackFindingAlgorithm.hpp` transitively includes `cckf/SensorLookup.hpp`, and the Python bindings target needs to resolve this.
 - **nlohmann_json is PUBLIC** for the same reason (SensorLookup.hpp includes `<nlohmann/json.hpp>`).
 - **No new dependencies** — nlohmann_json is already in ACTS's dependency tree.
-- Build runs on Modal via `modal run modal_build_acts.py::build_acts --force`.
+- Build runs on Modal via `modal run modal_apps/modal_build_acts.py::build_acts --force`.
 
 ## ACTS Extension Points Used
 
@@ -154,16 +152,16 @@ Files touched: `CckfMeasurementSelector.hpp` (pre-filter logic + `n_window_prefi
 
 ```bash
 # Build patched ACTS on Modal
-modal run modal_build_acts.py::build_acts --force
+modal run modal_apps/modal_build_acts.py::build_acts --force
 
 # Generate dummy weights for smoke testing
-modal run modal_build_acts.py::generate_dummy_weights
+modal run modal_apps/modal_build_acts.py::generate_dummy_weights
 
 # Run cCKF on 2 test events
-modal run modal_acts.py::run_cckf --events 2
+modal run modal_apps/modal_acts.py::run_cckf --events 2
 
 # Run baseline CKF for comparison
-modal run modal_acts.py::run_baseline_ckf --events 2
+modal run modal_apps/modal_acts.py::run_baseline_ckf --events 2
 ```
 
 ## Current Status (Aug 21, 2026)

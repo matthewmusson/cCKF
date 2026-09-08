@@ -2,7 +2,7 @@
 """Post-process a Pareto sweep CSV: identify the non-dominated front and plot it.
 
 Task 10 (cCKF ACTS integration) — the sweep itself runs on Modal via
-``modal run --detach modal_build_acts.py::pareto_sweep`` in the ``cCKF``
+``modal run --detach modal_apps/modal_build_acts.py::pareto_sweep`` in the ``cCKF``
 repo root, which writes ``/data/results/pareto_sweep.csv`` on the
 ``surp-acts-data`` volume with columns::
 
