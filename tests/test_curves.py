@@ -253,3 +253,27 @@ def test_rebin_interval_narrows_as_the_bin_fills():
     assert (thin["ci_upper"] - thin["ci_lower"]) > 10 * (
         fat["ci_upper"] - fat["ci_lower"]
     )
+
+
+def test_metric_bundle_returns_nan_auc_on_a_single_class_sample():
+    """A thin stratum may contain no positives at all.
+
+    AUC is undefined without at least one pair to rank, and sklearn raises. The
+    |eta| in [3.0, 4.0) stratum holds 2,654 of 24.1M val rows, so this is a real
+    condition, not a defensive hypothetical. Calibration metrics stay defined:
+    an all-negative bin has an observed fraction of 0, which is a number.
+    """
+    prob = np.linspace(0.001, 0.02, 5_000)
+    all_neg = np.zeros(5_000, dtype=bool)
+
+    bundle = curves.metric_bundle(prob, all_neg)
+
+    assert np.isnan(bundle["auc_roc"])
+    assert np.isnan(bundle["auc_pr"])
+    assert np.isfinite(bundle["ece"])
+    assert bundle["base_rate"] == 0.0
+
+    all_pos = np.ones(5_000, dtype=bool)
+    bundle_pos = curves.metric_bundle(prob, all_pos)
+    assert np.isnan(bundle_pos["auc_roc"])
+    assert np.isfinite(bundle_pos["ece"])

@@ -1014,3 +1014,54 @@ def train_pure_all(skip_cache: bool = False) -> None:
     print("=== training value (pure, T2) ===")
     value_metrics = train_value_pure.remote()
     print(json.dumps(value_metrics, indent=2))
+
+@app.function(
+    image=image, volumes={DATA_PATH: data_vol}, cpu=8, memory=131072, timeout=3600
+)
+def probe_sampler_coverage(neg_per_pos: int = 5) -> dict:
+    """Read-only measurement of how concentrated arm C's draw actually is.
+
+    Never writes, never commits. Answers the question the arm C regression
+    raised: with replacement, does the 1/chi2 weighting collapse the effective
+    number of distinct negatives the model sees, or is the weight distribution
+    tame enough that it does not matter? Guessing at the chi2 distribution is
+    not good enough -- the answer depends on how many negatives sit near the
+    _CHI2_FLOOR, which only the real cache knows.
+    """
+    import sys
+
+    sys.path.insert(0, "/root")
+    import numpy as np
+
+    from cckf import cache, samplers
+
+    tr = cache.load_cache(f"{CACHE_DIR}/gate/train")
+    y = np.asarray(tr["y"])
+    chi2 = np.asarray(tr["aux"][:, 0], dtype=np.float64)
+
+    pos = int((y == 1).sum())
+    neg_mask = y == 0
+    n_take = neg_per_pos * pos
+
+    c = chi2[neg_mask]
+    finite = np.isfinite(c)
+    c = np.where(finite, np.maximum(c, samplers._CHI2_FLOOR), np.inf)
+    weights = 1.0 / c
+
+    out = samplers.subsample_diagnostics(weights, n_take)
+    out["n_pos"] = pos
+    out["n_neg_total"] = int(neg_mask.sum())
+    out["frac_neg_nonfinite_chi2"] = float(1.0 - finite.mean())
+    out["chi2_quantiles_finite"] = [
+        float(q)
+        for q in np.quantile(chi2[neg_mask][finite], [0.0, 0.01, 0.5, 0.99, 1.0])
+    ]
+    out["n_neg_at_chi2_floor"] = int((chi2[neg_mask] <= samplers._CHI2_FLOOR).sum())
+    # Uniform reference: the same draw with flat weights, for comparison.
+    out["uniform_coverage"] = samplers.subsample_diagnostics(
+        np.ones(int(neg_mask.sum())), n_take
+    )["coverage"]
+    print(out)
+    return out
+
+

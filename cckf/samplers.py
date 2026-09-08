@@ -189,3 +189,73 @@ def prior_logit_shift(
     if min(n_pos_orig, n_neg_orig, n_pos_new, n_neg_new) <= 0:
         raise ValueError("all four counts must be positive")
     return math.log(n_pos_new / n_neg_new) - math.log(n_pos_orig / n_neg_orig)
+
+
+def subsample_diagnostics(weights: np.ndarray, n_take: int) -> dict:
+    """Effective coverage of a with-replacement weighted draw.
+
+    Drawing ``n_take`` items i.i.d. with probabilities ``p = w / sum(w)`` does
+    not cover ``n_take`` *distinct* items when the weights are skewed: heavy
+    items are drawn repeatedly and the rest are never reached. The expected
+    number of distinct items is exact and cheap::
+
+        E[distinct] = sum_i (1 - (1 - p_i) ** n_take)
+
+    This matters for Approach C. Weights are ``1 / max(chi2, _CHI2_FLOOR)``, so
+    the floor admits weights up to 1000 while a typical negative with chi2 of
+    order 1-10 gets 0.1-1 -- a three-to-four-decade dynamic range. Under *with*
+    replacement that concentration is realised, and a small set of
+    near-zero-chi2 negatives can absorb most of the draws. Under the previous
+    without-replacement implementation each negative was capped at one copy,
+    which bounded the concentration and made the realised distribution
+    materially different from -- and better behaved than -- the intended one.
+    Measured consequence of switching: arm C's val BCE went 0.286 -> 1.073 and
+    AUC-ROC 0.967 -> 0.938 (2026-08-17, experiments/LOG.md).
+
+    Parameters
+    ----------
+    weights : numpy.ndarray
+        Unnormalised non-negative weights over the candidate pool. Non-finite
+        and zero entries are dropped, matching what ``rng.choice(p=...)`` can
+        actually select.
+    n_take : int
+        Number of draws.
+
+    Returns
+    -------
+    dict
+        ``n_take``, ``n_pool``, ``expected_distinct``, ``coverage``
+        (``expected_distinct / n_take``; 1.0 means every draw lands on a fresh
+        item), ``max_expected_copies`` (expected draws of the single heaviest
+        item), ``top1_mass`` and ``top1000_mass`` (probability held by the
+        heaviest 1 and 1000 items), and ``kish_ess`` (``(sum w)^2 / sum w^2``).
+    """
+    w = np.asarray(weights, dtype=np.float64)
+    w = w[np.isfinite(w) & (w > 0.0)]
+    n_pool = int(w.size)
+    if n_pool == 0 or n_take <= 0:
+        return {
+            "n_take": int(max(n_take, 0)),
+            "n_pool": n_pool,
+            "expected_distinct": 0.0,
+            "coverage": float("nan"),
+            "max_expected_copies": float("nan"),
+            "top1_mass": float("nan"),
+            "top1000_mass": float("nan"),
+            "kish_ess": float("nan"),
+        }
+    p = w / w.sum()
+    # log1p/expm1 rather than (1 - p) ** n_take: p_i is tiny for most items and
+    # the direct form loses all precision there.
+    expected_distinct = float(np.sum(-np.expm1(n_take * np.log1p(-p))))
+    order = np.sort(p)[::-1]
+    return {
+        "n_take": int(n_take),
+        "n_pool": n_pool,
+        "expected_distinct": expected_distinct,
+        "coverage": expected_distinct / n_take,
+        "max_expected_copies": float(order[0] * n_take),
+        "top1_mass": float(order[0]),
+        "top1000_mass": float(order[: min(1000, n_pool)].sum()),
+        "kish_ess": float(w.sum() ** 2 / np.square(w).sum()),
+    }

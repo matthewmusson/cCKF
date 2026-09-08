@@ -155,6 +155,7 @@ def main() -> None:
         "decision_region": list(metrics.DECISION_REGION),
         "threshold_region": list(metrics.THRESHOLD_REGION),
         "metrics": {},
+        "strata_metrics": {},
         "reliability": {},
     }
 
@@ -213,6 +214,21 @@ def main() -> None:
                 arrays[f"{name}__{tag}{s}_count"] = hs["count"]
                 arrays[f"{name}__{tag}{s}_sum_prob"] = hs["sum_prob"]
                 arrays[f"{name}__{tag}{s}_sum_label"] = hs["sum_label"]
+
+        # Per-stratum scalar metrics, computed on the actual rows rather than
+        # rebuilt from the histograms above. ECE/DR-ECE/MCE are bin-based and
+        # could be recovered from those statistics, but AUC-ROC and AUC-PR
+        # depend on the *ranking* within the stratum, which a 1000-bin
+        # histogram only approximates (ties collapse inside a bin). Since these
+        # feed a metric-comparison figure rather than a diagram, they are
+        # computed exactly here and cost one extra sort per stratum.
+        scalars["strata_metrics"][name] = {
+            tag: [
+                curves.metric_bundle(prob[mask], val_labels[mask])
+                for mask in strata.values()
+            ]
+            for tag, strata in (("occ", occ_masks), ("abseta", eta_masks))
+        }
         m = scalars["metrics"][name]
         print(
             f"{arm} {name}: AUC-ROC {m['auc_roc']:.6f} AUC-PR {m['auc_pr']:.6f} "

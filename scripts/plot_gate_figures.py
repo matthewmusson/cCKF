@@ -683,6 +683,13 @@ def main() -> None:
     figure_reliability_by_occupancy(data, out_dir, args.stratified_estimator)
     figure_reliability_by_abs_eta(data, out_dir, args.stratified_estimator)
 
+    # The (calibrator x arm x stratification) tensor: 2 x 3 x 2 = 12 cells,
+    # each a six-metric bar figure over that variable's strata.
+    for estimator in ("gate_platt2", "gate_platt4"):
+        for arm in ARMS:
+            for tag, _, _ in STRATIFICATIONS:
+                figure_metrics_by_stratum(data, out_dir, arm, estimator, tag)
+
     # AUC invariance under 2-param Platt is arithmetic, not an empirical
     # finding; verify it held on real data rather than trusting the figure.
     #
@@ -714,6 +721,112 @@ def main() -> None:
                 f"(n_window >= {sv['n_window_at_slope_zero']:.0f}); the "
                 "calibrator inverts the model's ranking there"
             )
+
+
+#: The six metrics, in the order requested. ``ece_inflation`` is derived by
+#: :func:`_metric`; the rest come straight from ``curves.metric_bundle``.
+STRATA_METRIC_KEYS = (
+    ("auc_roc", "AUC-ROC", False),
+    ("auc_pr", "AUC-PR", False),
+    ("ece", "ECE (all rows)", True),
+    ("dr_ece", "DR-ECE [0.01, 0.99]", True),
+    ("ece_inflation", "DR-ECE / ECE", False),
+    ("mce", "MCE", True),
+)
+
+#: (npz/JSON tag, JSON label key, axis label) for the two stratifications.
+STRATIFICATIONS = (
+    ("occ", "occupancy_strata", "search-window occupancy"),
+    ("abseta", "abs_eta_strata", "|η|"),
+)
+
+
+def figure_metrics_by_stratum(
+    data: dict, out_dir: Path, arm: str, estimator: str, tag: str
+) -> Path | None:
+    """One cell of the (calibrator x arm x stratification) tensor.
+
+    Six panels -- AUC-ROC, AUC-PR, ECE, DR-ECE, DR-ECE/ECE, MCE -- each as bars
+    over the strata of one variable, for one arm under one calibrator. The
+    global (unstratified) value is drawn as a dashed reference line so a
+    stratum's deviation from the aggregate is readable directly.
+
+    This is the view the stratified reliability diagrams cannot give: those show
+    the *shape* of miscalibration within a stratum, but comparing a scalar
+    across strata by eye across seven overlaid curves is not feasible.
+
+    Bar labels report the stratum row count, because several |η| strata are
+    thin (the outermost holds 2,654 of 24.1M rows) and a metric computed there
+    should not be read with the same confidence as one from the 22.3M-row n=7+
+    occupancy stratum. AUC is NaN, and the bar absent, wherever a stratum
+    contains a single class.
+    """
+    label_key, axis_label = next((lk, al) for t, lk, al in STRATIFICATIONS if t == tag)
+    scalars = data[arm]["scalars"]
+    if "strata_metrics" not in scalars:
+        print(
+            f"skipping metrics-by-{tag} for {arm}/{estimator}: bundle predates "
+            "strata_metrics; re-run export_curves"
+        )
+        return None
+
+    bundles = scalars["strata_metrics"][estimator][tag]
+    labels = [d["label"] for d in scalars[label_key]]
+    counts = [d["n_rows"] for d in scalars[label_key]]
+    x = np.arange(len(labels))
+
+    fig, axes = plt.subplots(1, 6, figsize=(21, 4.8))
+    for ax, (key, title, is_log) in zip(axes, STRATA_METRIC_KEYS):
+        vals = np.array([_metric(b, key) for b in bundles], dtype=float)
+        finite = np.isfinite(vals)
+        ax.bar(x[finite], vals[finite], 0.62, color=ARM_COLOR[arm])
+        for xi, v in zip(x[finite], vals[finite]):
+            ax.annotate(
+                (
+                    f"{v:.2e}"
+                    if is_log
+                    else (f"{v:.1f}×" if key == "ece_inflation" else f"{v:.4f}")
+                ),
+                (xi, v),
+                textcoords="offset points",
+                xytext=(0, 3),
+                ha="center",
+                fontsize=6,
+                rotation=90,
+            )
+        global_val = _metric(scalars["metrics"][estimator], key)
+        if np.isfinite(global_val):
+            ax.axhline(
+                global_val,
+                color="0.3",
+                ls="--",
+                lw=1.1,
+                label=f"all rows: {global_val:.3g}",
+            )
+            ax.legend(fontsize=6, loc="best")
+        if is_log:
+            ax.set_yscale("log")
+        ax.set_xticks(x)
+        ax.set_xticklabels(
+            [f"{lab}\n({c:,})" for lab, c in zip(labels, counts)],
+            fontsize=6,
+            rotation=45,
+            ha="right",
+        )
+        ax.set_title(title, fontsize=9)
+        ax.grid(alpha=0.3, axis="y", which="both")
+        ax.margins(y=0.18)
+
+    fig.suptitle(
+        f"{ARM_LABEL[arm]} — {EST_LABEL[estimator]} — by {axis_label}, val split. "
+        "Dashed line is the all-rows value.\nBar labels give the metric; x-axis "
+        "labels give the stratum row count. A metric from a thin stratum carries "
+        "far less weight\nthan one from a populated one, and AUC is omitted where "
+        "a stratum holds a single class.",
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.87))
+    return _save(fig, out_dir, f"F9_metrics_{estimator}_{arm}_by_{tag}")
 
 
 if __name__ == "__main__":

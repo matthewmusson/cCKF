@@ -275,12 +275,24 @@ def metric_bundle(prob: np.ndarray, labels: np.ndarray) -> dict:
     labels = np.asarray(labels).astype(bool)
     edges = metrics.logit_bin_edges(30)
 
+    # AUC is undefined on a single-class sample -- there is no pair to rank --
+    # and sklearn raises. That is a legitimate condition for a thin stratum
+    # (the |eta| in [3.0, 4.0) stratum holds 2,654 of 24.1M rows and may
+    # contain no positives), so report NaN rather than crash the whole export.
+    # Calibration metrics remain well defined: an all-negative bin has an
+    # observed fraction of 0, which is a real number, not a missing one.
+    single_class = labels.all() or not labels.any()
+    auc_roc = float("nan") if single_class else float(roc_auc_score(labels, prob))
+    auc_pr = (
+        float("nan") if single_class else float(average_precision_score(labels, prob))
+    )
+
     wide = metrics.decision_region_ece(prob, labels, region=metrics.DECISION_REGION)
     narrow = metrics.decision_region_ece(prob, labels, region=metrics.THRESHOLD_REGION)
 
     return {
-        "auc_roc": float(roc_auc_score(labels, prob)),
-        "auc_pr": float(average_precision_score(labels, prob)),
+        "auc_roc": auc_roc,
+        "auc_pr": auc_pr,
         "ece": float(metrics.expected_calibration_error(prob, labels, edges=edges)),
         "mce": float(metrics.max_calibration_error(prob, labels, edges=edges)),
         "dr_ece": float(wide["ece"]),
