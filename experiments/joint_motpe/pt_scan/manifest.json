@@ -1,0 +1,41 @@
+{
+  "tight": {
+    "ok": true,
+    "trial": 79,
+    "event_range": [
+      32,
+      64
+    ],
+    "truth_pt_min": 0.15,
+    "efficiency_scalar_1gev_style": 19.37178373336792,
+    "fakerate_scalar": 0.12287957360967994,
+    "output_dir": "/data/optimizer/joint_motpe/pt_scan/tight_t79",
+    "note": "Scalars still use ACTS built-in summary over all particles passing truth_pt_min; use plot_eff_fake_vs_pt.py for cutoff scans."
+  },
+  "medium": {
+    "ok": true,
+    "trial": 70,
+    "event_range": [
+      32,
+      64
+    ],
+    "truth_pt_min": 0.15,
+    "efficiency_scalar_1gev_style": 18.976306915283203,
+    "fakerate_scalar": 0.7885478436946869,
+    "output_dir": "/data/optimizer/joint_motpe/pt_scan/medium_t70",
+    "note": "Scalars still use ACTS built-in summary over all particles passing truth_pt_min; use plot_eff_fake_vs_pt.py for cutoff scans."
+  },
+  "fast": {
+    "ok": true,
+    "trial": 331,
+    "event_range": [
+      32,
+      64
+    ],
+    "truth_pt_min": 0.15,
+    "efficiency_scalar_1gev_style": 15.968649089336395,
+    "fakerate_scalar": 0.1695227576419711,
+    "output_dir": "/data/optimizer/joint_motpe/pt_scan/fast_t331",
+    "note": "Scalars still use ACTS built-in summary over all particles passing truth_pt_min; use plot_eff_fake_vs_pt.py for cutoff scans."
+  }
+}

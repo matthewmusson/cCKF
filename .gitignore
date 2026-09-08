@@ -30,3 +30,5 @@ output/smoke/
 *.db
 # superseded optimizer copies; deleted on main in 17b57ea
 optimization/
+# pT-scan run outputs (124 MB of ROOT); manifest/timing/csv are committed
+experiments/joint_motpe/pt_scan/**/*.root

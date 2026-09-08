@@ -1,0 +1,6 @@
+Timing Report (20260728_213248)
+==================================================
+Pipeline stages:
+  Setup                                       2.04s
+  Sequencer                                  99.96s
+  Total                                     102.00s
