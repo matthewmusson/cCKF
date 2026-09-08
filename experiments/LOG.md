@@ -1048,3 +1048,264 @@ training to be redone after validation.
 **Validation gates for the redo (event 1 first):** candidate rows in all 9
 volumes with shares comparable to the original Parquet; hole-only fraction
 near the original; `patch_is_selected` passes its ≥95% joinable floor.
+
+---
+
+## 2026-08-25/26 — Re-expansion of all 32 events with the endcap fix; caches and weights_v3
+
+**Status:** Complete. **Git hash:** 95606d5 (loaders), 44981c5 (weights export).
+**Data:** `$SCRATCH/cckf/reexpanded/expanded_event{E:09d}.parquet`, 32 events,
+82 columns. This is the authoritative training data for everything below.
+`$SCRATCH/cckf/expanded/` (no "re") is the stale pre-fix copy: do not use it.
+
+**Validation of the redo (event 4):** 41.5M states / 1.69M branches; candidates
+in all nine sensitive ODD volumes (16-18, 23-25, 28-30); volume 20 is the only
+passive volume present, about one state per branch (4% of states);
+`patch_is_selected` passes its joinable floor on every event.
+
+**Caches:** gate `caches_v3` (majority label) and `caches_v3_pure` (pure-seed
+label); value `vcache_v3` and `vcache_v3_pure` (`build_caches.sbatch`,
+`build_vcache.sbatch` on scratch).
+
+**weights_v3 promotion (2026-08-26, `$SCRATCH/cckf/weights_v3/{maj,pure}/`,
+each with `provenance.json`):**
+
+| Pair | Gate job | Gate AUC-ROC / AUC-PR | Gate ECE raw | Value job | Value AUC-ROC / AUC-PR | Value ECE raw |
+|------|----------|-----------------------|--------------|-----------|------------------------|---------------|
+| majority-seed | 57623951 | 0.9887 / 0.8524 | — (Platt-4 from cal) | 57623950 | 0.8222 / 0.5348 | 0.00255 |
+| pure-seed | 57629856 | 0.9909 / 0.9602 | 0.00116 | 57629855 | 0.9395 / 0.9718 | 0.00823 |
+
+Gate calibrator: occupancy-conditional 4-parameter Platt fit on the cal split.
+Value calibrator: identity (raw). Metrics are on the val split (events 4/12/20/28).
+
+**Caveat added 2026-09-08:** every target, history feature, and majority label
+in these caches was computed with the branch state order inverted (see the
+2026-09-08 entry). The numbers above are reproducible but describe models
+trained on inverted quantities.
+
+---
+
+## 2026-08-26..29 — Deployed (τ_g, τ_v) Pareto sweeps on event 4: grid, qEHVI densification, window scan
+
+**Status:** Complete for the majority pair; pure pair dominated by fakes.
+**Git hash:** 9945594 (qEHVI driver), 55552d7, 427e090 (window override).
+**Tooling:** `scripts/ehvi_sweep.py` (Optuna + BoTorch qEHVI, warm-started from
+the grid CSV), `scripts/pareto_sweep_nersc.py`, `run_p1_input.sbatch`.
+**Harness:** one event (event 4, 936 truth particles), base config
+`configs/nersc_cckf_full_dm.yaml`, greedy ambiguity resolution, gate window
+10σ unless stated. **Truth selection:** pT > 1 GeV, |η| < 3, ≥ 6 measurements,
+≥ 3 pixel hits, ρ < 24 mm, |z| < 1 m, charged. Efficiency and fake rate are
+post-ambiguity DM metrics. Results: `$SCRATCH/cckf/results/pareto_*.csv`.
+
+**Majority pair, 10σ window (`pareto_maj_dense.csv`, 52 evaluations, 1 failed run told (0, 1)):**
+front from (ε 85.2%, f 14.8%) at (0.7, 0.4) to (ε 94.4%, f 45.2%) at (0.33, 0.05).
+The deployed pair reaches classical efficiency only at fake rates an order of
+magnitude above the classical points.
+
+**Pure pair (`pareto_pure_dense.csv`):** every point has f ≈ 0.80-0.84 at
+ε 0.68-0.85. The pure-seed gate is not deployable: it was trained on branches
+whose label ignores what the deployed branch actually looks like.
+
+**Gate-window scan (`runs_nscan`, 2026-08-28):** three operating points × window
+n ∈ {3, 5, 7}. Shrinking the window is the single largest fake-rate lever:
+
+| (τ_g, τ_v) | n=3 ε / f | n=5 ε / f | n=7 ε / f |
+|------------|-----------|-----------|-----------|
+| (0.3, 0.1) | 92.3% / 13.7% | 93.2% / 31.3% | 93.3% / 40.8% |
+| (0.5, 0.2) | 91.5% / 10.0% | 92.8% / 20.2% | 93.1% / 26.1% |
+| (0.7, 0.4) | 83.7% / 7.6% | 86.0% / 11.8% | 86.2% / 14.0% |
+
+**n=3 and n=5 qEHVI sweeps (2026-08-29, `pareto_maj_n3_dense.csv`,
+`pareto_maj_n5_dense.csv`, 43 evaluations each):** n=3 front is three points;
+its knee is (τ_g 0.640, τ_v 0.246) at **ε 91.1%, f 7.4%**. n=5 front spans
+(80.1%, 10.5%) to (93.5%, 33.3%). The n=3 knee is the operating point used for
+the resolver harness below and for the Pareto overlay figures.
+
+**Interpretation recorded at the time:** the value function is not stopping
+junk branches; the fake rate tracks the window, not τ_v. Consistent with the
+value target being inverted (2026-09-08 entry), which was not known yet.
+
+---
+
+## 2026-09-02 — Classical operating points through the current harness; multi-resolver harness (paused)
+
+**Status:** Classical re-runs complete; resolver harness paused by Matthew.
+**Configs:** `configs/_classical_{tight,medium,loose}.yaml` (seeding_v2 point +
+joint NSGA-II CKF trial, July), `configs/_motpe_{tight,medium,fast}_{greedy,scoring}.yaml`
+(MOTPE joint trials 79 / 70 / 331; provenance in the parent repo's
+`SURP/experiments/LOG.md`, Stage 5). Same event 4 harness and truth selection
+as the sweeps (pT > 1 GeV). Runs: `$SCRATCH/cckf/runs_classical`, `runs_resolvers`.
+
+| Config | ε_DM | f_DM |
+|--------|------|------|
+| classical tight (5 spm) | 87.5% | 0.40% |
+| classical medium (18 spm) | 88.7% | 0.18% |
+| classical loose | 90.7% | 0.26% |
+| MOTPE tight t79 (16 spm, χ² 16.26/20.66, cap 3, nMeas ≥ 9, holes ≤ 1, pT > 0.46) | 90.3% | 0.00% |
+| MOTPE medium t70 | 93.2% | 0.37% |
+| MOTPE fast t331 (25 spm, χ² 15.40/31.87, cap 5, nMeas ≥ 8, holes ≤ 1, pT > 0.62) | 91.6% | 0.00% |
+
+All classical points sit at sub-1% fake; the best deployed learned point (n=3
+knee) is 91.1% / 7.4%. These are the black points on `figures/pareto_overlay*`
+(`scripts/plot_pareto_overlay.py`, footer carries the truth selection).
+
+**Resolver harness:** ACTS score-based ambiguity resolution
+(`ambi_solver: scoring`, `configs/odd_ambi_scoring.json`) on the MOTPE trio:
+tight 66.1% / 0.00%, medium 70.5% / 1.36%, fast 70.9% / 0.79%, i.e. about 20 pp
+of efficiency lost versus greedy at these configs with no fake-rate benefit.
+The n=3 learned points with scoring (`runs_resolvers/n3_*_scoring`) wrote
+performance files the collector could not read (no `trackeff_vs_eta`); not
+analysed. ILP resolver not run. Paused.
+
+---
+
+## 2026-09-03/04 — Uncensored window-failure and module-failure plots; emulation dead end; tight/fast regeneration
+
+**Status:** Complete. **Git hash:** e623267..cdd0705 (branch `feat/winfail-uncensored`).
+**Plan:** `docs/superpowers/plans/2026-09-02-uncensored-window-failure-plots.md`.
+**Tooling:** `scripts/winfail_uncensored.py` (per-event tensor
+(140 η bins, 3 sensor classes, 2 purity classes, 5 occupancy strata, 4 pT
+bins, 2 branch classes) × n ∈ {3, 5, 7, 10}, Wilson intervals, offline greedy
+ambiguity replica with maxShared 3 / nMeasMin 7), `scripts/plot_winfail_uncensored.py`,
+`scripts/winfail_unc.sbatch`. **Truth pT threshold: 1 GeV** (0.9 GeV also
+rendered; every figure carries it in the footer).
+
+**Definition.** Uncensored failure at window n: (true-hit rows with
+Mahalanobis distance > n) + (on-surface states with no true-hit row), over all
+on-surface states. The earlier censored analysis conditioned on the true hit
+lying inside the 10σ box, so its n=10 line was zero by construction.
+
+**Envelope data (`cckf_envelope.yaml` collection config: 46 seeds/spm, minPt
+0.587, χ² 16.26/35.75, cap 5, terminal cuts disabled, pre-ambiguity), 32 events:**
+
+| Population | n=3 | n=5 | n=7 | n=10 |
+|------------|-----|-----|-----|------|
+| all output branches | 53.2% | 37.1% | 30.7% | 26.9% |
+| ambiguity survivors | 17.0% | 10.8% | 8.6% | 7.5% |
+
+The envelope's rate is dominated by junk branches that ambiguity resolution
+would kill; the plots are a property of the collection config, not of the
+detector.
+
+**Emulation (abandoned, commits 1a62d38..36f01dc):** filtering envelope
+branches to the tight/fast hole caps gave 0/161 passing branches in three
+attempts because the parquet's `n_holes` counts passive (volume 20) and
+material crossings, and the parquet carries no ROOT `stateType`, so material
+surfaces are indistinguishable from real holes (median 10 "holes" at volume-20
+states; ≥ 9-hit branches show 24-31 "sensor holes"). Consequence: the
+module-failure plots carry a ~45% material floor. Fix requires persisting
+`stateType` in the expansion.
+
+**Regeneration instead (2026-09-04, `regen_stage1.sbatch` →
+`regen_expand.sbatch` → `regen_winfail.sbatch`, events 0-7,
+`$SCRATCH/cckf/regen_{tight,fast}/`):** true rates for the MOTPE configs.
+
+| Config, pT > 1 GeV | n=3 | n=5 | n=7 | n=10 | ambi n=3 / n=10 |
+|--------------------|-----|-----|-----|------|-----------------|
+| tight t79 (8 events) | 3.2% | 0.9% | 0.6% | 0.5% | 1.8% / 0.4% |
+| fast t331 (8 events) | 2.6% | 0.9% | 0.7% | 0.5% | 1.6% / 0.4% |
+
+Envelope-scale processing needed heap-evicted survivor flagging and a
+vectorised purity computation (c2e290e; 1.5M branches per event).
+
+---
+
+## 2026-09-04 — Gate log-odds accumulation mismatch fixed; hole-counter mismatch quantified
+
+**Status:** Fix committed, not yet compiled against ACTS. **Git hash:** 9981d00
+(cherry-picked as 09bd4b6 on main). **Data:** `$SCRATCH/cckf/hole_mismatch_results.json`.
+
+`CckfTrackFindingAlgorithm.cpp` added a fixed −5 to `cckf_sum_gate_logodds`
+at every hole and material state and fed the gate MLP's raw logit for accepted
+hits, where training uses `features.chi2_log_odds(chi2_inc)`. Shift of roughly
+−40 per branch against training. Fix: `cckf::chi2LogOdds` in `CckfFeatures.hpp`
+mirrors the Python; the wrapper contributes it at measurement states only.
+Parity test `tests/test_chi2_logodds.cpp` plus a fixture-regenerating pytest.
+
+Hole counters: training counts a hole at every state with `n_window == 0`
+including volume-20 material states; the C++ counts `isHole()` states only.
+Measured on re-expanded event 4: `n_holes` +1 on 44% of gate rows (deterministic
+past step ≈ 23), `n_seq_holes` +1 on 12%. Not acted on: superseded by the
+2026-09-08 finding, which inverts the counting direction itself.
+
+---
+
+## 2026-09-04/05 — Window-conditioned tier-3 value target: implementation complete, acceptance gate failed
+
+**Status:** Code complete (7 tasks, 389 tests); plan stopped at its acceptance
+gate. **Git hash:** 204510f (plan), 8d3dce7..66f05d5.
+**Plan:** `docs/superpowers/plans/2026-09-03-window-conditioned-tier3-value.md`;
+ledger `.superpowers/sdd/2026-09-03-window-conditioned-tier3-value/progress.md`.
+
+**Design.** Tier-3 target V^{π†}(k) = min(completeness, purity) after a
+truth-greedy rollout launched from the last state where the branch and the
+truth-follower agreed; collapse states inherit the child's future
+(`cckf/tier3_stitch.compose_targets`, Tier 1, written by Claude at Matthew's
+explicit instruction and quizzed). Conventions locked: a state's own hit
+belongs to its past; N_total_true ≤ 0 is a failed particle-id join and the
+branch is dropped, never labelled. The rollout acceptance gained a χ² window
+(`rollout_window_nsigma`, accept iff χ² < n²; `acts_patches/cckf/TruthRolloutSelector.hpp`,
+`TruthRolloutAlgorithm.cpp`, rebuilt as job 57932861) and the window size is
+the 12th value feature (`VALUE_FEATURES_WINDOWED`), so V(n) can be trained for
+n ∈ {3, 5, 10} without retraining per deployment window.
+
+**Smoke (job 57943419, event 1, 200 rollouts):** window works (unbounded 416
+findable hits vs 53 at n=3; per-rollout monotone). The 87% collapse at n=3 is
+the diagonal-covariance seeding of offline rollouts meeting a tight window; a
+design concern for V(n=3) targets, unresolved.
+
+**Acceptance gate (jobs 57942686, 57943257, event 4):** on branches that never
+diverge from truth, tier-3 must reproduce tier-2. Disagreement 44.0% of 45,930
+states, both runs. Diagnostic 57943420: one-sided (tier-3 higher in 19,779,
+lower in 453), diff × N_total at integers 1/2/3, every tip rollout finds ≥ 1
+hit. Root cause found 2026-09-08 (next entry). No tier-3 training run.
+
+---
+
+## 2026-09-08 — Root cause: parquet `step_k` runs outermost-first; every past/future computation inverted
+
+**Status:** Diagnosed, evidence recorded, not yet fixed. Fix is scheduled as
+handoff step 3 (loader reversal + invariant test), then full re-expansion.
+**Jobs:** 58075502, 58075905 (`rollout_hit_origin{,2}.sbatch` on scratch).
+
+**Evidence (event 4).** (1) Pinned ACTS `RootTrackStatesWriter.cpp:388` iterates
+`track.trackStatesReversed()` and `push_back`s, so ROOT state index 0 is the
+last state the CKF created. (2) `expansion.py:461` takes `ak.local_index` as
+`state_idx` = parquet `step_k` with no reversal. (3) ROOT `pathLength[0]` ≈
+2500 mm and `pathLength[-1]` = 0 on 100% of 19,983 tracks checked
+(`pilot_1786525888/trackstates_ckf.root`). (4) Rollouts launched from the
+walker's "tip" (highest step) propagate outward along the particle and
+re-traverse the branch: of 1.30M accepted rollout hits, 0 lie on surfaces the
+walker calls the branch's future, 1.13M lie on surfaces it calls the past.
+The launch-surface re-pick that was first suspected occurs on only 4.3% of
+rollouts.
+
+**Blast radius.** Inverted: `value_target.compute_value_targets` (n_correct
+counts outer hits as "past", n_findable counts inner hits as "future"),
+`expansion.compute_branch_history` (n_hits / n_holes / n_seq_holes counted
+outside-in; the C++ counts inside-out at inference), `expansion.compute_branch_majority_pid`
+(the "seed" is the outermost three measurement states, a Tier-1 label), the
+gate's `step_k` context feature, `tier3_walker` (tip = seed end) and every
+rollout and worklist generated so far. Order-independent and still valid: the
+22 local gate features and their labels on branches that stayed on one
+particle, the window-failure plots, the classical baselines, the C++.
+
+**Why the gate still produced a usable front:** 22 of 26 gate features and the
+label are order-independent; the four inverted inputs act as noise. The value
+function's target and dominant features are the inverted quantities, which
+explains its weak effect on the fronts above.
+
+**Required redo after the fix:** re-expand 32 events against an invariant
+script (path length decreasing, seed at zero, layer ids monotone, all volumes
+present, hole fraction near previous), rebuild caches, retrain gate and value,
+regenerate tier-3 worklists and rollouts, re-run learned-pair sweeps.
+
+---
+
+## 2026-09-08 — Repository consolidation for handoff
+
+`main` fast-forwarded to `feat/winfail-uncensored` (120 commits since 2026-08-19).
+Cherry-picked 9981d00 (log-odds parity fix) and c55433c (instrumentation plan).
+Recovered uncommitted 2026-08-17 work from the `gate-value-training` worktree
+(025ceb8): F9 stratified-metric figures and exporter, NaN-safe AUC on
+single-class strata, sampler coverage diagnostics. Suite: 389 passing.
