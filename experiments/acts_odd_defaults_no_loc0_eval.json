@@ -1,0 +1,22 @@
+{
+  "config": "acts_odd_defaults_no_loc0",
+  "event_range": [32, 64],
+  "n_events": 32,
+  "skip": 32,
+  "threads": 8,
+  "pt_threshold_GeV": 1.0,
+  "matching": "double_majority_0.5",
+  "ablation": "removed ckf_loc0_max; all other ODD defaults unchanged",
+  "metrics": {
+    "efficiency_particle_DM": 37.2634,
+    "fakerate_track_DM": 1.2417,
+    "duplicaterate_track_DM": 0.0,
+    "wall_time_s": 104.6789
+  },
+  "comparison_with_loc0": {
+    "efficiency_particle_DM": 37.2596,
+    "fakerate_track_DM": 1.1364
+  },
+  "modal_run": "ap-iq8yK2ILAA27vBXln8W0ib",
+  "output_dir": "/data/results/ckf_acts_odd_defaults_1784825046"
+}

@@ -7,3 +7,19 @@
 # Python bytecode
 __pycache__/
 *.py[cod]
+.pytest_cache/
+
+# Regenerable or oversized local artefacts (never commit; see README
+# "NERSC layout" for where the authoritative copies live)
+data/                          # ODD field map + material maps (193 MB, from the ODD install)
+value_v0/                      # 46 MB prediction array from the first value model
+experiments/chi2_gate_calib/   # 12 GB of chi2 calibration rows
+results/winfail_branches/      # 830 MB of window-failure intermediates
+results/winfail_rows/
+output/*.root                  # ACTS run outputs
+output/gate.bin
+output/traces*.csv
+output/calib_medium/
+output/smoke/
+*.db                           # Optuna sqlite studies (trials.csv is committed instead)
+optimization/                  # superseded optimizer copies; deleted on main in 17b57ea

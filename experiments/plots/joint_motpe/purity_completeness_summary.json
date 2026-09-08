@@ -1,0 +1,35 @@
+{
+  "tight": {
+    "trial": 79,
+    "n_tracks": 24361,
+    "n_events": 32,
+    "mean_purity_tracks": 0.9804185953849591,
+    "mean_completeness_tracks": 0.9712878997804638,
+    "mean_purity_events": 0.9806052033411667,
+    "sem_purity_events": 0.0004980185510535735,
+    "mean_completeness_events": 0.9715063060620719,
+    "sem_completeness_events": 0.0006415570530990971
+  },
+  "medium": {
+    "trial": 70,
+    "n_tracks": 25374,
+    "n_events": 32,
+    "mean_purity_tracks": 0.9792226329459156,
+    "mean_completeness_tracks": 0.9683730587204189,
+    "mean_purity_events": 0.9793647240596952,
+    "sem_purity_events": 0.00044243175881889603,
+    "mean_completeness_events": 0.9685234885891996,
+    "sem_completeness_events": 0.0005975189438192955
+  },
+  "fast": {
+    "trial": 331,
+    "n_tracks": 24567,
+    "n_events": 32,
+    "mean_purity_tracks": 0.9805706026686835,
+    "mean_completeness_tracks": 0.972653562723862,
+    "mean_purity_events": 0.9807324421721598,
+    "sem_purity_events": 0.0004600432093587951,
+    "mean_completeness_events": 0.9728349438016304,
+    "sem_completeness_events": 0.00060505923420173
+  }
+}

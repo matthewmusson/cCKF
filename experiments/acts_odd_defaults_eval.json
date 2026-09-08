@@ -1,0 +1,24 @@
+{
+  "config": "acts_odd_defaults",
+  "event_range": [32, 64],
+  "n_events": 32,
+  "skip": 32,
+  "threads": 8,
+  "pt_threshold_GeV": 1.0,
+  "matching": "double_majority_0.5",
+  "metrics": {
+    "efficiency_particle_DM": 37.2596,
+    "fakerate_track_DM": 1.1364,
+    "duplicaterate_track_DM": 0.0,
+    "ckf_efficiency_particle": 37.2747,
+    "ckf_fakerate_track": 2.1740,
+    "ckf_duplicaterate_track": 53.9549,
+    "ambi_efficiency_particle": 37.2596,
+    "ambi_fakerate_track": 1.1364,
+    "ambi_duplicaterate_track": 0.0,
+    "wall_time_s": 149.5869
+  },
+  "modal_run": "ap-RI7Qs6BxK6uSuD6XiTIsPl",
+  "output_dir": "/data/results/ckf_acts_odd_defaults_1784779531",
+  "notes": "Modal edm4hep has 64 events total (not 128). ROOT badread warning on entry 53."
+}

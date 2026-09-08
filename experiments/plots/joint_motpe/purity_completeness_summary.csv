@@ -1,0 +1,4 @@
+point,trial,pt_min_GeV,n_tracks,n_events,mean_purity_tracks,mean_completeness_tracks,mean_purity_events,sem_purity_events,mean_completeness_events,sem_completeness_events
+tight,79,1.0,24361,32,0.980419,0.971288,0.980605,0.000498,0.971506,0.000642
+medium,70,1.0,25374,32,0.979223,0.968373,0.979365,0.000442,0.968523,0.000598
+fast,331,1.0,24567,32,0.980571,0.972654,0.980732,0.000460,0.972835,0.000605

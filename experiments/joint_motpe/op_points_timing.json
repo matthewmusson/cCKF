@@ -1,0 +1,128 @@
+{
+  "tight": {
+    "ok": true,
+    "trial": 79,
+    "event_range": [
+      32,
+      64
+    ],
+    "threads": 8,
+    "efficiency": 92.38225221633911,
+    "fakerate": 0.12287957360967994,
+    "duplicaterate": 0.0,
+    "wall_per_event": 4.775981068611145,
+    "t_seed_to_tracks": 24.922277599999997,
+    "t_track_finding": 22.0036,
+    "t_seeding": 2.09933,
+    "t_ambi": 0.106517,
+    "acts_timing": {
+      "PodioReader": 1.72528,
+      "EDM4hepSimInputConverter": 5.5367,
+      "ParticleSelector": 0.1270546,
+      "DigitizationAlgorithm": 0.963579,
+      "SpacePointMaker": 0.0470212,
+      "SeedingAlgorithm": 2.09933,
+      "TrackParamsEstimationAlgorithm": 0.240983,
+      "SeedsToPrototracks": 0.0276994,
+      "PrototracksToTracks": 0.397127,
+      "TrackTruthMatcher": 0.71438,
+      "TrackFindingAlgorithm": 22.0036,
+      "RootTrackFinderPerformanceWriter": 0.1785238,
+      "GreedyAmbiguityResolutionAlgorithm": 0.106517
+    },
+    "seed_to_tracks_algos": [
+      "SpacePointMaker",
+      "SeedingAlgorithm",
+      "TrackParamsEstimationAlgorithm",
+      "SeedsToPrototracks",
+      "PrototracksToTracks",
+      "TrackFindingAlgorithm",
+      "GreedyAmbiguityResolutionAlgorithm"
+    ],
+    "definition": "t_seed_to_tracks = sum of ACTS time_perevent_s over SpacePointMaker \u2192 Seeding \u2192 TrackParamsEstimation \u2192 SeedsToPrototracks \u2192 PrototracksToTracks \u2192 TrackFinding \u2192 GreedyAmbiguityResolution (excludes digi/IO/truth/writers)."
+  },
+  "medium": {
+    "ok": true,
+    "trial": 70,
+    "event_range": [
+      32,
+      64
+    ],
+    "threads": 8,
+    "efficiency": 96.25170230865479,
+    "fakerate": 0.7885478436946869,
+    "duplicaterate": 0.0,
+    "wall_per_event": 7.815479598939419,
+    "t_seed_to_tracks": 48.4234766,
+    "t_track_finding": 44.2817,
+    "t_seeding": 2.68241,
+    "t_ambi": 0.0996905,
+    "acts_timing": {
+      "PodioReader": 0.877058,
+      "EDM4hepSimInputConverter": 4.17282,
+      "ParticleSelector": 0.12028370000000001,
+      "DigitizationAlgorithm": 0.900127,
+      "SpacePointMaker": 0.0257803,
+      "SeedingAlgorithm": 2.68241,
+      "TrackParamsEstimationAlgorithm": 0.475895,
+      "SeedsToPrototracks": 0.0431898,
+      "PrototracksToTracks": 0.814811,
+      "TrackTruthMatcher": 0.9799899999999999,
+      "TrackFindingAlgorithm": 44.2817,
+      "RootTrackFinderPerformanceWriter": 0.1725263,
+      "GreedyAmbiguityResolutionAlgorithm": 0.0996905
+    },
+    "seed_to_tracks_algos": [
+      "SpacePointMaker",
+      "SeedingAlgorithm",
+      "TrackParamsEstimationAlgorithm",
+      "SeedsToPrototracks",
+      "PrototracksToTracks",
+      "TrackFindingAlgorithm",
+      "GreedyAmbiguityResolutionAlgorithm"
+    ],
+    "definition": "t_seed_to_tracks = sum of ACTS time_perevent_s over SpacePointMaker \u2192 Seeding \u2192 TrackParamsEstimation \u2192 SeedsToPrototracks \u2192 PrototracksToTracks \u2192 TrackFinding \u2192 GreedyAmbiguityResolution (excludes digi/IO/truth/writers)."
+  },
+  "fast": {
+    "ok": true,
+    "trial": 331,
+    "event_range": [
+      32,
+      64
+    ],
+    "threads": 8,
+    "efficiency": 93.16598773002625,
+    "fakerate": 0.1695227576419711,
+    "duplicaterate": 0.0,
+    "wall_per_event": 2.384915418922901,
+    "t_seed_to_tracks": 9.80694239,
+    "t_track_finding": 7.58191,
+    "t_seeding": 2.05339,
+    "t_ambi": 0.0517747,
+    "acts_timing": {
+      "PodioReader": 0.886906,
+      "EDM4hepSimInputConverter": 4.17877,
+      "ParticleSelector": 0.11882519999999999,
+      "DigitizationAlgorithm": 0.891054,
+      "SpacePointMaker": 0.0212108,
+      "SeedingAlgorithm": 2.05339,
+      "TrackParamsEstimationAlgorithm": 0.0583491,
+      "SeedsToPrototracks": 0.00730259,
+      "PrototracksToTracks": 0.0330052,
+      "TrackTruthMatcher": 0.550616,
+      "TrackFindingAlgorithm": 7.58191,
+      "RootTrackFinderPerformanceWriter": 0.18276530000000002,
+      "GreedyAmbiguityResolutionAlgorithm": 0.0517747
+    },
+    "seed_to_tracks_algos": [
+      "SpacePointMaker",
+      "SeedingAlgorithm",
+      "TrackParamsEstimationAlgorithm",
+      "SeedsToPrototracks",
+      "PrototracksToTracks",
+      "TrackFindingAlgorithm",
+      "GreedyAmbiguityResolutionAlgorithm"
+    ],
+    "definition": "t_seed_to_tracks = sum of ACTS time_perevent_s over SpacePointMaker \u2192 Seeding \u2192 TrackParamsEstimation \u2192 SeedsToPrototracks \u2192 PrototracksToTracks \u2192 TrackFinding \u2192 GreedyAmbiguityResolution (excludes digi/IO/truth/writers)."
+  }
+}

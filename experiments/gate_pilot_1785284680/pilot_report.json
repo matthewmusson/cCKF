@@ -1,0 +1,23 @@
+{
+  "run_id": "gate_pilot_1785284680",
+  "check1_cluster_features": {
+    "pass": true,
+    "events": [0, 1],
+    "summary": "geometric digi: 100% measurements have cells; s_u mean~3.5, Q_tot mean~0.5, non-degenerate"
+  },
+  "check2_seed_recovery": {
+    "pass": false,
+    "mean_frac_recovered": 0.8791917472235828,
+    "threshold": 0.98,
+    "per_event": {
+      "0": {"frac_tight_in_envelope": 0.9993048735637758, "frac_recovered": 0.8688393409231441},
+      "1": {"frac_tight_in_envelope": 0.9994189061989742, "frac_recovered": 0.8895441535240217}
+    },
+    "diagnosis": "Tight seeds are present in the envelope (~99.93%), but offline top-N-by-quality per middle SP under Tight's maxSeedsPerSpM=16 drops recovery to ~88%. Envelope subset-recoverability via offline filtering FAILS the ~98% bar."
+  },
+  "loc0_cut_absent": true,
+  "window_n": 10,
+  "window_n_status": "PILOT ONLY — [OPEN] do not freeze",
+  "modal_app": "https://modal.com/apps/musson28/main/ap-nF486R6BPzwUw60C3wsfyS",
+  "artifacts": "/data/results/gate_pilot_1785284680/"
+}

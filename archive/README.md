@@ -36,3 +36,24 @@ The MOTPE operating points that came out of this work live on as
 | `compare_pure_vs_all.py` | First pure-seed vs all-seed gate/value comparison (Modal era) | LOG 2026-08-19 |
 | `score_gate_by_volume.py` | Found the gate rejecting 100% of long strips on events 0-3 | LOG 2026-08-24 |
 | `generate_cckf_patch.sh` | Dev convenience for applying the cCKF integration; superseded by `scripts/apply_cckf_integration.sh` | — |
+
+## analysis_aug12/  (2026-08-12/13 pilot window-failure and χ² studies)
+
+Recovered 2026-09-08 from untracked files in the primary checkout. These
+produced the first window-failure plots (`figures/winfail_aug12/`), the
+value-target distribution plots (`figures/value_targets_aug19/`,
+`results/value_targets_aug19/`) and `results/analysis/`. All are
+**censored** analyses on the pilot parquets (conditioned on the true hit
+lying inside the 10σ box) and predate the endcap fix; superseded by
+`scripts/winfail_uncensored.py`.
+
+| File | What it plotted |
+|------|-----------------|
+| `analyze_chi2_by_eta.py` | χ² distribution by sensor type and |η| |
+| `analyze_material_vs_winfail.py` | window-failure rate vs η against accumulated X/X₀ |
+| `analyze_posfrac_eta.py` | positive fraction vs occupancy per |η| bin, per window n |
+| `analyze_training_dist.py` | expanded-parquet training distributions (Modal) |
+| `analyze_winfail_signed_eta.py` | window-failure rate vs signed η |
+| `analyze_winfail_stratified.py` | same, stratified by sensor type and purity |
+| `analyze_with_errors.py` | the three headline figures with binomial error bars |
+| `plot_winfail.py`, `winfail_eta_material.py` | v2 of the above (`analysis_v2/`) |

@@ -1,0 +1,300 @@
+{
+  "label": "loose_t284",
+  "config": "baseline",
+  "event_range": [
+    32,
+    64
+  ],
+  "n_ok": 32,
+  "n_fail": 0,
+  "params": {
+    "num_seeds_per_spm": 47,
+    "seed_minPt": 0.5504192505343526,
+    "seed_impactMax": 2.9288131499613517,
+    "seed_sigmaScattering": 2.0151625112096774,
+    "ckf_chi2CutOffMeasurement": 17.936400547956712,
+    "ckf_chi2CutOffOutlier": 27.334654122770765,
+    "ckf_numMeasurementsCutOff": 1,
+    "ckf_nMeasurementsMin": 5,
+    "ckf_maxHolesAndOutliers": 1,
+    "ckf_ptMin": 0.6162670911627443
+  },
+  "mean_std": {
+    "efficiency_pct": [
+      97.10677098482847,
+      0.5679115163339093
+    ],
+    "fakerate_pct": [
+      4.854717146372423,
+      1.4312325465597198
+    ],
+    "duplicaterate_pct": [
+      0.0,
+      0.0
+    ],
+    "wall_s_per_event": [
+      44.3185011819005,
+      12.128363199878546
+    ]
+  },
+  "definition": "Unweighted mean \u00b1 sample stdev (ddof=1) of per-event post-ambi metrics on events [skip0, skip0+n). Each event is a separate digi+reco run (events=1). \u03b5_DM=particle efficiency; f_DM/d_DM=track fakeratio/duplicateratio (DM matching 0.5). Wall is per-event digi+reco wall time (includes per-run setup).",
+  "per_event": [
+    {
+      "skip": 32,
+      "ok": true,
+      "efficiency": 96.19921445846558,
+      "fakerate": 4.16666679084301,
+      "duplicaterate": 0.0,
+      "wall": 38.28599143028259
+    },
+    {
+      "skip": 33,
+      "ok": true,
+      "efficiency": 97.22921848297119,
+      "fakerate": 5.550146102905273,
+      "duplicaterate": 0.0,
+      "wall": 49.13101649284363
+    },
+    {
+      "skip": 34,
+      "ok": true,
+      "efficiency": 96.62398099899292,
+      "fakerate": 3.5328753292560577,
+      "duplicaterate": 0.0,
+      "wall": 34.75666284561157
+    },
+    {
+      "skip": 35,
+      "ok": true,
+      "efficiency": 96.58018946647644,
+      "fakerate": 4.748338088393211,
+      "duplicaterate": 0.0,
+      "wall": 49.62482571601868
+    },
+    {
+      "skip": 36,
+      "ok": true,
+      "efficiency": 98.01734685897827,
+      "fakerate": 4.554455354809761,
+      "duplicaterate": 0.0,
+      "wall": 46.00553250312805
+    },
+    {
+      "skip": 37,
+      "ok": true,
+      "efficiency": 97.72455096244812,
+      "fakerate": 3.3266130834817886,
+      "duplicaterate": 0.0,
+      "wall": 26.77240490913391
+    },
+    {
+      "skip": 38,
+      "ok": true,
+      "efficiency": 97.20279574394226,
+      "fakerate": 5.571293830871582,
+      "duplicaterate": 0.0,
+      "wall": 64.81812787055969
+    },
+    {
+      "skip": 39,
+      "ok": true,
+      "efficiency": 96.53035998344421,
+      "fakerate": 5.870646610856056,
+      "duplicaterate": 0.0,
+      "wall": 42.30033731460571
+    },
+    {
+      "skip": 40,
+      "ok": true,
+      "efficiency": 97.48858213424683,
+      "fakerate": 7.404103130102158,
+      "duplicaterate": 0.0,
+      "wall": 44.11749792098999
+    },
+    {
+      "skip": 41,
+      "ok": true,
+      "efficiency": 96.22356295585632,
+      "fakerate": 4.059040546417236,
+      "duplicaterate": 0.0,
+      "wall": 23.769883155822754
+    },
+    {
+      "skip": 42,
+      "ok": true,
+      "efficiency": 97.20812439918518,
+      "fakerate": 3.2804232090711594,
+      "duplicaterate": 0.0,
+      "wall": 30.6302809715271
+    },
+    {
+      "skip": 43,
+      "ok": true,
+      "efficiency": 97.69008755683899,
+      "fakerate": 5.538221448659897,
+      "duplicaterate": 0.0,
+      "wall": 53.545512199401855
+    },
+    {
+      "skip": 44,
+      "ok": true,
+      "efficiency": 95.83814740180969,
+      "fakerate": 5.539906024932861,
+      "duplicaterate": 0.0,
+      "wall": 51.50778579711914
+    },
+    {
+      "skip": 45,
+      "ok": true,
+      "efficiency": 98.08382987976074,
+      "fakerate": 4.071499407291412,
+      "duplicaterate": 0.0,
+      "wall": 39.13232088088989
+    },
+    {
+      "skip": 46,
+      "ok": true,
+      "efficiency": 96.85929417610168,
+      "fakerate": 3.076923079788685,
+      "duplicaterate": 0.0,
+      "wall": 38.8571343421936
+    },
+    {
+      "skip": 47,
+      "ok": true,
+      "efficiency": 97.1321702003479,
+      "fakerate": 4.695304855704308,
+      "duplicaterate": 0.0,
+      "wall": 40.80053925514221
+    },
+    {
+      "skip": 48,
+      "ok": true,
+      "efficiency": 97.93577790260315,
+      "fakerate": 5.575868487358093,
+      "duplicaterate": 0.0,
+      "wall": 59.9877986907959
+    },
+    {
+      "skip": 49,
+      "ok": true,
+      "efficiency": 96.65653705596924,
+      "fakerate": 3.745318204164505,
+      "duplicaterate": 0.0,
+      "wall": 32.73575305938721
+    },
+    {
+      "skip": 50,
+      "ok": true,
+      "efficiency": 97.2423791885376,
+      "fakerate": 3.868698701262474,
+      "duplicaterate": 0.0,
+      "wall": 26.55899429321289
+    },
+    {
+      "skip": 51,
+      "ok": true,
+      "efficiency": 97.7053165435791,
+      "fakerate": 4.848484694957733,
+      "duplicaterate": 0.0,
+      "wall": 40.30910801887512
+    },
+    {
+      "skip": 52,
+      "ok": true,
+      "efficiency": 96.62802815437317,
+      "fakerate": 6.922435015439987,
+      "duplicaterate": 0.0,
+      "wall": 69.65188193321228
+    },
+    {
+      "skip": 53,
+      "ok": true,
+      "efficiency": 97.57975935935974,
+      "fakerate": 4.6553269028663635,
+      "duplicaterate": 0.0,
+      "wall": 49.55878472328186
+    },
+    {
+      "skip": 54,
+      "ok": true,
+      "efficiency": 96.78335189819336,
+      "fakerate": 9.53778401017189,
+      "duplicaterate": 0.0,
+      "wall": 65.57331109046936
+    },
+    {
+      "skip": 55,
+      "ok": true,
+      "efficiency": 97.13114500045776,
+      "fakerate": 3.487063944339752,
+      "duplicaterate": 0.0,
+      "wall": 31.95765256881714
+    },
+    {
+      "skip": 56,
+      "ok": true,
+      "efficiency": 97.56637215614319,
+      "fakerate": 5.999999865889549,
+      "duplicaterate": 0.0,
+      "wall": 57.2540397644043
+    },
+    {
+      "skip": 57,
+      "ok": true,
+      "efficiency": 97.22222089767456,
+      "fakerate": 2.9002320021390915,
+      "duplicaterate": 0.0,
+      "wall": 35.45915913581848
+    },
+    {
+      "skip": 58,
+      "ok": true,
+      "efficiency": 96.69703841209412,
+      "fakerate": 4.805915057659149,
+      "duplicaterate": 0.0,
+      "wall": 61.041481256484985
+    },
+    {
+      "skip": 59,
+      "ok": true,
+      "efficiency": 96.49562239646912,
+      "fakerate": 5.964214727282524,
+      "duplicaterate": 0.0,
+      "wall": 51.53370809555054
+    },
+    {
+      "skip": 60,
+      "ok": true,
+      "efficiency": 97.28555679321289,
+      "fakerate": 6.266094744205475,
+      "duplicaterate": 0.0,
+      "wall": 51.41339588165283
+    },
+    {
+      "skip": 61,
+      "ok": true,
+      "efficiency": 96.76511883735657,
+      "fakerate": 3.2786883413791656,
+      "duplicaterate": 0.0,
+      "wall": 32.42196297645569
+    },
+    {
+      "skip": 62,
+      "ok": true,
+      "efficiency": 97.7329969406128,
+      "fakerate": 4.435483738780022,
+      "duplicaterate": 0.0,
+      "wall": 35.71039342880249
+    },
+    {
+      "skip": 63,
+      "ok": true,
+      "efficiency": 97.35799431800842,
+      "fakerate": 4.072883352637291,
+      "duplicaterate": 0.0,
+      "wall": 42.968759298324585
+    }
+  ],
+  "trial": 284
+}
