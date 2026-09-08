@@ -3,27 +3,29 @@
 Research code from Matthew Musson's summer 2026 project (Stanford/SLAC,
 supervised by Lauren Tompkins, mentored by Rocky Garg) on replacing the
 hand-tuned decision heuristics inside the ACTS Combinatorial Kalman Filter
-(CKF) with learned, calibrated decision functions. The Kalman engine stays
-frozen and exact; learning is confined to three decisions the classical CKF
+(CKF) with learned, calibrated decision functions. The Kalman engine is not touched; learning is confined to three decisions the classical CKF 
 makes with fixed cuts: whether a candidate hit belongs to the track (the
 **gate** g_ψ, replacing the χ² cut), whether a branch is worth continuing
 (the **value function** V_φ, replacing the hole and branch caps), and which
 candidates to keep at the end (a score q_ω plus set packing, replacing greedy
 ambiguity resolution; not built). Data are ColliderML ttbar events at 200
 pileup on the Open Data Detector (ODD), simulated with Geant4, reconstructed
-with ACTS on NERSC Perlmutter.
+with ACTS on NERSC Perlmutter. 
 
 **State on 2026-09-08.** A trained gate and value function run inside ACTS
 and produce a (τ_g, τ_v) Pareto front on one event, but the front sits an
-order of magnitude above the classical operating points in fake rate. The
-root cause found on the last day is that every expanded training parquet
+order of magnitude above the classical operating points in fake rate.
+
+The root cause found on the 8th was that every expanded training parquet
 stores branch states outermost-first, so every "past/future along the
 branch" quantity (the value target, the history counters, the seed-majority
-label) was inverted at training time. The loader is fixed and guarded; the
-data, caches, models, and sweeps have not been regenerated. `NEXT_STEPS.md`
-is the plan for doing that and for what comes after. `experiments/LOG.md`
-is the dated record of every experiment; the classical-CKF tuning that
-preceded this repo is logged in the parent repo's `SURP/experiments/LOG.md`.
+label) was inverted at training time. 
+
+The loader is fixed with new guards implemented; the data, caches, models, and sweeps have not been regenerated. 
+
+`NEXT_STEPS.md` is the plan for doing that and for what comes after.
+
+`experiments/LOG.md` is the dated record of every experiment. 
 
 For the physics and the locked design decisions read
 `docs/cCKF_specification.md` (the master spec, last revised 2026-07-28; the
