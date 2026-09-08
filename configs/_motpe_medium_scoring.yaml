@@ -1,0 +1,37 @@
+# Classical CKF, MOTPE joint trial (medium), 1-event harness, ambi_solver=scoring.
+digi: true
+reco: true
+ckf: true
+ambi: true
+ambi_solver: scoring
+ambi_config: /global/cfs/cdirs/atlas/mussonm/cCKF/configs/odd_ambi_scoring.json
+
+cckf: false
+cckf_gate_weights: ""
+cckf_value_weights: ""
+cckf_digi_config: odd-digi-geometric-config.json
+digi_config: odd-digi-geometric-config.json
+cckf_timing_output: timing.csv
+
+num_seeds_per_spm: 46
+seed_minPt: 0.5869019
+seed_impactMax: 2.8616317
+seed_sigmaScattering: 2.9531426
+
+ckf_chi2CutOffMeasurement: 12.0449860
+ckf_chi2CutOffOutlier: 35.7501052
+ckf_numMeasurementsCutOff: 2
+
+ckf_nMeasurementsMin: 7
+ckf_maxHolesAndOutliers: 1
+ckf_ptMin: 0.5942362
+
+events: 1
+skip: 4
+threads: 1
+
+ckf_finding_performance: true
+ambi_finding_performance: true
+write_track_states: true
+write_track_summary: true
+write_matching_details: true

@@ -1,0 +1,40 @@
+# True tight_t79 stage-1 collection for uncensored winfail regeneration.
+# Real branch dynamics (in-flight hole kills, cap 3, native seeding) plus
+# the expansion writers. Events [0,8) of the train split; [32,64) sealed.
+digi: true
+reco: true
+ckf: true
+ambi: true
+ambi_solver: greedy
+
+cckf: false
+cckf_gate_weights: ""
+cckf_value_weights: ""
+cckf_digi_config: odd-digi-geometric-config.json
+digi_config: odd-digi-geometric-config.json
+cckf_timing_output: timing.csv
+
+num_seeds_per_spm: 16
+seed_minPt: 0.6876417
+seed_impactMax: 2.5032956
+seed_sigmaScattering: 2.3396241
+
+ckf_chi2CutOffMeasurement: 16.2559297
+ckf_chi2CutOffOutlier: 20.6576645
+ckf_numMeasurementsCutOff: 3
+
+ckf_nMeasurementsMin: 9
+ckf_maxHolesAndOutliers: 1
+ckf_ptMin: 0.4597609
+
+events: 8
+skip: 0
+threads: 8
+
+output_digi_csv: true
+output_simhits_csv: true
+write_predicted_cov: true
+write_track_states: true
+write_track_summary: true
+ckf_finding_performance: true
+ambi_finding_performance: true
