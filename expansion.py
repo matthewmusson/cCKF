@@ -109,6 +109,7 @@ _TRACKSTATE_SCALAR_BRANCHES = [
     "volume_id",
     "layer_id",
     "module_id",
+    "pathLength",  # propagation-order invariant only; not persisted
     "predicted",
     "eLOC0_prt",
     "eLOC1_prt",
@@ -367,8 +368,95 @@ def _mode_or_first(values: list[int]) -> int | None:
     return best
 
 
+def propagation_order_index(jagged, mask=None) -> np.ndarray:
+    """Per-track state index in PROPAGATION order (0 at the seed surface).
+
+    ACTS' ``RootTrackStatesWriter`` iterates ``track.trackStatesReversed()``
+    and appends, so ROOT position 0 is the *last* state the CKF created (the
+    outermost surface) and the last position is the seed surface. Every
+    "past/future along the branch" computation in this repo -- the value
+    target, the branch history counters, the seed-majority particle id, the
+    tier-3 walker -- assumes ``step_k`` is propagation order. This helper is
+    the single place that conversion happens; every ROOT reader that emits a
+    state index must use it (``load_trackstates``,
+    ``scripts/patch_is_selected.py``, ``cckf/tier3_walker.py``).
+
+    Found 2026-09-08 (experiments/LOG.md): before this helper existed the
+    raw ROOT position was used as ``step_k``, inverting all of the above.
+
+    Parameters
+    ----------
+    jagged : awkward.Array
+        Any per-track, per-state (doubly nested) branch, e.g. ``volume_id``.
+        Only its list lengths are used.
+    mask : awkward.Array, optional
+        Boolean jagged array of the same shape selecting a subset of states
+        (e.g. measurement states). The returned indices are the propagation
+        indices of the *selected* states, in file order.
+
+    Returns
+    -------
+    numpy.ndarray
+        int64, flattened over (track, state) in file order.
+    """
+    n = ak.num(jagged, axis=1)
+    idx = n - 1 - ak.local_index(jagged, axis=1)
+    if mask is not None:
+        idx = idx[mask]
+    return ak.to_numpy(ak.flatten(idx, axis=1)).astype(np.int64)
+
+
+def check_propagation_order(
+    track_nr: np.ndarray, state_idx: np.ndarray, path_length: np.ndarray
+) -> None:
+    """Refuse to continue unless ``state_idx`` follows the particle outward.
+
+    Along propagation order the accumulated path length must be
+    non-decreasing (ties allowed: overlapping modules and layer surfaces at
+    the same radius), and the seed-surface state (index 0) must sit at path
+    length 0. NaN path lengths are skipped.
+
+    Raises
+    ------
+    ValueError
+        With the offending track number, so a wrongly ordered file is caught
+        at load time instead of silently inverting the pipeline again.
+    """
+    track_nr = np.asarray(track_nr)
+    state_idx = np.asarray(state_idx)
+    pl = np.asarray(path_length, dtype=np.float64)
+    if len(track_nr) == 0:
+        return
+    order = np.lexsort((state_idx, track_nr))
+    t, s, p = track_nr[order], state_idx[order], pl[order]
+    finite = np.isfinite(p)
+    same_track = t[1:] == t[:-1]
+    both = finite[1:] & finite[:-1]
+    decreasing = same_track & both & (p[1:] < p[:-1] - 1e-6)
+    if decreasing.any():
+        bad = int(t[1:][decreasing][0])
+        raise ValueError(
+            f"track {bad}: pathLength decreases along state_idx -- states are "
+            "not in propagation order. ROOT stores states outermost-first; "
+            "derive state_idx with propagation_order_index()."
+        )
+    at_seed = (s == 0) & finite
+    if at_seed.any() and (np.abs(p[at_seed]) > 1e-3).any():
+        bad = int(t[at_seed][np.abs(p[at_seed]) > 1e-3][0])
+        raise ValueError(
+            f"track {bad}: state_idx 0 has pathLength {p[at_seed][np.abs(p[at_seed]) > 1e-3][0]:.3g} "
+            "mm; the seed-surface state must sit at path length 0."
+        )
+
+
 def load_trackstates(root_path: str, event_id: int) -> pd.DataFrame:
     """Load trackstates for one event from ``trackstates_ckf.root``.
+
+    States come out in PROPAGATION order: ``state_idx`` 0 is the seed
+    surface, the largest index the outermost state. ROOT stores them the
+    other way round (see :func:`propagation_order_index`); the ``pathLength``
+    branch, when present, is checked with :func:`check_propagation_order`
+    and a wrongly ordered file raises.
 
     Filters ROOT entries by the standard ACTS ``event_nr`` branch (a single
     trackstates file can hold multiple events, e.g. Stage 1's pilot run
@@ -458,12 +546,20 @@ def load_trackstates(root_path: str, event_id: int) -> pd.DataFrame:
 
     n_states = ak.to_numpy(ak.num(arrays["volume_id"], axis=1))
     track_nr = np.repeat(np.arange(n_tracks, dtype=np.int64), n_states)
-    state_idx = ak.to_numpy(ak.flatten(ak.local_index(arrays["volume_id"], axis=1))).astype(np.int64)
+    state_idx = propagation_order_index(arrays["volume_id"])
 
     flat: dict[str, np.ndarray] = {"track_nr": track_nr, "state_idx": state_idx}
     for name in scalar_fields:
         vals = ak.flatten(arrays[name], axis=1)
         flat[name] = ak.to_numpy(vals)
+
+    if "pathLength" in flat:
+        check_propagation_order(track_nr, state_idx, flat["pathLength"])
+    else:
+        print(
+            "[expansion] WARNING: no 'pathLength' branch -- propagation-order "
+            "invariant NOT checked; state_idx assumes ROOT's reversed order"
+        )
 
     vol = flat.get("volume_id", np.zeros(len(track_nr), dtype=np.int64)).astype(np.int64)
     lay = flat.get("layer_id", np.zeros(len(track_nr), dtype=np.int64)).astype(np.int64)
@@ -592,8 +688,18 @@ def load_measurements(csv_dir: str, event_id: int) -> pd.DataFrame:
     return out
 
 
-def load_predicted_cov(csv_dir: str, event_id: int) -> pd.DataFrame:
+def load_predicted_cov(
+    csv_dir: str, event_id: int, *, n_states_per_track: np.ndarray
+) -> pd.DataFrame:
     """Load ``event{N:09d}-predicted-cov.csv`` for one event.
+
+    The writer (``utils/predicted_cov_writer.PredictedCovWriter``) counts
+    ``step_k`` over ``trackStatesReversed`` -- every state, predicted or not
+    -- so its ``step_k`` is the ROOT position, outermost first. It is
+    converted to propagation order here as ``n_states - 1 - step_k`` using
+    the per-track state count from ROOT (``n_states_per_track[track_nr]``).
+    The CSV's own row count cannot be used: states without a prediction
+    leave no row.
 
     This is the predicted covariance projected into local surface coordinates,
     i.e. the ``H C H^T`` term of the innovation covariance, written per track
@@ -631,12 +737,24 @@ def load_predicted_cov(csv_dir: str, event_id: int) -> pd.DataFrame:
         df = pd.read_csv(path, comment="#",
                          usecols=["track_nr", "step_k", "P00", "P01", "P11"])
     df.columns = [c.strip() for c in df.columns]
+    track_nr = df["track_nr"].to_numpy(dtype=np.int64)
+    root_pos = df["step_k"].to_numpy(dtype=np.int64)
+    counts = np.asarray(n_states_per_track, dtype=np.int64)
+    known = track_nr < len(counts)
+    n = np.where(known, counts[np.minimum(track_nr, len(counts) - 1)], 0)
+    keep = known & (n > root_pos)
+    if not keep.all():
+        print(
+            f"[expansion] predicted-cov: dropping {int((~keep).sum()):,} rows "
+            "whose track is absent from the loaded states (chunking) or whose "
+            "step_k exceeds the ROOT state count"
+        )
     return pd.DataFrame({
-        "track_nr": df["track_nr"].to_numpy(dtype=np.int64),
-        "state_idx": df["step_k"].to_numpy(dtype=np.int64),
-        "P00": df["P00"].to_numpy(dtype=np.float64),
-        "P01": df["P01"].to_numpy(dtype=np.float64),
-        "P11": df["P11"].to_numpy(dtype=np.float64),
+        "track_nr": track_nr[keep],
+        "state_idx": (n - 1 - root_pos)[keep],
+        "P00": df["P00"].to_numpy(dtype=np.float64)[keep],
+        "P01": df["P01"].to_numpy(dtype=np.float64)[keep],
+        "P11": df["P11"].to_numpy(dtype=np.float64)[keep],
     })
 
 
@@ -1705,7 +1823,13 @@ def run_expansion(
     simhits = load_simhits(csv_dir, event_id)
     meas_map = load_measurement_simhit_map(csv_dir, event_id)
 
-    predicted_cov = load_predicted_cov(csv_dir, event_id)
+    # Per-track ROOT state counts, indexed by track_nr, for the predicted-cov
+    # step_k -> propagation-order conversion (tracks filtered out by chunking
+    # get 0 and their CSV rows are dropped).
+    _tn = states["track_nr"].to_numpy(dtype=np.int64)
+    _counts = np.bincount(_tn, minlength=int(_tn.max()) + 1 if len(_tn) else 0)
+    predicted_cov = load_predicted_cov(csv_dir, event_id,
+                                       n_states_per_track=_counts)
     expanded = expand_trackstates(states, measurements, n=window_n,
                                   r_geom_mm=r_geom_mm,
                                   predicted_cov=predicted_cov)

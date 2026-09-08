@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+from expansion import propagation_order_index
+
 _COLS = [
     "seed_id", "step_k", "cand_hit_id", "is_ckf_selected", "chi2_inc",
     "contrib_pids", "branch_majority_pid", "majority_undefined",
@@ -153,9 +155,9 @@ def emit_worklist(st: pd.DataFrame, trackstates_root: str, event_id: int,
 
     n_states = ak.to_numpy(ak.num(arrays["volume_id"], axis=1))
     seed_id = np.repeat(np.arange(len(arrays), dtype=np.int64), n_states)
-    state_idx = ak.to_numpy(
-        ak.flatten(ak.local_index(arrays["volume_id"], axis=1), axis=1)
-    ).astype(np.int64)
+    # Propagation order, the parquet's step_k convention (ROOT stores states
+    # outermost-first; see expansion.propagation_order_index).
+    state_idx = propagation_order_index(arrays["volume_id"])
     root = pd.DataFrame({"seed_id": seed_id, "step_k": state_idx})
     for b in _FLT_BRANCHES + _PRT_BRANCHES + [
             "volume_id", "layer_id", "module_id"]:

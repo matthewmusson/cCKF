@@ -66,7 +66,7 @@ from cckf.splits import assert_not_test
 # expansion.encode_particle_id's docstring is explicit that the layout is a
 # pipeline-internal convention, not ACTS's SimBarcode -- so a local copy that
 # drifted would break the majority-membership test silently.
-from expansion import encode_particle_id, encode_geometry_id
+from expansion import encode_particle_id, encode_geometry_id, propagation_order_index
 
 #: Residual match tolerance in mm. ROOT stores float32, the expansion computes
 #: in float64, so agreement is limited by float32 epsilon on values of order
@@ -142,14 +142,13 @@ def _select_contributors_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     mod = ak.to_numpy(ak.flatten(arrays["module_id"], axis=1)).astype(np.int64)
     gid = encode_geometry_id(vol, lay, mod)
 
-    # Per-track state index, matching the Parquet's step_k. Every branch read
-    # here is all-state (contributors exist for holes too, as an empty list),
-    # so this is a plain local index with no measurement mask -- unlike
-    # _root_residuals_from_arrays, which must mask because res_*_prt is
-    # measurement-only.
-    sidx = ak.to_numpy(
-        ak.flatten(ak.local_index(arrays["volume_id"], axis=1), axis=1)
-    ).astype(np.int64)
+    # Per-track state index in PROPAGATION order, matching the Parquet's
+    # step_k (ROOT stores states outermost-first; see
+    # expansion.propagation_order_index). Every branch read here is all-state
+    # (contributors exist for holes too, as an empty list), so no measurement
+    # mask -- unlike _root_residuals_from_arrays, which must mask because
+    # res_*_prt is measurement-only.
+    sidx = propagation_order_index(arrays["volume_id"])
 
     # Drop the per-track nesting only -- each element is now one (possibly
     # empty) jagged contributor list per state, in (track, state) order.
@@ -313,9 +312,9 @@ def _root_residuals_from_arrays(arrays, event_id: int) -> pd.DataFrame:
     # That is fragile by construction and has failed twice on this project
     # (LOG 2026-08-17/18, and again after re-expansion widened the candidate
     # set, where it matched 0.03% of states).
-    sidx = ak.to_numpy(
-        ak.flatten(ak.local_index(arrays["volume_id"], axis=1)[hit_mask_jagged], axis=1)
-    ).astype(np.int64)
+    # Propagation order (ROOT is outermost-first), masked to measurement
+    # states so it stays index-parallel with res_*_prt.
+    sidx = propagation_order_index(arrays["volume_id"], hit_mask_jagged)
 
     # The SELECTED measurement's local coordinates at each state.
     #

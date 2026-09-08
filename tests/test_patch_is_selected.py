@@ -520,6 +520,9 @@ def test_root_residuals_emits_the_selected_measurement_position():
 
     df = _root_residuals_from_arrays(_synthetic_residual_arrays(), event_id=0)
     df = df.sort_values(["seed_id", "state_idx"]).reset_index(drop=True)
-    # Track 0 measurements sit at all-state positions 0 and 3; track 1 at 0.
-    assert df["state_idx"].tolist() == [0, 3, 0]
-    np.testing.assert_allclose(df["sel_l0"].tolist(), [1.0, -2.0, 3.0])
+    # Track 0 (5 states) has measurements at ROOT positions 0 and 3; track 1
+    # (2 states) at ROOT position 0. ROOT is outermost-first, so in
+    # propagation order those are indices 4 and 1, and 1 (see
+    # expansion.propagation_order_index; LOG 2026-09-08).
+    assert df["state_idx"].tolist() == [1, 4, 1]
+    np.testing.assert_allclose(df["sel_l0"].tolist(), [-2.0, 1.0, 3.0])
