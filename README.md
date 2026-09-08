@@ -25,9 +25,11 @@ is the plan for doing that and for what comes after. `experiments/LOG.md`
 is the dated record of every experiment; the classical-CKF tuning that
 preceded this repo is logged in the parent repo's `SURP/experiments/LOG.md`.
 
-For the physics and the locked design decisions read `cCKF_specification.md`
-in the parent repo. For agent instructions read `CLAUDE.md`. For where every
-file on NERSC lives, read `NERSC.md`.
+For the physics and the locked design decisions read
+`docs/cCKF_specification.md` (the master spec, last revised 2026-07-28; the
+original lives in the parent repo as an extensionless `cCKF_Specification`
+file). For agent instructions read `CLAUDE.md`. For where every file on
+NERSC lives, read `NERSC.md`.
 
 ## Phases
 
@@ -79,7 +81,7 @@ cCKF/
 ├── cckf/                     [P3, P7] the Python package: pure, unit-tested pieces of the training pipeline
 │   ├── features.py           gate (26) and value (11 / 12 windowed) feature vectors from parquet columns
 │   ├── labels.py             gate label: candidate's particle vs the branch's majority particle
-│   ├── value_target.py       tier-1/2 value targets V^{pi-dagger} from a branch's own log        (Tier 1)
+│   ├── value_target.py       value targets V^{pi-dagger} from a branch's own log (no re-propagation)
 │   ├── losses.py, models.py, train.py, calibration.py, metrics.py, curves.py, samplers.py
 │   │                         BCE losses, the two MLPs, the training recipe, Platt fits, ECE/AUC, figure curves
 │   ├── cache.py, splits.py, event_selection.py, seed_purity.py
@@ -124,8 +126,9 @@ cCKF/
 │                             the decision-log parquet schema
 ├── tests/                    pytest suite (413) + two C++ parity tests; `python -m pytest tests -q`
 │
-├── docs/                     specs and implementation plans (superpowers/plans, superpowers/specs), the pilot
-│                             data schema, the Phase-1 calibration-plot spec, the trackstates branch reference
+├── docs/                     cCKF_specification.md (the master spec), implementation plans and design specs
+│                             (superpowers/plans, superpowers/specs), the pilot data schema, the Phase-1
+│                             calibration-plot spec, the trackstates branch reference
 ├── experiments/              LOG.md plus the July optimisation data [P1] (Optuna trials, MOTPE per-event
 │                             results, evals) and the gate pilot report [P2]
 ├── results/                  small result files: gate curves [P3], calibration audit + figure G3 [P3],
