@@ -2,13 +2,13 @@
 
 ## Part I — Classical CKF tuning, July 2026 (imported 2026-09-08 from SURP/experiments/LOG.md)
 
-This block is the full record of the classical seeding/CKF optimisation that produced the tight / medium / fast operating points. It was written in the parent repo before this one existed; the three short July entries it replaces were summaries of Stages 1-3. Modal paths below no longer exist; the data lives in `experiments/` here (trial CSVs, `joint_motpe/`, `plots/`).
+This block is the full record of the classical seeding/CKF optimisation that produced the tight / medium / fast operating points. It was written in the parent repo before this one existed; the three short July entries it replaces were summaries of Stages 1-3. The Modal volume was mirrored in full to NERSC on 2026-08-24, so every volume path below has been rewritten to its NERSC location: volume root `/data/` -> `$SCRATCH/cckf/modal_backup/` (`optimizer/`, `results/`, `events/`, `models/`, `cache/`, `weights/`, `analysis/`). Small result files are also committed under `experiments/` here (trial CSVs, `joint_motpe/`, `plots/`). `modal run` commands are kept as the historical record; the apps are in `modal_apps/` and no longer run.
 
 **Project:** RL for particle track reconstruction (SURP 2026, Berkeley/Stanford)
 **Goal:** Establish an optimized CKF baseline on ColliderML ttbar μ=200, then beat it with learned policies.
-**Dataset:** ColliderML full_pileup ttbar v1 (edm4hep.root on Modal volume `surp-acts-data`). Each event is a single pp bunch crossing with ~200 pileup interactions, producing ~214k hits and ~46k particles.
+**Dataset:** ColliderML full_pileup ttbar v1 (`$SCRATCH/cckf/modal_backup/events/edm4hep.root` on NERSC, run 0 of ColliderML ttbar; originally on the Modal volume `surp-acts-data`). Each event is a single pp bunch crossing with ~200 pileup interactions, producing ~214k hits and ~46k particles.
 
-**Event split (Modal volume currently has 64 events, not 128):**
+**Event split (the working file was uploaded as a 64-event subset):**
 | Split | Event IDs | Count | Use |
 |-------|-----------|-------|-----|
 | Optimize / test | `[0, 32)` | 32 | Optuna trials (future re-run) |
@@ -202,7 +202,7 @@ Key observations:
 | Threads | 8 |
 | Metrics threshold | pT > 1 GeV (same ParticleSelector as Stages 2–3) |
 | Modal run | [ap-RI7Qs6BxK6uSuD6XiTIsPl](https://modal.com/apps/musson28/main/ap-RI7Qs6BxK6uSuD6XiTIsPl) |
-| Output | `/data/results/ckf_acts_odd_defaults_1784779531` |
+| Output | `$SCRATCH/cckf/modal_backup/results/ckf_acts_odd_defaults_1784779531` |
 
 #### Parameters (exact)
 
@@ -272,7 +272,7 @@ Raising seed density helps (~+5 pp ε) but does not close the gap to Optuna (~90
 
 **Note on sampler name:** Optuna 4.x removed `MOTPESampler`. We use `TPESampler(seed=42, n_startup_trials=20)`, the official MO-TPE successor (same algorithm family; informed proposals after warmup).
 
-**Note on W&B:** Modal secret `wandb` is attached, but `wandb.init` fails with TLS (`x509: certificate signed by unknown authority`). Trials are persisted to Optuna SQLite (`/data/optimizer/joint_motpe/optuna.db`) and `trials.csv`. Sync to W&B post-hoc if needed.
+**Note on W&B:** Modal secret `wandb` is attached, but `wandb.init` fails with TLS (`x509: certificate signed by unknown authority`). Trials are persisted to Optuna SQLite (`$SCRATCH/cckf/modal_backup/optimizer/joint_motpe/optuna.db`) and `trials.csv`. Sync to W&B post-hoc if needed.
 
 #### Optimization outcome (July 23, 2026)
 
@@ -292,7 +292,7 @@ Opt-set highlights: peak ε≈97.7% (high fake); strong tradeoffs e.g. ε≈92.3
 Re-ran the full 4D Optuna Pareto front (**139/139 configs**) on held-out `[32, 64)`.
 
 - Modal: [ap-j8vreLJGbJksQKu4xdhMvA](https://modal.com/apps/musson28/main/ap-j8vreLJGbJksQKu4xdhMvA) (stopped after completion)
-- Results: `/data/optimizer/joint_motpe/eval_pareto_4d.csv` and `cCKF/experiments/joint_motpe/eval_pareto_4d.csv`
+- Results: `$SCRATCH/cckf/modal_backup/optimizer/joint_motpe/eval_pareto_4d.csv` and `cCKF/experiments/joint_motpe/eval_pareto_4d.csv`
 
 **Overfit gap (eval − opt):** Δε mean **−0.07 pp** (range −0.35…+0.39); Δf mean **−0.27 pp**. Essentially no overfitting — metrics transfer cleanly.
 
@@ -372,7 +372,7 @@ Full table: [`cCKF/experiments/joint_motpe/PROVENANCE.md`](../cCKF/experiments/j
 | ODD | v5.0.0 |
 | Modal ACTS | spack `acts-main-udwtnx3aoh5lh6s76slc2fzc5szhwe7y` in `ghcr.io/opendatadetector/sw:0.2.2_…` |
 | Material maps SHA256 | `aa8c168f8046c1b252e41af030b53787c7cf59b86cfb3ab49ada656a97ec883a` |
-| edm4hep Modal path | `surp-acts-data:/events/edm4hep.root` |
+| edm4hep path (NERSC mirror) | `$SCRATCH/cckf/modal_backup/events/edm4hep.root` |
 | edm4hep SHA256 | `7656dca207dfc96bb37c67ac524a6966d1a3ad10ebaaa4a9d3c0d493a874996f` |
 | edm4hep size | 6 612 819 004 bytes · 64 events used ([0,32)/[32,64)) |
 | Upstream | NERSC ColliderML `full_pileup/ttbar/v1/runs/{N}/edm4hep.root` |
@@ -449,12 +449,12 @@ Clipping \(d_0\) into our box **raises** ε by ~+3.7 pp (fewer displaced/pileup 
 | Reconstructability (T) | pT > 1 GeV, \|η\| < 3, ≥6 measurements, ≥3 pixel hits, secondaries **included** |
 | Ambi | greedy, fixed (`maximumSharedHits=3`, `nMeasurementsMin=6`) |
 | loc0 | **removed** |
-| Storage | `/data/optimizer/joint_motpe/optuna.db` |
+| Storage | `$SCRATCH/cckf/modal_backup/optimizer/joint_motpe/optuna.db` |
 | W&B project | `cckf-baseline-optimization` (Modal secret `wandb`) |
-| Entrypoint | `modal run --detach modal_acts.py::run_joint_motpe_optimizer` |
+| Entrypoint | `modal run --detach modal_acts.py::run_joint_motpe_optimizer` (historical; now `modal_apps/modal_acts.py`, not runnable) |
 | ODD | v5.0.0 (`/opt/ODD_v5`) |
 | ACTS | from Modal image (ghcr.io opendatadetector/sw + built bindings); exact commit logged at run start |
-| edm4hep | Modal volume `surp-acts-data:/events/edm4hep.root` (64-event ColliderML full_pileup ttbar subset) |
+| edm4hep | Modal volume `$SCRATCH/cckf/modal_backup/events/edm4hep.root` (64-event ColliderML full_pileup ttbar subset) |
 | DM matching | double-majority, threshold 0.5 both sides (`hits_shared/hits_on_track` and `hits_shared/hits_on_particle`) |
 | Ambi (fixed) | greedy; `maximumSharedHits=3`, `nMeasurementsMin=6` |
 
@@ -504,7 +504,7 @@ Runtime vs cutoff not plotted (`seed_minPt` / `ckf_ptMin` already differ per con
 
 **Command:**
 ```bash
-modal run modal_acts.py::run_op_points_matching_scan --points tight,medium,fast --truth-pt-min 0.15
+modal run modal_acts.py::run_op_points_matching_scan --points tight,medium,fast --truth-pt-min 0.15   # historical (Modal); outputs mirrored to experiments/joint_motpe/pt_scan
 # local:
 python scripts/plot_eff_fake_vs_pt.py \
   --scan-dir experiments/joint_motpe/pt_scan \
