@@ -183,3 +183,52 @@ def test_kappa_shrinks_with_incidence_angle():
     )
     kappa = features.kappa_u(df)
     assert kappa[1] < kappa[0]
+
+
+# ---------------------------------------------------------------------------
+# resolve_feature_columns: the ablation entry point shared by train_gate.py
+# and train_value.py
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_feature_columns_full_by_default():
+    idx, names = features.resolve_feature_columns(features.GATE_FEATURES)
+    assert list(names) == list(features.GATE_FEATURES)
+    assert idx.tolist() == list(range(len(features.GATE_FEATURES)))
+
+
+def test_resolve_feature_columns_groups_then_drop_keep_canonical_order():
+    idx, names = features.resolve_feature_columns(
+        features.GATE_FEATURES,
+        keep_groups=["history", "kalman"],  # typed out of order on purpose
+        drop=["chi2_inc"],
+        groups=features.GATE_GROUPS,
+    )
+    expected = [
+        f for f in features.GATE_FEATURES
+        if f in features.GATE_GROUPS["kalman"] + features.GATE_GROUPS["history"]
+        and f != "chi2_inc"
+    ]
+    assert names == expected
+    assert [features.GATE_FEATURES[i] for i in idx] == expected
+
+
+def test_resolve_feature_columns_value_drop():
+    idx, names = features.resolve_feature_columns(
+        features.VALUE_FEATURES, drop=["x0_accumulated", "step_k"]
+    )
+    assert "x0_accumulated" not in names and "step_k" not in names
+    assert len(names) == len(features.VALUE_FEATURES) - 2
+
+
+def test_resolve_feature_columns_rejects_unknown_and_empty():
+    with pytest.raises(ValueError):
+        features.resolve_feature_columns(features.GATE_FEATURES, drop=["no_such"])
+    with pytest.raises(ValueError):
+        features.resolve_feature_columns(
+            features.GATE_FEATURES, keep_groups=["nope"], groups=features.GATE_GROUPS
+        )
+    with pytest.raises(ValueError):
+        features.resolve_feature_columns(
+            features.GATE_FEATURES, drop=list(features.GATE_FEATURES)
+        )

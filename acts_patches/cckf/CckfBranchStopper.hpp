@@ -191,21 +191,9 @@ class CckfBranchStopper {
 
     // Value inference: raw logit -> sigmoid. No Platt calibration -- the
     // value function is not calibrated the way the gate is (design note 4).
-    for (int fi = 0; fi < 11; ++fi) {
-      if (!std::isfinite(features[fi])) {
-        std::cerr << "DIAG value NaN/inf at feature[" << fi << "]=" << features[fi] << std::endl;
-      }
-    }
-    if (m_nValueCalls < 3) {
-      std::cerr << "DIAG value features[" << m_nValueCalls << "]:";
-      for (int fi = 0; fi < 11; ++fi) std::cerr << " " << features[fi];
-      std::cerr << std::endl;
-    }
-    std::cerr << "DIAG value fwd enter call=" << m_nValueCalls << std::endl;
     auto t0 = std::chrono::steady_clock::now();
     float logit = m_valueInference->forward(features);
     float prob = 1.0f / (1.0f + std::exp(-logit));
-    std::cerr << "DIAG value fwd exit logit=" << logit << " prob=" << prob << std::endl;
     auto t1 = std::chrono::steady_clock::now();
     ++m_nValueCalls;
     if (m_timers != nullptr) {

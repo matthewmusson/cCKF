@@ -77,6 +77,8 @@ on which windows happen to be concatenated into a given training run.
 
 from __future__ import annotations
 
+from typing import Iterable, Mapping, Sequence
+
 import numpy as np
 import pandas as pd
 
@@ -315,3 +317,58 @@ def build_gate_features(df: pd.DataFrame) -> np.ndarray:
 
     np.nan_to_num(out, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     return out.astype(np.float32)
+
+def resolve_feature_columns(
+    all_names: Sequence[str],
+    keep_groups: Iterable[str] | None = None,
+    drop: Iterable[str] | None = None,
+    groups: Mapping[str, Sequence[str]] | None = None,
+) -> tuple[np.ndarray, list[str]]:
+    """Select the feature columns a training run uses (ablation support).
+
+    Parameters
+    ----------
+    all_names
+        The full, ordered feature list of the cache (``meta["feature_names"]``,
+        i.e. ``GATE_FEATURES`` or ``VALUE_FEATURES[_WINDOWED]``).
+    keep_groups
+        Optional group names (keys of ``groups``, e.g. ``GATE_GROUPS``); when
+        given, only features in those groups are kept.
+    drop
+        Optional feature names to remove, applied after ``keep_groups``.
+    groups
+        The group map ``keep_groups`` refers to. Required when
+        ``keep_groups`` is given.
+
+    Returns
+    -------
+    col_idx, keep_names
+        Column indices into ``all_names`` and the surviving names, both in
+        the order of ``all_names``. The order never depends on how the
+        flags were typed, so the same ablation always trains the same model.
+
+    Raises
+    ------
+    ValueError
+        On unknown group or feature names, or when nothing survives.
+    """
+    names = list(all_names)
+    selected = set(names)
+    if keep_groups:
+        if groups is None:
+            raise ValueError("keep_groups given without a group map")
+        keep = [g.strip() for g in keep_groups if g.strip()]
+        unknown = set(keep) - set(groups)
+        if unknown:
+            raise ValueError(f"unknown feature groups: {sorted(unknown)}")
+        selected = {f for g in keep for f in groups[g]} & selected
+    if drop:
+        dropped = [d.strip() for d in drop if d.strip()]
+        unknown = set(dropped) - set(names)
+        if unknown:
+            raise ValueError(f"unknown feature names to drop: {sorted(unknown)}")
+        selected -= set(dropped)
+    col_idx = np.array([i for i, n in enumerate(names) if n in selected], dtype=np.int64)
+    if len(col_idx) == 0:
+        raise ValueError("feature selection left no columns")
+    return col_idx, [names[i] for i in col_idx]

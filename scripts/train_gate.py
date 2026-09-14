@@ -119,6 +119,14 @@ def main() -> None:
         "kalman,cluster_raw,cluster_norm,occupancy,context,sensor,history",
     )
     parser.add_argument(
+        "--drop-features",
+        default="",
+        help="Ablation: comma-separated feature names to exclude (applied "
+        "after --feature-groups). Names as in cckf.features.GATE_FEATURES. "
+        "The exporter pads dropped columns back with zero weights so the "
+        "C++ feature builder is unchanged.",
+    )
+    parser.add_argument(
         "--allow-partial-cache",
         action="store_true",
         help="Allow training on a partial/staged cache (meta.json "
@@ -142,25 +150,21 @@ def main() -> None:
     stats = np.load(Path(args.train_cache) / "norm_stats.npz", allow_pickle=True)
     mu, sigma = stats["mu"], stats["sigma"]
 
-    # Feature-group subsetting for A4a/A4b. Column order within the kept groups
-    # follows GATE_FEATURES so the saved model's inputs stay unambiguous.
-    if args.feature_groups:
-        keep_groups = [g.strip() for g in args.feature_groups.split(",")]
-        unknown = set(keep_groups) - set(features.GATE_GROUPS)
-        if unknown:
-            raise SystemExit(f"unknown feature groups: {sorted(unknown)}")
-        # Canonicalise to GATE_FEATURES order. Iterating groups in
-        # command-line order would make the column layout depend on how the
-        # user typed the flag, so the same ablation arm could train two
-        # different, non-comparable models from the same seed.
-        selected = {f for g in keep_groups for f in features.GATE_GROUPS[g]}
-        col_idx = np.array(
-            [i for i, n in enumerate(features.GATE_FEATURES) if n in selected]
+    # Feature subsetting for ablations (A4a/A4b groups, or single features).
+    # Column order within the kept set follows GATE_FEATURES so the saved
+    # model's inputs stay unambiguous regardless of how the flags were typed.
+    try:
+        col_idx, keep_names = features.resolve_feature_columns(
+            features.GATE_FEATURES,
+            keep_groups=args.feature_groups.split(",") if args.feature_groups else None,
+            drop=args.drop_features.split(",") if args.drop_features else None,
+            groups=features.GATE_GROUPS,
         )
-        keep_names = [features.GATE_FEATURES[i] for i in col_idx]
-    else:
-        keep_names = list(features.GATE_FEATURES)
-        col_idx = np.arange(len(features.GATE_FEATURES))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if len(keep_names) != len(features.GATE_FEATURES):
+        print(f"feature ablation: training on {len(keep_names)}/{len(features.GATE_FEATURES)} "
+              f"features; dropped {sorted(set(features.GATE_FEATURES) - set(keep_names))}")
 
     y_train_full = np.asarray(tr["y"])
     row_idx = np.arange(len(y_train_full))
@@ -278,6 +282,7 @@ def main() -> None:
             "width": args.width,
             "depth": args.depth,
             "feature_names": keep_names,
+            "all_feature_names": list(features.GATE_FEATURES),
             "mu": mu[col_idx],
             "sigma": sigma[col_idx],
             "prior_logit_shift": shift,

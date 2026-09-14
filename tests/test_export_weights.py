@@ -102,12 +102,13 @@ def _export_value_model(tmp: str, n_features: int) -> Path:
     return blob_path
 
 
-@pytest.mark.parametrize("n_features", [11, 12])
-def test_value_export_accepts_tier2_and_windowed_tier3_widths(tmp_path, n_features):
-    """Window-conditioned tier-3 value plan, Task 7: the exporter's
-    ``n_features == 11`` assert must relax to accept the windowed 12-feature
-    value function too, since the blob header already carries ``input_dim``
-    and needs no format change."""
+@pytest.mark.parametrize("n_features", [11])
+def test_value_export_accepts_the_cpp_width(tmp_path, n_features):
+    """The C++ branch stopper builds exactly 11 value features
+    (CckfBranchStopper.hpp declares ``float features[11]``), so 11 is the
+    only deployable width. The windowed 12-feature checkpoint is refused by
+    the exporter until the C++ grows a windowed path (see
+    test_windowed_value_checkpoint_refuses_export)."""
     blob_path = _export_value_model(str(tmp_path), n_features)
 
     with open(blob_path, "rb") as f:
@@ -120,12 +121,90 @@ def test_value_export_accepts_tier2_and_windowed_tier3_widths(tmp_path, n_featur
 
 
 def test_value_export_rejects_unexpected_width(tmp_path):
-    """A value checkpoint with neither 11 nor 12 inputs is a real error
-    (wrong feature vector, not a new deliberate width) and must still fail
-    loudly rather than being silently accepted."""
+    """A value checkpoint whose width is not 11 (and carries no
+    feature_names to pad from) is a real error and must fail loudly."""
     with pytest.raises(AssertionError):
         _export_value_model(str(tmp_path), 13)
+    with pytest.raises(AssertionError):
+        _export_value_model(str(tmp_path), 12)
 
 
 if __name__ == "__main__":
     test_roundtrip()
+
+
+def _read_blob(path):
+    """Parse a CCKF blob back into (n_features, mean, std, layers)."""
+    with open(path, "rb") as f:
+        assert f.read(4) == b"CCKF"
+        _, n_feat, n_hid, n_layers = struct.unpack("<IIII", f.read(16))
+        mean = np.frombuffer(f.read(4 * n_feat), dtype=np.float32)
+        std = np.frombuffer(f.read(4 * n_feat), dtype=np.float32)
+        f.read(16)  # platt
+        layers = []
+        in_dim = n_feat
+        for i in range(n_layers + 1):
+            out_dim = n_hid if i < n_layers else 1
+            w = np.frombuffer(f.read(4 * out_dim * in_dim), dtype=np.float32).reshape(out_dim, in_dim)
+            b = np.frombuffer(f.read(4 * out_dim), dtype=np.float32)
+            layers.append((w, b))
+            in_dim = out_dim
+    return n_feat, mean, std, layers
+
+
+def _forward_np(x, mean, std, layers):
+    h = (x - mean) / np.where(std > 1e-30, std, 1.0)
+    for i, (w, b) in enumerate(layers):
+        h = h @ w.T + b
+        if i < len(layers) - 1:
+            h = h / (1.0 + np.exp(-h))  # SiLU
+    return h
+
+
+def test_feature_subset_checkpoint_is_padded_to_full_width():
+    """A gate trained with --drop-features exports at the full 26 width and
+    the padded blob's forward pass equals the subset model's on the kept
+    columns, whatever the dropped columns contain."""
+    from cckf import features
+    torch.manual_seed(7)
+    dropped = {"n_holes", "clus_sigma_uv", "residual_l0"}
+    keep = [f for f in features.GATE_FEATURES if f not in dropped]
+    model = GateMLP(n_features=len(keep), width=128, depth=3).eval()
+    mu = np.random.default_rng(1).normal(size=len(keep)).astype(np.float32)
+    sigma = (np.random.default_rng(2).uniform(0.5, 2.0, size=len(keep))).astype(np.float32)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt_path = Path(tmp) / "gate_model.pt"
+        torch.save({"state_dict": model.state_dict(), "feature_names": keep,
+                    "all_feature_names": list(features.GATE_FEATURES),
+                    "mu": mu, "sigma": sigma}, ckpt_path)
+        cal_path = Path(tmp) / "cal.json"
+        cal_path.write_text(json.dumps({"a0": 1.0, "a1": 0.0, "b0": 0.0, "b1": 0.0}))
+        blob = Path(tmp) / "gate.bin"
+        export(str(ckpt_path), "ckpt", str(cal_path), str(blob), "gate")
+
+        n_feat, mean, std, layers = _read_blob(blob)
+        assert n_feat == 26
+        full_idx = [features.GATE_FEATURES.index(n) for n in keep]
+        drop_idx = [features.GATE_FEATURES.index(n) for n in dropped]
+        assert np.all(layers[0][0][:, drop_idx] == 0)
+        assert np.all(mean[drop_idx] == 0) and np.all(std[drop_idx] == 1)
+
+        x_full = np.random.default_rng(3).normal(size=(5, 26)).astype(np.float32)
+        x_full[:, drop_idx] = 1e6  # garbage in the dropped columns must not matter
+        ref = model(torch.from_numpy((x_full[:, full_idx] - mu) / sigma)).detach().numpy()
+        got = _forward_np(x_full, mean, std, layers)[:, 0]
+        np.testing.assert_allclose(got, ref, rtol=1e-4, atol=1e-4)
+
+
+def test_windowed_value_checkpoint_refuses_export():
+    from cckf import features
+    torch.manual_seed(8)
+    names = list(features.VALUE_FEATURES_WINDOWED)
+    model = ValueMLP(n_features=12, width=128, depth=2)
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt_path = Path(tmp) / "value_model.pt"
+        torch.save({"state_dict": model.state_dict(), "feature_names": names,
+                    "mu": np.zeros(12, np.float32), "sigma": np.ones(12, np.float32)}, ckpt_path)
+        with pytest.raises(ValueError, match="window_nsigma"):
+            export(str(ckpt_path), "ckpt", "identity", str(Path(tmp) / "v.bin"), "value")

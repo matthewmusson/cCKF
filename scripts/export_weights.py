@@ -17,6 +17,53 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# The C++ feature builders (acts_patches/cckf/CckfFeatures.hpp,
+# CckfBranchStopper.hpp) always produce the FULL vectors below. A model
+# trained on a subset (--feature-groups / --drop-features) is padded back to
+# full width here: dropped columns get first-layer weight 0, mean 0, std 1,
+# so the C++ computes the feature and multiplies it by nothing. The C++ never
+# changes for an ablation.
+FULL_FEATURES = {
+    "gate": (
+        "residual_l0", "residual_l1", "chol_S_00", "chol_S_10", "chol_S_11", "chi2_inc",
+        "clus_s_u", "clus_s_v", "clus_q_tot", "clus_sigma_uu", "clus_sigma_uv", "clus_sigma_vv",
+        "kappa_u", "kappa_v", "q_tilde", "n_window", "eta", "state_qop", "step_k",
+        "pathInX0_interval", "pitch_u", "pitch_v", "thickness", "n_hits", "n_holes", "n_seq_holes",
+    ),
+    "value": (
+        "eta", "state_qop", "sigma2_l0", "sigma2_l1", "n_hits", "n_holes", "n_seq_holes",
+        "sum_gate_logodds", "min_gate_logodds", "step_k", "x0_accumulated",
+    ),
+}
+
+
+def pad_to_full(first_weight, mean, std, feature_names, full_names):
+    """Insert zero columns for features the model was not trained on.
+
+    Returns (first_weight, mean, std) at full width, columns in
+    ``full_names`` order. Raises ValueError if ``feature_names`` contains a
+    name the C++ does not build (e.g. ``window_nsigma``) or is out of order.
+    """
+    full = list(full_names)
+    names = list(feature_names)
+    unknown = [n for n in names if n not in full]
+    if unknown:
+        raise ValueError(
+            f"checkpoint features not built by the C++ side: {unknown}; "
+            "drop them at training time (--drop-features) before exporting"
+        )
+    pos = [full.index(n) for n in names]
+    if pos != sorted(pos):
+        raise ValueError("checkpoint feature order differs from the C++ order")
+    n_hidden = first_weight.shape[0]
+    w = np.zeros((n_hidden, len(full)), dtype=np.float32)
+    m = np.zeros(len(full), dtype=np.float32)
+    s = np.ones(len(full), dtype=np.float32)
+    w[:, pos] = first_weight
+    m[pos] = mean
+    s[pos] = std
+    return w, m, s
+
 
 def export(checkpoint_path, standardization_path, calibration_path,
            output_path, model_type):
@@ -43,9 +90,32 @@ def export(checkpoint_path, standardization_path, calibration_path,
         weights.append(w)
         biases.append(b)
 
-    n_features = weights[0].shape[1]
     n_hidden = weights[0].shape[0]
     n_layers = len(weights) - 1  # last layer is the head
+
+    # Load standardization first: padding needs mean/std alongside the
+    # first-layer weights. "ckpt" pulls mu/sigma from the checkpoint itself,
+    # which is where the v3 training scripts store them.
+    if standardization_path == "ckpt":
+        mean = np.asarray(ckpt["mu"], dtype=np.float32)
+        std = np.asarray(ckpt["sigma"], dtype=np.float32)
+    else:
+        std_data = np.load(standardization_path)
+        mean = std_data["mean"].astype(np.float32)
+        std = std_data["std"].astype(np.float32)
+    std = np.where(std > 1e-30, std, 1.0).astype(np.float32)
+    assert len(mean) == weights[0].shape[1]
+    assert len(std) == weights[0].shape[1]
+
+    # Feature-subset checkpoints (ablations) are padded back to the width
+    # the C++ builds. A checkpoint without feature_names is taken as full.
+    full_names = FULL_FEATURES[model_type]
+    feature_names = ckpt.get("feature_names") if isinstance(ckpt, dict) else None
+    if feature_names is not None and list(feature_names) != list(full_names):
+        weights[0], mean, std = pad_to_full(weights[0], mean, std, feature_names, full_names)
+        print(f"padded {len(feature_names)} trained features to the full {len(full_names)}; "
+              f"zero-weight columns: {sorted(set(full_names) - set(feature_names))}")
+    n_features = weights[0].shape[1]
 
     if model_type == "gate":
         assert n_features == 26, f"Gate expects 26 features, got {n_features}"
@@ -56,25 +126,14 @@ def export(checkpoint_path, standardization_path, calibration_path,
         # VALUE_FEATURES_WINDOWED (window-conditioned tier-3 value plan,
         # Task 7). The blob header carries input_dim, so no format change is
         # needed for the extra feature -- only this width check relaxes.
-        assert n_features in (11, 12), (
-            f"Value expects 11 (Tier 2) or 12 (windowed Tier 3) features, "
-            f"got {n_features}"
+        # The C++ branch stopper builds exactly 11 features (no windowed
+        # path); a 12-feature windowed checkpoint must drop window_nsigma
+        # (pad_to_full refuses it) or the C++ must grow first.
+        assert n_features == 11, (
+            f"Value expects 11 features, got {n_features}"
         )
         assert n_hidden == 128, f"Value expects 128 hidden, got {n_hidden}"
         assert n_layers == 2, f"Value expects 2 hidden layers, got {n_layers}"
-
-    # Load standardization. "ckpt" pulls mu/sigma from the checkpoint itself,
-    # which is where the v3 training scripts store them.
-    if standardization_path == "ckpt":
-        mean = np.asarray(ckpt["mu"], dtype=np.float32)
-        std = np.asarray(ckpt["sigma"], dtype=np.float32)
-    else:
-        std_data = np.load(standardization_path)
-        mean = std_data["mean"].astype(np.float32)
-        std = std_data["std"].astype(np.float32)
-    std = np.where(std > 1e-30, std, 1.0).astype(np.float32)
-    assert len(mean) == n_features
-    assert len(std) == n_features
 
     # Load calibration (Platt params). "identity" writes a no-op calibrator
     # (a=1, b=0) for models exported without a Platt fit, e.g. the value

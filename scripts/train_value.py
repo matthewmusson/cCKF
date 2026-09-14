@@ -185,6 +185,13 @@ def main() -> None:
     )
     parser.add_argument("--wandb-project", default="")
     parser.add_argument(
+        "--drop-features",
+        default="",
+        help="Ablation: comma-separated feature names to exclude, as listed "
+        "in the cache's meta.json feature_names (cckf.features.VALUE_FEATURES). "
+        "The exporter pads dropped columns back with zero weights.",
+    )
+    parser.add_argument(
         "--oversample-marginal",
         type=float,
         default=0.0,
@@ -210,6 +217,18 @@ def main() -> None:
         )
     mu, sigma = get_norm_stats(tr)
 
+    # Feature subsetting for ablations; column order follows the cache order.
+    try:
+        col_idx, keep_names = feat.resolve_feature_columns(
+            feature_names,
+            drop=args.drop_features.split(",") if args.drop_features else None,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if len(keep_names) != len(feature_names):
+        print(f"feature ablation: training on {len(keep_names)}/{len(feature_names)} "
+              f"features; dropped {sorted(set(feature_names) - set(keep_names))}")
+
     # Labels are bimodal: most branches clearly succeed or clearly fail. The
     # marginal band is where the decision actually matters, so it can be
     # oversampled to keep it from being drowned out. Oversampling is expressed
@@ -226,10 +245,9 @@ def main() -> None:
         )
     y_train = tr["y"][train_rows]
 
-    all_cols = np.arange(tr["X"].shape[1])
-    X_train = train.StandardizedView(tr["X"], train_rows, mu, sigma, all_cols)
+    X_train = train.StandardizedView(tr["X"], train_rows, mu, sigma, col_idx)
     X_val = train.StandardizedView(
-        va["X"], np.arange(len(va["y"])), mu, sigma, all_cols
+        va["X"], np.arange(len(va["y"])), mu, sigma, col_idx
     )
     y_val = va["y"]
 
@@ -247,7 +265,7 @@ def main() -> None:
             config={**vars(args), "n_train_rows": len(y_train)},
         )
 
-    model = models.ValueMLP(n_features=n_features, width=args.width, depth=args.depth)
+    model = models.ValueMLP(n_features=len(keep_names), width=args.width, depth=args.depth)
     print(f"parameters: {models.count_parameters(model):,}")
     result = train.train_model(model, X_train, y_train, X_val, y_val, config, wandb_run)
 
@@ -291,12 +309,13 @@ def main() -> None:
     torch.save(
         {
             "state_dict": result["best_state"],
-            "n_features": n_features,
+            "n_features": len(keep_names),
             "width": args.width,
             "depth": args.depth,
-            "feature_names": list(feature_names),
-            "mu": mu,
-            "sigma": sigma,
+            "feature_names": list(keep_names),
+            "all_feature_names": list(feature_names),
+            "mu": mu[col_idx],
+            "sigma": sigma[col_idx],
         },
         out_dir / "value_model.pt",
     )

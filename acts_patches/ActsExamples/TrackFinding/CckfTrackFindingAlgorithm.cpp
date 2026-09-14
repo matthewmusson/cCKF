@@ -37,7 +37,9 @@
 #include "Acts/TrackFinding/CombinatorialKalmanFilter.hpp"
 #include "Acts/TrackFinding/TrackStateCreator.hpp"
 #include "Acts/TrackFitting/GainMatrixUpdater.hpp"
+#include "Acts/Utilities/AngleHelpers.hpp"
 #include "Acts/Utilities/Enumerate.hpp"
+#include "Acts/Utilities/Helpers.hpp"
 #include "Acts/Utilities/HashedString.hpp"
 #include "Acts/Utilities/HashCombine.hpp"
 #include "Acts/Utilities/Logger.hpp"
@@ -151,7 +153,6 @@ class CckfMeasurementSelectorAdapter {
                          std::vector<Traj::TrackStateProxy>::iterator>>
   select(std::vector<Traj::TrackStateProxy>& candidates, bool& isOutlier,
          const Acts::Logger& logger) const {
-    std::cerr << "DIAG gate-select: " << candidates.size() << " cands" << std::endl;
     // ---- stayOnSeed logic (same as TrackFindingAlgorithm) ----
     if (m_seed.has_value()) {
       std::vector<Traj::TrackStateProxy> newCandidates;
@@ -384,7 +385,6 @@ class CckfBranchStopperWrapper {
   BranchStopperResult operator()(
       const TrackContainer::TrackProxy& track,
       const TrackContainer::TrackStateProxy& trackState) const {
-    std::cerr << "DIAG branchStopper: nMeas=" << track.nMeasurements() << std::endl;
     // Update step_k: +1 per branch-stopper call (measurement, hole, or
     // material state — see class doc for the known counting caveat).
     kStepKWriter(track) += 1.0f;
@@ -435,21 +435,98 @@ class CckfBranchStopperWrapper {
 };
 
 // ============================================================================
-// Fallback branch stopper (no value function)
+// Fallback branch stopper (no value function): the stock ACTS caps
 // ============================================================================
 
-class PassthroughBranchStopper {
+/// Used when valueWeightsPath is empty ("gate-only" and control runs). This
+/// is a copy of the BranchStopper in ACTS' own TrackFindingAlgorithm.cpp
+/// (pinned commit), so a run without the value function stops branches
+/// exactly as the classical CKF does: on the track selector's maxHoles /
+/// maxOutliers / maxHolesAndOutliers and on the per-technology
+/// maxPixelHoles / maxStripHoles, with StopAndKeep once minMeasurements is
+/// reached. Before 2026-09-14 this was a pass-through that never stopped a
+/// branch, so "gate-only" results were not comparable to the classical CKF.
+class ClassicalBranchStopper {
  public:
   using BranchStopperResult =
       Acts::CombinatorialKalmanFilterBranchStopperResult;
 
+  struct BranchState {
+    std::size_t nPixelHoles = 0;
+    std::size_t nStripHoles = 0;
+  };
+
+  static constexpr Acts::ProxyAccessor<BranchState> branchStateAccessor =
+      Acts::ProxyAccessor<BranchState>(
+          Acts::hashString("CckfClassicalBranchState"));
+
   mutable std::size_t m_nStoppedBranches = 0;
 
+  explicit ClassicalBranchStopper(const CckfTrackFindingAlgorithm::Config& config)
+      : m_cfg(config) {}
+
   BranchStopperResult operator()(
-      const TrackContainer::TrackProxy& /*track*/,
-      const TrackContainer::TrackStateProxy& /*trackState*/) const {
+      const TrackContainer::TrackProxy& track,
+      const TrackContainer::TrackStateProxy& trackState) const {
+    if (!m_cfg.trackSelectorCfg.has_value()) {
+      return BranchStopperResult::Continue;
+    }
+
+    const Acts::TrackSelector::Config* singleConfig = std::visit(
+        [&](const auto& config) -> const Acts::TrackSelector::Config* {
+          using T = std::decay_t<decltype(config)>;
+          if constexpr (std::is_same_v<T, Acts::TrackSelector::Config>) {
+            return &config;
+          } else if constexpr (std::is_same_v<
+                                   T, Acts::TrackSelector::EtaBinnedConfig>) {
+            double theta = trackState.parameters()[Acts::eBoundTheta];
+            double eta = Acts::AngleHelpers::etaFromTheta(theta);
+            return config.hasCuts(eta) ? &config.getCuts(eta) : nullptr;
+          }
+        },
+        *m_cfg.trackSelectorCfg);
+
+    if (singleConfig == nullptr) {
+      ++m_nStoppedBranches;
+      return BranchStopperResult::StopAndDrop;
+    }
+
+    bool tooManyHolesPS = false;
+    if (!(m_cfg.pixelVolumeIds.empty() && m_cfg.stripVolumeIds.empty())) {
+      auto& branchState = branchStateAccessor(track);
+      // count both holes and outliers as holes for pixel/strip counts
+      if (trackState.typeFlags().isHole() ||
+          trackState.typeFlags().isOutlier()) {
+        auto volumeId = trackState.referenceSurface().geometryId().volume();
+        if (Acts::rangeContainsValue(m_cfg.pixelVolumeIds, volumeId)) {
+          ++branchState.nPixelHoles;
+        } else if (Acts::rangeContainsValue(m_cfg.stripVolumeIds, volumeId)) {
+          ++branchState.nStripHoles;
+        }
+      }
+      tooManyHolesPS = branchState.nPixelHoles > m_cfg.maxPixelHoles ||
+                       branchState.nStripHoles > m_cfg.maxStripHoles;
+    }
+
+    bool enoughMeasurements =
+        track.nMeasurements() >= singleConfig->minMeasurements;
+    bool tooManyHoles =
+        track.nHoles() > singleConfig->maxHoles || tooManyHolesPS;
+    bool tooManyOutliers = track.nOutliers() > singleConfig->maxOutliers;
+    bool tooManyHolesAndOutliers = (track.nHoles() + track.nOutliers()) >
+                                   singleConfig->maxHolesAndOutliers;
+
+    if (tooManyHoles || tooManyOutliers || tooManyHolesAndOutliers) {
+      ++m_nStoppedBranches;
+      return enoughMeasurements ? BranchStopperResult::StopAndKeep
+                                : BranchStopperResult::StopAndDrop;
+    }
+
     return BranchStopperResult::Continue;
   }
+
+ private:
+  const CckfTrackFindingAlgorithm::Config& m_cfg;
 };
 
 // ============================================================================
@@ -574,42 +651,15 @@ CckfTrackFindingAlgorithm::CckfTrackFindingAlgorithm(
         "(the gate MLP requires cluster features)");
   }
 
-  // Warn about config fields that are silently ignored when the cCKF value
-  // function (or passthrough stopper) replaces the default branch stopper.
-  // The default BranchStopper in TrackFindingAlgorithm uses these to count
-  // pixel/strip holes separately, but the cCKF stopper reads hole counts
-  // from the value function's feature vector instead.
-  {
-    bool valueActive = !m_cfg.valueWeightsPath.empty();
-
-    {
-      if (m_cfg.maxPixelHoles != std::numeric_limits<std::size_t>::max()) {
-        ACTS_WARNING(
-            "maxPixelHoles is set to " << m_cfg.maxPixelHoles
-            << " but is ignored: the cCKF "
-            << (valueActive ? "value function" : "passthrough")
-            << " branch stopper does not use pixel/strip hole caps.");
-      }
-      if (m_cfg.maxStripHoles != std::numeric_limits<std::size_t>::max()) {
-        ACTS_WARNING(
-            "maxStripHoles is set to " << m_cfg.maxStripHoles
-            << " but is ignored: the cCKF "
-            << (valueActive ? "value function" : "passthrough")
-            << " branch stopper does not use pixel/strip hole caps.");
-      }
-      if (!m_cfg.pixelVolumeIds.empty()) {
-        ACTS_WARNING(
-            "pixelVolumeIds is set but is ignored: the cCKF "
-            << (valueActive ? "value function" : "passthrough")
-            << " branch stopper does not distinguish pixel/strip volumes.");
-      }
-      if (!m_cfg.stripVolumeIds.empty()) {
-        ACTS_WARNING(
-            "stripVolumeIds is set but is ignored: the cCKF "
-            << (valueActive ? "value function" : "passthrough")
-            << " branch stopper does not distinguish pixel/strip volumes.");
-      }
-    }
+  // With the value function active the per-technology hole caps
+  // (maxPixelHoles / maxStripHoles) and the track selector's in-flight caps
+  // are not consulted: V_phi decides. Without it, ClassicalBranchStopper
+  // applies them exactly as the stock TrackFindingAlgorithm does.
+  if (!m_cfg.valueWeightsPath.empty() &&
+      (m_cfg.maxPixelHoles != std::numeric_limits<std::size_t>::max() ||
+       m_cfg.maxStripHoles != std::numeric_limits<std::size_t>::max())) {
+    ACTS_INFO("value function active: maxPixelHoles/maxStripHoles and the "
+              "track selector's in-flight hole caps are not applied");
   }
 
   if (m_cfg.trackSelectorCfg.has_value()) {
@@ -771,6 +821,8 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   tracks.addColumn<float>(std::string(cckf::CckfColumns::kMinGateLogOdds));
   tracks.addColumn<float>(std::string(cckf::CckfColumns::kAccumulatedX0));
   tracks.addColumn<float>(std::string(cckf::CckfColumns::kStepK));
+  tracks.addColumn<ClassicalBranchStopper::BranchState>(
+      "CckfClassicalBranchState");
 
   tracksTemp.addColumn<float>(
       std::string(cckf::CckfColumns::kSumGateLogOdds));
@@ -779,6 +831,8 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
   tracksTemp.addColumn<float>(
       std::string(cckf::CckfColumns::kAccumulatedX0));
   tracksTemp.addColumn<float>(std::string(cckf::CckfColumns::kStepK));
+  tracksTemp.addColumn<ClassicalBranchStopper::BranchState>(
+      "CckfClassicalBranchState");
 
   // pathInX0_interval on track states (mirrors TrackFindingAlgorithm patch)
   trackStateContainer->addColumn<double>(
@@ -825,7 +879,7 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
 
   // ---- Wire up branch stopper ----
   CckfBranchStopperWrapper cckfStopperWrapper(cckfStopper.get());
-  PassthroughBranchStopper passthroughStopper;
+  ClassicalBranchStopper classicalStopper(m_cfg);
 
   using Extensions = Acts::CombinatorialKalmanFilterExtensions<TrackContainer>;
   Extensions extensions;
@@ -837,7 +891,7 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
         .connect<&CckfBranchStopperWrapper::operator()>(&cckfStopperWrapper);
   } else {
     extensions.branchStopper
-        .connect<&PassthroughBranchStopper::operator()>(&passthroughStopper);
+        .connect<&ClassicalBranchStopper::operator()>(&classicalStopper);
   }
 
   extensions.createTrackStates
@@ -968,10 +1022,8 @@ ProcessCode CckfTrackFindingAlgorithm::execute(
     auto firstRootBranch = tracksTemp.makeTrack();
     initCckfColumns(firstRootBranch);
 
-    std::cerr << "DIAG findTracks enter seed=" << iSeed << std::endl;
     auto firstResult = (*m_cfg.findTracks)(firstInitialParameters, firstOptions,
                                            tracksTemp, firstRootBranch);
-    std::cerr << "DIAG findTracks exit seed=" << iSeed << " ok=" << firstResult.ok() << std::endl;
     nSeed++;
 
     if (!firstResult.ok()) {
