@@ -57,31 +57,28 @@ particle looks like at that stage.
 ```
 
 The left column is what happens; the right column says which document
-explains it. Documents 03 to 06 are being written; 06 will replace the
-older `data_schema.md`, which is the same material at reference density.
+explains it.
 
 ## Three words that come up everywhere
 
-- **Hit.** Used loosely for two different things, and the difference matters.
-  A *simhit* is a truth record: Geant4 says this particle deposited this
-  much energy at this exact point. A *measurement* is what the detector
-  reports: a position with an uncertainty, made from one or more channels
-  firing, with no particle attached. Digitisation (doc 02) turns the first
-  into the second, and `measurement-simhit-map.csv` remembers which simhits
-  went into which measurement, which is how we know the truth later.
+- **Hit.** Used loosely for two different things. A *simhit* is a truth record: Geant4 says this particle deposited this
+much energy at this exact point. A *measurement* is what the detector
+reports: a position with an uncertainty, made from one or more channels
+firing, with no particle attached. Digitisation (doc 02) turns the first
+into the second, and `measurement-simhit-map.csv` remembers which simhits went into which measurement, which is how we know the truth later. 
 - **Surface.** A single silicon sensor module, flat, with its own local
-  coordinate system (`local0`, `local1` in millimetres across its face).
-  Every measurement and every track state lives on a surface. Surfaces are
-  addressed by (volume, layer, module); doc 02 explains the numbers.
+coordinate system (`local0`, `local1` in millimetres across its face). Every measurement and every track state lives on a surface. Surfaces are addressed by (volume, layer, module); doc 02 explains the numbers.
 - **Track state.** What the Kalman filter knows about a track when it
-  arrives at a surface: predicted position and direction, their
-  uncertainties, and, after it has chosen a hit there, the updated values.
-  One track has one state per surface it crossed. Doc 03 explains the
-  filter; doc 05 shows the stored states.
+arrives at a surface: predicted position and direction, their
+uncertainties, and, after it has chosen a hit there, the updated values.
+One track has one state per surface it crossed. Doc 03 explains the
+filter; doc 05 shows the stored states.
+
+
 
 ## Where the files are
 
-Everything shown in these documents is readable on NERSC without any job:
+Everything shown in these documents is readable on NERSC without any job (can be done via cli in your login node): 
 
 ```
 /global/cfs/cdirs/atlas/mussonm/cckf_handoff/examples/envelope_event4/
@@ -91,5 +88,4 @@ Everything shown in these documents is readable on NERSC without any job:
     /global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/ttbar/v1/runs/0/edm4hep.root)
 ```
 
-`NERSC.md` has the full layout. Each document ends with the exact Python that
-produced its tables, so you can rerun it on any other particle or event.
+`NERSC.md` has the full layout. Each document ends with the exact Python that produced its tables, so you can rerun it on any other particle or event. 
