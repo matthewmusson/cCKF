@@ -1842,3 +1842,44 @@ multiple-scattering covariance was 1.5× too large. Re-tuning at 3 T is
 classical table without it. The 3 T run directory is
 `$SCRATCH/cckf/runs_fieldcheck/motpe_tight_b3` (copied to
 `cckf_handoff/runs/runs_fieldcheck/`).
+
+---
+
+## 2026-09-14 — Classical branch stopper for gate-only runs; feature-ablation flags; four-mode smoke on event 4
+
+**Status:** Complete. Commits ca7fc93 (code), 82b92f9 and the doc 11 commit (docs 07-11).
+**Jobs:** 58314233 (incremental rebuild, 78 s), 58314351/52/54/55 (`_ablation_{none,gate_only,value_only,both}.yaml`, `$SCRATCH/cckf/runs_ablation`).
+
+**Code.** (1) `CckfTrackFindingAlgorithm.cpp`: the no-value fallback was a
+pass-through that never stopped a branch; replaced by `ClassicalBranchStopper`,
+a copy of ACTS' own `BranchStopper` (track-selector hole/outlier caps,
+maxPixelHoles/maxStripHoles, StopAndKeep at minMeasurements). Gate-only
+runs are now comparable to the classical CKF. Leftover `DIAG` stderr
+output from the SIGSEGV investigation removed. (2) `cckf.features.resolve_feature_columns`
++ `--drop-features` on `train_gate.py` and `train_value.py` (gate keeps
+`--feature-groups`); checkpoints record `feature_names` and
+`all_feature_names`; `export_weights.py` pads dropped features back with
+zero weights so ablated models deploy without a C++ change; 12-feature
+windowed value checkpoints are refused (the C++ builds 11). Suite: 418.
+
+**Findings while writing docs 07-11.** `trackstates_ckf.root` carries
+`stateType` (0/1/2/3; every type-3 state has module 0) and the expansion
+never reads it: that is the hole-counter mismatch. `cov_00..cov_20` are
+never filled by the expansion, so the value features `sigma2_l0/l1` were
+0 on all 85.6 M training rows (vcache_v3) while the C++ fills them;
+`x0_accumulated` is the reverse (mean 0.305 in training, 0 at inference).
+The promoted gate on branch 128909's layer-4 decision: true hit P = 0.915,
+runner-up (χ² 10.2) P = 1e-5 (`scripts/diagnostics/score_branch.py`).
+
+**Four-mode smoke (event 4, tight cuts, 3 T, weights_v3, τ_g 0.64, τ_v 0.246, 3σ, 3 candidates):**
+
+| mode | ε_DM | f_DM | d_DM (pre-ambi) | tracks | CKF wall s |
+|---|---|---|---|---|---|
+| none | 87.5% | 0.09% | 29.0% | | 11.9 |
+| gate only | 63.1% | 0.00% | 16.2% | 925 | 23.6 |
+| value only | 85.2% | 0.00% | 27.7% | 1,677 | 53.2 |
+| both | 68.3% | 0.00% | 14.7% | 980 | 133.5 |
+
+A smoke of the modes, not a result: 2 T-trained weights in a 3σ window
+they never saw. Hole causes in gate-only: 453 k window failures vs 71 k
+gate failures. Performance files copied to `cckf_handoff/runs/runs_ablation/`.
