@@ -4,9 +4,11 @@ This is the **cCKF** (calibrated CKF) implementation repo, a standalone git repo
 
 ## Value-target tier naming (glossary)
 
-The code names the value targets by the order they were built, which is the
-reverse of how they bound performance. Decided 2026-09-08; the code keeps its
-names until the next retrain, the docs use the new ones:
+**Locked 2026-09-14.** In every document, directory name and conversation:
+**tier 2** = the re-propagated target (truth-greedy rollout from the last
+correct state); **tier 3** = the first target we used, from the logged
+branch alone. The code still carries the historical names (it was built in
+the other order) and keeps them until the next retrain; the mapping:
 
 | Code name | Columns / functions | Meaning | Preferred name |
 |-----------|---------------------|---------|----------------|

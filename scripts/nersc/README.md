@@ -24,7 +24,7 @@ each file before submitting: several take positional arguments.
 | Stage | File | What it does |
 |-------|------|--------------|
 | build | `bootstrap_build.sbatch` | one-off: clone pinned ACTS into `$SCRATCH/cckf/acts/src`, apply the instrumentation patch and cCKF integration, cmake, full build, install (`scripts/build_cckf_nersc.sh --bootstrap --install`) |
-| build | `apply_and_build.sbatch` | incremental: re-apply `acts_patches/` and rebuild the two affected targets (`build_cckf_nersc.sh --install`), used for the tier-3 window change |
+| build | `apply_and_build.sbatch` | incremental: re-apply `acts_patches/` and rebuild the two affected targets (`build_cckf_nersc.sh --install`), used for the re-propagation window change |
 | stage 1 (CKF runs) | `run_phase1.sbatch`, `run_p1_input.sbatch`, `run_p1_mem.sbatch` | one event through digi + CKF (+ cCKF) via `scripts/run_cckf_nersc.sh`; `_input` takes `CFG NAME DATA [OUT_BASE]` and is what the sweeps submit; `_mem` logs memory |
 | stage 1 | `sweep_driver.sh` | drive the 12-point (τ_g, τ_v) grid through the debug queue, 5 at a time |
 | stage 1 | `submit_all.sh` | the 32 pilot-run directory map (`pilot_<id>` → event) used by the expansion drivers |
@@ -41,9 +41,9 @@ each file before submitting: several take positional arguments.
 | caches | `pilot_caches.sbatch` | single-event caches for smoke tests |
 | training | `train_gate.sbatch` (GPU), `train_gate_cpu.sbatch`, `train_smoke.sbatch` | `scripts/train_gate.py`; the smoke variant is a few epochs on a staged cache |
 | training | `train_value_v3.sbatch`, `train_value_pure.sbatch`, `train_value_int.sbatch`, `train_value_short.sbatch` | `scripts/train_value.py` variants: the promoted v3 run, pure-seed label, interactive-queue, short |
-| tier 3 | `tier3_gen.sbatch` | array over 32 events: classify branches, emit rollout worklists, run the truth rollouts (`cckf/tier3_walker.py` + the rollout pipeline mode) |
-| tier 3 | `t3_window_smoke_debug.sbatch` | the window smoke on the debug queue (the regular-queue copy is `scripts/t3_window_smoke.sbatch`) |
-| tier 3 | `stitch_dryrun.sbatch` | stitch event 4 against the unbounded rollouts with the truth-suffix gate armed |
+| tier 2 (re-propagated targets; code name tier3) | `tier3_gen.sbatch` | array over 32 events: classify branches, emit rollout worklists, run the truth rollouts (`cckf/tier3_walker.py` + the rollout pipeline mode) |
+| tier 2 | `t3_window_smoke_debug.sbatch` | the window smoke on the debug queue (the regular-queue copy is `scripts/t3_window_smoke.sbatch`) |
+| tier 2 | `stitch_dryrun.sbatch` | stitch event 4 against the unbounded rollouts with the truth-suffix gate armed |
 | window failure | `regen_winfail.sbatch`, `winfail_emu.sbatch`, `modfail.sbatch` | uncensored accumulation on regenerated data; the abandoned emulation run; module-failure analysis |
 | data movement | `mirror_modal.sh`, `pull_parquets.sh`, `archive_to_cfs.sh` | the one-time mirror of the Modal volume into `$SCRATCH/cckf/modal_backup`, and the scratch → CFS archive |
 | reporting | `collect_metrics.py` | Pareto fronts from `results/pareto_*.csv` and DM metrics from every run directory (PyROOT via shifter) |
@@ -55,7 +55,7 @@ One-off investigations, each tied to a log entry:
 | File | Question it answered | Log |
 |------|----------------------|-----|
 | `audit_ev4_regular.sbatch` | template for `scripts/audit_expansion.py` on one event (90 min, regular queue) | 2026-09-08 |
-| `rollout_hit_origin.sbatch`, `rollout_hit_origin2.sbatch`, `suffix_diag.sbatch` | where tier-3 rollout hits come from; found the step_k inversion | 2026-09-08 |
+| `rollout_hit_origin.sbatch`, `rollout_hit_origin2.sbatch`, `suffix_diag.sbatch` | where re-propagation rollout hits come from; found the step_k inversion | 2026-09-08 |
 | `quantify_hole_mismatch_reexp.py` | n_holes / n_seq_holes train vs C++ inference mismatch | 2026-09-04 |
 | `auc_dump.py`, `g3_dump.py`, `lin_reliability.py` | AUCs and reliability curves for the four gate estimators on the cal split (figure G3) | 2026-08-26 |
 | `modfail_analysis.py` | module failure × occupancy × sensor (pre-uncensored version) | 2026-09-03 |

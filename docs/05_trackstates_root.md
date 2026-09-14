@@ -111,7 +111,8 @@ a branch is the other way round from the array.
 
 Until 2026-09-08 the expansion took the array index as `step_k`. The value
 target, the branch-history counters, the seed-majority particle and the
-tier-3 walker were all computed on the mirrored branch. The loader now
+re-propagation walker (`tier3_walker.py` by its code name; it builds the
+tier-2 target) were all computed on the mirrored branch. The loader now
 reverses (`expansion.propagation_order_index`) and checks the orientation
 (`expansion.check_propagation_order`): the seed state must have
 `pathLength` 0, the outermost state a larger value, and the first step must
