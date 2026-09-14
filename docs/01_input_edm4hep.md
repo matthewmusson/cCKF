@@ -10,6 +10,22 @@ written in the EDM4hep format, a ROOT file with one entry per event.
 
 We work with top-quark-pair events at 200 pileup: on top of the interesting collision, about 200 other soft proton-proton collisions happen in the same bunch crossing, so an event holds hundreds of thousands of hits from tens of thousands of particles. I worked with 64 events (a subset of the 128 in ColliderML run 0). Events 0 to 31 are the ones I trained, tuned, and plotted on; events 32 to 63 are sealed for a final evaluation but were never opened. we should scale past this. 
 
+## How to look at the file yourself
+
+```python
+import uproot, awkward as ak
+t = uproot.open("edm4hep.root")["events"]
+ev = 4
+mc = t.arrays(["MCParticles/MCParticles.PDG", "MCParticles/MCParticles.momentum.x"],
+              entry_start=ev, entry_stop=ev + 1)[0]
+hits = t.arrays(["PixelBarrelReadout/PixelBarrelReadout.position.x",
+                 "_PixelBarrelReadout_particle/_PixelBarrelReadout_particle.index"],
+                entry_start=ev, entry_stop=ev + 1)[0]
+# hits whose relation index is 482 belong to our particle
+```
+
+The full script that printed the tables above is `scripts/trail_edm4hep.py <edm4hep.root> <event> <px> <py> <pz>`; it finds the final-state charged particle whose production momentum is closest to the momentum you give it and lists its deposits.
+
 ## What is inside
 
 Opening the file with `uproot` shows one tree, `events`, with 64 entries and these collections (each is a list per event): 
@@ -105,34 +121,11 @@ number, particle number within the vertex, generation, sub-particle.
 Particle 482 becomes `(1, 0, 7, 0, 6)`. The index 482 is not part of the
 barcode, which is why the two look unrelated. The barcode is what every
 later file uses to name the particle, either as five columns or packed
-into one 64-bit integer (`281474977169414` for ours).
+into one 64-bit integer (`281474977169414` for ours). 
 - **simhits**, one per deposit in the six tracker collections, each carrying
 the barcode of its particle and the surface it landed on.
 
-Then a **truth selection** decides which particles we will grade ourselves
-against. The reconstruction is scored only on particles that could
-reasonably be found: charged, |η| < 3, transverse momentum above a threshold
-(1 GeV for every number reported in the log; every plot states the value
-it used), produced within 24 mm of the beam axis and within 1 m of the
-centre along z, and leaving at least six measurements. Particle 482 passes
-all of these, so a track finder that misses it is charged with an
-inefficiency; one that finds it with the wrong hits is charged with a fake.
+Then a **truth selection** decides which particles we will grade ourselves against. The reconstruction is scored only on particles that could reasonably be found: charged, |η| < 3, transverse momentum above a threshold (1 GeV for every number reported in the log; every plot states the value it used), produced within 24 mm of the beam axis and within 1 m of the centre along z, and leaving at least six measurements. Particle 482 passes all of these.
 
-## How to look at the file yourself
 
-```python
-import uproot, awkward as ak
-t = uproot.open("edm4hep.root")["events"]
-ev = 4
-mc = t.arrays(["MCParticles/MCParticles.PDG", "MCParticles/MCParticles.momentum.x"],
-              entry_start=ev, entry_stop=ev + 1)[0]
-hits = t.arrays(["PixelBarrelReadout/PixelBarrelReadout.position.x",
-                 "_PixelBarrelReadout_particle/_PixelBarrelReadout_particle.index"],
-                entry_start=ev, entry_stop=ev + 1)[0]
-# hits whose relation index is 482 belong to our particle
-```
 
-The full script that printed the tables above is
-`scripts/trail_edm4hep.py <edm4hep.root> <event> <px> <py> <pz>`; it finds
-the final-state charged particle whose production momentum is closest to
-the momentum you give it and lists its deposits.
