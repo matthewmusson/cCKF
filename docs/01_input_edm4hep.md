@@ -8,7 +8,7 @@ tracked every one of them through the Open Data Detector (ODD), recording
 every place a charged particle deposited energy in a sensor. The result is
 written in the EDM4hep format, a ROOT file with one entry per event.
 
-We work with top-quark-pair events at 200 pileup: on top of the interesting collision, about 200 other soft proton-proton collisions happen in the same bunch crossing, so an event holds hundreds of thousands of hits from tens of thousands of particles. I worked with 64 events (a subset of the 128 in ColliderML run 0). Events 0 to 31 are the ones I trained, tuned, and plotted on; events 32 to 63 are sealed for a final evaluation but were never opened. we should scale past this. 
+We work with top-quark-pair events at 200 pileup: on top of the interesting collision, about 200 other soft proton-proton collisions happen in the same bunch crossing, so an event holds hundreds of thousands of hits from tens of thousands of particles. I worked with 64 events (a subset of the 128 in ColliderML run 0). Events 0 to 31 are the ones I trained, tuned, and plotted on; events 32 to 63 were set aside as a sealed evaluation set. One caveat: the July classical tuning re-ran its whole Pareto front on events 32 to 63 and picked the tight, medium and fast operating points from those results (doc 04, `experiments/LOG.md` Part I), so those three configurations were selected on the sealed set. Nothing since August has read those events. We should scale past 64 events anyway, reading the ColliderML runs directly (`NERSC.md` §4), and evaluate on events the tuning never saw. 
 
 ## How to look at the file yourself
 
