@@ -49,6 +49,7 @@ shifter --image="${CCKF_IMAGE}" \
     --env=MALLOC_DEBUG="${MALLOC_DEBUG}" \
     --env=ASAN="${ASAN}" \
     --env=RUN_ARGS="$*" \
+    --env=CCKF_ENTRY="${CCKF_ENTRY:-digi_and_reco.py}" \
     -- bash -s <<'CONTAINER_EOF'
 set -euo pipefail
 
@@ -129,5 +130,6 @@ if not hasattr(acts.examples, 'CckfTrackFindingAlgorithm'):
 
 cd "${REPO_ROOT}"
 # shellcheck disable=SC2086
-exec "${PY}" digi_and_reco.py ${RUN_ARGS}
+# CCKF_ENTRY lets diagnostics (e.g. a field probe) run with this exact environment.
+exec "${PY}" "${CCKF_ENTRY:-digi_and_reco.py}" ${RUN_ARGS}
 CONTAINER_EOF

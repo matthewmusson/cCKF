@@ -498,7 +498,24 @@ def setup_acts_reconstruction(input_path, output_dir, config, rnd, logger=None):
         materialDecorator=oddMaterialDeco
     )
     trackingGeometry = detector.trackingGeometry()
-    field = detector.field
+
+    # Magnetic field. The ODD xml shipped with our ODD_v5 install defines a
+    # 2 T solenoid, and detector.field returns exactly that (probed
+    # 2026-09-14: 2.0000 T everywhere inside r < 1.1 m). ColliderML, however,
+    # was simulated in a 3 T field: a circle through the Geant4 hits of a
+    # pT = 2.355 GeV pion (event 4, MCParticles row 482) has R = 2.66 m,
+    # which is 0.3 * 3 T, and every track fitted at 2 T came out with
+    # p_fit / p_true = 0.668 = 2/3 (motpe_tight, event 4, 848 tracks; the
+    # dataset authors' own reconstruction gives 1.00). So the reconstruction
+    # field must be set explicitly to match the simulation, not read from the
+    # geometry description. `bfield_tesla: null` restores the old behaviour.
+    bfield_tesla = getattr(config, "bfield_tesla", 3.0)
+    if bfield_tesla is None or _is_disabled(bfield_tesla):
+        field = detector.field
+        logger.info("Magnetic field: from the DD4hep detector description")
+    else:
+        field = acts.ConstantBField(acts.Vector3(0.0, 0.0, float(bfield_tesla) * u.T))
+        logger.info(f"Magnetic field: constant {float(bfield_tesla):.3f} T along z (bfield_tesla)")
     
     # Configure EDM4hep reader and converter
     # Step 1: PodioReader to read the EDM4hep file
