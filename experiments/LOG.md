@@ -1782,3 +1782,63 @@ Cherry-picked 9981d00 (log-odds parity fix) and c55433c (instrumentation plan).
 Recovered uncommitted 2026-08-17 work from the `gate-value-training` worktree
 (025ceb8): F9 stratified-metric figures and exporter, NaN-safe AUC on
 single-class strata, sampler coverage diagnostics. Suite: 389 passing.
+
+---
+
+## 2026-09-14 — Reconstruction field was 2 T; ColliderML is simulated at 3 T (fixed, `bfield_tesla`)
+
+**Status:** Diagnosed and fixed in c2865ac; verification run on event 4 below.
+**Jobs:** 58312955 (`run_p1_input.sbatch _motpe_tight_greedy.yaml motpe_tight_b3`, `$SCRATCH/cckf/runs_fieldcheck`).
+
+**How it surfaced.** Writing `docs/04_ambiguity_and_metrics.md`: on the
+motpe_tight event-4 run, `tracksummary_ambi.root` gives
+p_fit / p_true = 0.668 (median over 848 fitted tracks; 16-84% range
+0.661-0.674; charge sign right on every track; q/p pull median 10.6; θ and
+φ unbiased). The dataset authors' own `runs/0/tracksummary_ckf.root` gives
+1.003 on the same event.
+
+**Cause.** `digi_and_reco.py` took `field = detector.field`, the DD4hep
+field from the ODD_v5 xml (`Field_nominal_value = 2*tesla`);
+`scripts/diagnostics/probe_field.py` confirms 2.0000 T everywhere inside
+r < 1.1 m. ColliderML was simulated at 3 T: a circle fit through the ten
+Geant4 hits of particle 482 (pT 2.355 GeV) gives R = 2.66 m = pT/(0.3·3 T)
+(rms residual 0.06 mm), and `ColliderML/public/fixtures/README.txt` states
+"re-tracked with ACTS ... Bz=3T" on the "ODD addLayeredCalo_MuonCoil"
+geometry. 2/3 = 0.667.
+
+**Consequences for everything before this date.** Hit-based DM metrics are
+unaffected. Every reconstructed-pT cut acted at 1.5× its nominal value
+(`seed_minPt` 0.587 GeV envelope → effectively 0.88 GeV true pT; `ckf_ptMin`
+likewise), the multiple-scattering process noise was overestimated by 1.5×
+(wider windows), the seed q/p and the predicted q/p carried into the gate
+and value features (`state_qop`, `pT`) were 1.5× off in scale, and the
+July classical optimisation tuned its pT knobs on the wrong scale. All of
+this is consistent across training and inference, so no learned result is
+invalidated, but the re-collection in `NEXT_STEPS.md` must run at 3 T and
+the classical operating points should be re-derived (step 1 there).
+
+**Fix.** New config key `bfield_tesla` (default 3.0) in `digi_and_reco.py`:
+`acts.ConstantBField(0, 0, bfield_tesla·T)` passed to seeding, CKF and the
+writers; `null` restores `detector.field`. The solenoid is uniform inside
+the tracker, so a constant field is exact there. `run_cckf_nersc.sh` gained
+`CCKF_ENTRY` for running diagnostics in the pipeline environment.
+
+**Verification (event 4, motpe_tight config, 3 T):** job 58312955, 40 s wall.
+
+| | 2 T (Sep 2 run) | 3 T (this run) |
+|---|---|---|
+| p_fit / p_true, median (16-84%) over pure fitted tracks | 0.668 (0.662-0.674) | **1.000 (0.991-1.009)** |
+| q/p pull median / std | 10.5 / 32.8 | −0.05 / 1.41 |
+| particle 482 track: p_fit (true 4.655 GeV), nMeasurements, majority hits | 3.05 GeV, 11, 10 | 4.76 GeV, 10, 10 (the wrong disc hit is no longer picked up) |
+| ε_DM / f_DM / d_DM after the CKF | 90.2% / 0.15% / 36.7% | 87.7% / 0.05% / 29.1% |
+| ε_DM / f_DM after ambiguity resolution | 90.2% / 0.00% | 87.7% / 0.09% |
+| tracks after resolution | 1,044 | 1,072 |
+
+The momentum scale is fixed. Efficiency at this operating point drops 2.5
+points because the MOTPE tight configuration was tuned at 2 T: its χ² cuts,
+hole cap and pT thresholds were optimised against a filter whose
+multiple-scattering covariance was 1.5× too large. Re-tuning at 3 T is
+`NEXT_STEPS.md` step 1; do not compare 3 T numbers against the Sep-2
+classical table without it. The 3 T run directory is
+`$SCRATCH/cckf/runs_fieldcheck/motpe_tight_b3` (copied to
+`cckf_handoff/runs/runs_fieldcheck/`).

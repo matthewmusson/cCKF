@@ -149,25 +149,24 @@ and their held-out numbers are optimistic by an unknown amount. Nothing
 since August has read events 32 to 63; a fresh evaluation should use events
 beyond 64 from the ColliderML runs (`NERSC.md` §4).
 
-**The reconstructed momentum is 2/3 of the true momentum.** Across the
-848 resolved, fitted tracks of the tight run on event 4, the fitted momentum
-is 0.668 times the true momentum (16th to 84th percentile 0.661 to 0.674;
-the charge sign is right on every track; the q/p pull has median 10.6). A
-constant ratio this tight is not resolution. The dataset authors' own ACTS
-reconstruction of the same event, shipped next to the input
-(`ColliderML/.../runs/0/tracksummary_ckf.root`, `NERSC.md` §4), gives
-1.003 (0.993 to 1.014) on its well-matched tracks, so the simulation and a
-correctly configured reconstruction agree and **our reconstruction assumes
-the wrong magnetic field**. `digi_and_reco.py` takes the field from the
-DD4hep detector object (`field = detector.field`); the reference
-reconstruction sets it explicitly. Found on 2026-09-14 while writing this
-document; not yet fixed. Hit-based matching, and therefore every efficiency
-and fake rate above, is unaffected, but every cut in reconstructed pT
-(`seed_minPt`, `ckf_ptMin`) acts at 1.5 times its nominal value, the
-multiple-scattering term in the Kalman covariance is wrong by the same
-factor (it scales as 1/p), and the gate's `q/p` and `pT` features are on
-the wrong scale. Fix it before re-collecting training data (`NEXT_STEPS.md`
-step 1), then check that the ratio is 1 on one event.
+**Everything before 2026-09-14 was reconstructed in the wrong magnetic
+field.** Writing this document exposed it: across the 848 resolved, fitted
+tracks of the tight run on event 4, the fitted momentum was 0.668 times the
+true momentum (16th to 84th percentile 0.661 to 0.674), with the charge
+sign right on every track. `digi_and_reco.py` took the field from the ODD
+detector description, a 2 T solenoid; ColliderML was simulated at 3 T (a
+circle through particle 482's Geant4 hits has the 3 T radius, and the
+dataset's own README says so). The fix is the `bfield_tesla` config key
+(default 3.0); re-running the same configuration at 3 T gives a ratio of
+1.000 (0.991 to 1.009) and a q/p pull of width 1.4 (`experiments/LOG.md`,
+2026-09-14). Hit-based matching, and therefore the efficiencies and fake
+rates above, never depended on the field, but every configuration in this
+repository was tuned with a filter whose scattering covariance was 1.5×
+too large and whose pT cuts acted on a 2/3 scale; at 3 T the tight point
+gives 87.7% / 0.09% instead of 90.2% / 0.00% until it is re-tuned
+(`NEXT_STEPS.md` step 1). Every dataset collected before this date shares
+the same 2 T scale, so the trained models are internally consistent, but
+re-collection must happen at 3 T.
 
 ## Reading `matchingdetails`
 
